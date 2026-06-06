@@ -9,11 +9,12 @@ mod utils;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use commands::{Command, ScheduleCommand};
+use commands::{Command, ListCommand, ScheduleCommand};
+use store::ListFilter;
 
 /// A powerful CLI tool for anime fans to track their favorite shows
 #[derive(Parser)]
-#[command(name = "animesh", author = "Abhishek Gautam", version = "0.1.0", about = "Track anime schedules and discover new shows", long_about = None)]
+#[command(name = "animesh", author = "Abhishek Gautam", version, about = "Track anime schedules and discover new shows", long_about = None)]
 pub struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -35,6 +36,18 @@ pub enum Commands {
         #[arg(short, long)]
         past: bool,
     },
+    /// List shows in your local library
+    List {
+        /// Include dropped shows alongside active ones
+        #[arg(long)]
+        all: bool,
+        /// Show only dropped shows
+        #[arg(long, conflicts_with = "all")]
+        dropped: bool,
+        /// Disable ANSI colors (useful in scripts and CI)
+        #[arg(long)]
+        no_color: bool,
+    },
 }
 
 #[tokio::main]
@@ -48,6 +61,23 @@ async fn main() -> Result<()> {
             past,
         } => {
             let command = ScheduleCommand::new(interval, timezone, past);
+            command.execute().await?;
+        }
+        Commands::List {
+            all,
+            dropped,
+            no_color,
+        } => {
+            let filter = match (all, dropped) {
+                (_, true) => ListFilter::Dropped,
+                (true, false) => ListFilter::All,
+                (false, false) => ListFilter::Active,
+            };
+            let command = if no_color {
+                ListCommand::plain(filter)
+            } else {
+                ListCommand::new(filter)
+            };
             command.execute().await?;
         }
     }
