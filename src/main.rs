@@ -10,8 +10,8 @@ mod utils;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use commands::{
-    Command, DropCommand, FollowCommand, ListCommand, ScheduleCommand, SyncCommand,
-    UnfollowCommand,
+    Command, DoctorCommand, DropCommand, FollowCommand, ListCommand, ScheduleCommand,
+    SyncCommand, UnfollowCommand,
 };
 use store::ListFilter;
 
@@ -83,6 +83,9 @@ pub enum Commands {
     /// Explicit; the only command that intentionally writes to the
     /// cache from the user's side.
     Sync,
+    /// Show the EXPLAIN of animesh — DB path, schema version,
+    /// counts, cache health, last sync, rate-limit headroom.
+    Doctor,
 }
 
 #[tokio::main]
@@ -127,6 +130,9 @@ async fn main() -> Result<()> {
         }
         Commands::Sync => {
             SyncCommand::new().execute().await?;
+        }
+        Commands::Doctor => {
+            DoctorCommand::new().execute().await?;
         }
     }
 

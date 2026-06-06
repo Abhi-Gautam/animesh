@@ -1,6 +1,7 @@
 use anyhow::Result;
 use async_trait::async_trait;
 
+pub mod doctor;
 pub mod drop;
 pub mod follow;
 pub mod list;
@@ -8,6 +9,7 @@ pub mod schedule;
 pub mod sync;
 pub mod unfollow;
 
+pub use doctor::DoctorCommand;
 pub use drop::DropCommand;
 pub use follow::FollowCommand;
 pub use list::ListCommand;
