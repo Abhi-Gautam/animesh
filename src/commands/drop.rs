@@ -8,6 +8,7 @@ use chrono::Utc;
 
 use crate::{
     commands::Command,
+    errors::user_error,
     store::{resolve_db_path, Db},
 };
 
@@ -31,10 +32,10 @@ impl Command for DropCommand {
         let now = Utc::now().timestamp();
         let touched = db.drop_follow("anilist", &self.source_id, now)?;
         if !touched {
-            return Err(anyhow!(
+            return Err(user_error(anyhow!(
                 "no followed show with anilist id {} — nothing to drop",
                 self.source_id
-            ));
+            )));
         }
         let row = db.find_by_source("anilist", &self.source_id)?;
         if let Some(item) = row {

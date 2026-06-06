@@ -1,6 +1,7 @@
 // src/main.rs
 mod anilist;
 mod commands;
+mod errors;
 mod observer;
 mod picker;
 mod renderer;
@@ -13,6 +14,7 @@ use commands::{
     Command, DoctorCommand, DropCommand, FollowCommand, ListCommand, ScheduleCommand,
     SyncCommand, UnfollowCommand,
 };
+use errors::{classify, ExitKind};
 use store::ListFilter;
 
 /// A powerful CLI tool for anime fans to track their favorite shows
@@ -88,8 +90,30 @@ pub enum Commands {
     Doctor,
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() {
+    // We construct the runtime explicitly (rather than via #[tokio::main])
+    // so future T27 work can skip building one for purely-local commands.
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("build tokio runtime");
+    let result: Result<()> = rt.block_on(run());
+    match result {
+        Ok(()) => {}
+        Err(e) => {
+            let kind = classify(&e);
+            eprintln!("error: {e:#}");
+            if matches!(kind, ExitKind::Durable) {
+                if let Ok(path) = store::resolve_db_path() {
+                    eprintln!("       (durable error — DB at {})", path.display());
+                }
+            }
+            std::process::exit(kind.code());
+        }
+    }
+}
+
+async fn run() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
@@ -138,3 +162,4 @@ async fn main() -> Result<()> {
 
     Ok(())
 }
+

@@ -1,5 +1,6 @@
 pub mod anilist;
 pub mod commands;
+pub mod errors;
 pub mod observer;
 pub mod picker;
 pub mod renderer;

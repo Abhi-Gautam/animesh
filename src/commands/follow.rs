@@ -11,6 +11,7 @@ use chrono::Utc;
 use crate::{
     anilist::{AniListClient, Media},
     commands::Command,
+    errors::user_error,
     store::{
         resolve_db_path, CacheEntry, CacheStatus, Db, FollowOutcome, TtlConfig,
     },
@@ -47,7 +48,7 @@ pub async fn follow_inner(
         .by_id(id)
         .await
         .context("AniList by_id")?
-        .ok_or_else(|| anyhow!("no AniList show with id {id}"))?;
+        .ok_or_else(|| user_error(anyhow!("no AniList show with id {id}")))?;
     let title = media.display_title().to_string();
     let source_id = media.id.to_string();
 

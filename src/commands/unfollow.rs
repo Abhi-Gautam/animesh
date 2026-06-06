@@ -10,6 +10,7 @@ use async_trait::async_trait;
 
 use crate::{
     commands::Command,
+    errors::user_error,
     store::{resolve_db_path, Db},
 };
 
@@ -37,10 +38,10 @@ impl Command for UnfollowCommand {
             .map(|i| i.display_title);
         let removed = db.unfollow("anilist", &self.source_id)?;
         if !removed {
-            return Err(anyhow!(
+            return Err(user_error(anyhow!(
                 "no followed show with anilist id {} — nothing to unfollow",
                 self.source_id
-            ));
+            )));
         }
         match title {
             Some(t) => println!("Unfollowed: {t} (id {})", self.source_id),
