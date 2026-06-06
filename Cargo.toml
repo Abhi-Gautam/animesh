@@ -22,10 +22,23 @@ anyhow = "1.0"
 async-trait = "0.1"
 colored = "2.0"
 crossterm = "0.27"
+rusqlite = { version = "0.31", features = ["bundled"] }
+refinery = { version = "0.8", features = ["rusqlite"] }
+directories = "5"
 
 [dev-dependencies]
 tokio-test = "0.4"
 mockall = "0.11"
+proptest = "1"
+insta = { version = "1", features = ["yaml"] }
+criterion = "0.5"
+mockito = "1"
+tempfile = "3"
+
+[profile.release]
+strip = true
+lto = "thin"
+codegen-units = 1
 
 [[example]]
 name = "schedule"

@@ -7,3 +7,11 @@ Cargo.lock
 
 # Ignore backups and temporary files
 *.rs.bk
+
+# Test artifacts (SQLite files written by tests via ANIMESH_DB_PATH)
+*.db
+*.db-wal
+*.db-shm
+
+# Insta snapshot pending files (review before committing as .snap)
+**/*.snap.new
