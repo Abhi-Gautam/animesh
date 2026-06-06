@@ -23,7 +23,7 @@ use store::ListFilter;
 #[command(name = "animesh", author = "Abhishek Gautam", version, about = "Track anime schedules and discover new shows", long_about = None)]
 pub struct Cli {
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
 }
 
 #[derive(Subcommand)]
@@ -117,7 +117,15 @@ fn main() {
 async fn run() -> Result<()> {
     let cli = Cli::parse();
 
-    match cli.command {
+    let command = match cli.command {
+        Some(c) => c,
+        None => {
+            // `animesh` with no subcommand → launch the TUI shell.
+            return tui::run();
+        }
+    };
+
+    match command {
         Commands::Schedule {
             interval,
             timezone,

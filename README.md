@@ -28,19 +28,22 @@
 
 ## Status
 
-**v0.3 — local library foundation (SP-1) shipped.**
+**v0.4 — interactive TUI shell (SP-1.5) shipped.**
 
-You can now follow shows, list your library, drop or unfollow, refresh
-the cache, and inspect health via `doctor`. `schedule` now defaults to
-your followed shows (use `--all` for the global AniList view). The
-interactive picker (`animesh follow <query>`), the notification daemon,
-the backlog suggester, and streaming-source lookup are upcoming
-sub-projects — see [docs/superpowers/specs/](docs/superpowers/specs/)
-for the design and roadmap.
+Run `animesh` with no subcommand to launch the interactive TUI: three
+panes (Today / Late / Backlog), live detail pane with metadata + watch
+progress + streaming links, full keyboard control. The CLI subcommands
+(`follow`, `list`, `drop`, `unfollow`, `sync`, `schedule`, `doctor`)
+remain for scripts and headless use.
 
-> **Breaking change in v0.3:** `animesh schedule` used to show the
-> global AniList airing schedule. It now shows airing of your followed
-> library. The old behavior is available via `animesh schedule --all`.
+Upcoming: cover-art rendering (sixel / kitty / half-block), command
+palette wiring (nucleo fuzzy + AniList add-show), desktop notifications
+(SP-3), backlog runtime-window filter (SP-4), streaming-source brand
+expansion (SP-5), beyond-anime sources (SP-7). See
+[docs/superpowers/specs/](docs/superpowers/specs/) for the full roadmap.
+
+> **Breaking change in v0.3:** `animesh schedule` defaults to your
+> followed library now; `--all` preserves the global view.
 
 ## 🚀 Installation
 
@@ -76,6 +79,33 @@ export PATH="$PATH:/path/to/extracted/folder"
 ```
 
 ## 📖 Usage
+
+### Interactive TUI
+
+```bash
+# Open the interactive shell — three panes, live detail, full keymap.
+animesh
+```
+
+Keymap:
+
+| Key(s)            | Action                                |
+|-------------------|---------------------------------------|
+| `j` / `k` / ↓ / ↑ | Move selection                        |
+| `Tab` / `Shift-Tab` | Cycle focused panel                 |
+| `1` / `2` / `3`   | Jump to Today / Late / Backlog        |
+| `h` / `l` / ← / → | Switch focused panel                  |
+| `w`               | Mark watched (+1)                     |
+| `s`               | Snooze (stub for v0.4)                |
+| `d`               | Drop show                             |
+| `g`               | Open primary streaming URL in browser |
+| `a` / `:` / `/`   | Command palette                       |
+| `?`               | Help overlay                          |
+| `Esc`             | Close overlay                         |
+| `q` / `Ctrl-C`    | Quit                                  |
+
+Bucketing windows are tunable via `ANIMESH_TODAY_WINDOW_HOURS` (default
+24) and `ANIMESH_LATE_WINDOW_HOURS` (default 48).
 
 ### Your library
 
