@@ -10,7 +10,8 @@ mod utils;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use commands::{
-    Command, DropCommand, FollowCommand, ListCommand, ScheduleCommand, UnfollowCommand,
+    Command, DropCommand, FollowCommand, ListCommand, ScheduleCommand, SyncCommand,
+    UnfollowCommand,
 };
 use store::ListFilter;
 
@@ -70,6 +71,10 @@ pub enum Commands {
         #[arg(long)]
         id: i64,
     },
+    /// Refresh cached metadata for every active follow from AniList.
+    /// Explicit; the only command that intentionally writes to the
+    /// cache from the user's side.
+    Sync,
 }
 
 #[tokio::main]
@@ -110,6 +115,9 @@ async fn main() -> Result<()> {
         }
         Commands::Unfollow { id } => {
             UnfollowCommand::new_anilist(id).execute().await?;
+        }
+        Commands::Sync => {
+            SyncCommand::new().execute().await?;
         }
     }
 
