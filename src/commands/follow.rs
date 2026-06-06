@@ -12,9 +12,7 @@ use crate::{
     anilist::{AniListClient, Media},
     commands::Command,
     errors::user_error,
-    store::{
-        resolve_db_path, CacheEntry, CacheStatus, Db, FollowOutcome, TtlConfig,
-    },
+    store::{resolve_db_path, CacheEntry, Db, FollowOutcome, TtlConfig},
 };
 
 pub struct FollowCommand {
@@ -56,23 +54,9 @@ pub async fn follow_inner(
         .add_follow("anilist", &source_id, "anime", &title, now)
         .context("add_follow")?;
 
-    let status = CacheStatus::parse(media.status.as_deref());
     let ttl = TtlConfig::from_env();
-    db.upsert_cache(&CacheEntry {
-        source: "anilist".into(),
-        source_id: source_id.clone(),
-        display_title: Some(title.clone()),
-        title_english: media.title.english.clone(),
-        title_native: media.title.native.clone(),
-        status: media.status.clone(),
-        total_episodes: media.episodes,
-        format: media.format.clone(),
-        next_episode_number: media.next_airing_episode.map(|n| n.episode),
-        next_episode_airs_at: media.next_airing_episode.map(|n| n.airing_at),
-        fetched_at: now,
-        expires_at: ttl.expires_at(status, now),
-    })
-    .context("upsert_cache after follow")?;
+    db.upsert_cache(&CacheEntry::from_media(&media, &ttl, now))
+        .context("upsert_cache after follow")?;
 
     Ok(FollowReport { outcome, media })
 }

@@ -160,6 +160,11 @@ mod tests {
             next_episode_airs_at: None,
             fetched_at: 1_700_000_000,
             expires_at: 1_700_000_500,
+            cover_image_url: None,
+            description: None,
+            score: None,
+            studios: None,
+            streaming_links_json: None,
         })
         .unwrap();
         db.kv_set(KV_LAST_ATTEMPT, "1700000000", 1700000000).unwrap();

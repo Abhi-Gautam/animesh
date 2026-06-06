@@ -132,21 +132,7 @@ async fn schedule_followed(
             let id_n: i64 = item.source_id.parse().unwrap_or(0);
             match client.by_id(id_n).await {
                 Ok(Some(media)) => {
-                    let status = CacheStatus::parse(media.status.as_deref());
-                    let entry = CacheEntry {
-                        source: "anilist".into(),
-                        source_id: item.source_id.clone(),
-                        display_title: Some(media.display_title().to_string()),
-                        title_english: media.title.english.clone(),
-                        title_native: media.title.native.clone(),
-                        status: media.status.clone(),
-                        total_episodes: media.episodes,
-                        format: media.format.clone(),
-                        next_episode_number: media.next_airing_episode.map(|n| n.episode),
-                        next_episode_airs_at: media.next_airing_episode.map(|n| n.airing_at),
-                        fetched_at: now,
-                        expires_at: ttl.expires_at(status, now),
-                    };
+                    let entry = CacheEntry::from_media(&media, &ttl, now);
                     let pair = (entry.next_episode_airs_at, entry.next_episode_number);
                     db.upsert_cache(&entry)?;
                     pair
@@ -190,24 +176,15 @@ async fn schedule_all(
     let ttl = TtlConfig::from_env();
     let mut rows: Vec<ScheduleRow> = Vec::with_capacity(entries.len());
     for e in &entries {
-        let status = CacheStatus::parse(e.media.status.as_deref());
         let title = e.media.display_title().to_string();
-        let source_id = e.media.id.to_string();
-        // Warm the cache for the picker corpus.
-        let _ = db.upsert_cache(&CacheEntry {
-            source: "anilist".into(),
-            source_id: source_id.clone(),
-            display_title: Some(title.clone()),
-            title_english: e.media.title.english.clone(),
-            title_native: e.media.title.native.clone(),
-            status: e.media.status.clone(),
-            total_episodes: e.media.episodes,
-            format: e.media.format.clone(),
-            next_episode_number: Some(e.episode),
-            next_episode_airs_at: Some(e.airing_at),
-            fetched_at: now,
-            expires_at: ttl.expires_at(status, now),
-        });
+        // Warm the cache for the picker corpus. We override the
+        // episode/airing fields because the schedule query carries
+        // them more authoritatively than nextAiringEpisode for
+        // historical entries.
+        let mut entry = CacheEntry::from_media(&e.media, &ttl, now);
+        entry.next_episode_number = Some(e.episode);
+        entry.next_episode_airs_at = Some(e.airing_at);
+        let _ = db.upsert_cache(&entry);
         rows.push(ScheduleRow {
             title,
             episode: e.episode,
@@ -262,6 +239,11 @@ mod tests {
             next_episode_airs_at: Some(1_000 + 3600),
             fetched_at: 1_000,
             expires_at: 1_000_000,
+            cover_image_url: None,
+            description: None,
+            score: None,
+            studios: None,
+            streaming_links_json: None,
         })
         .unwrap();
 
@@ -300,6 +282,11 @@ mod tests {
             next_episode_airs_at: Some(500),
             fetched_at: 0,
             expires_at: 100,
+            cover_image_url: None,
+            description: None,
+            score: None,
+            studios: None,
+            streaming_links_json: None,
         })
         .unwrap();
 
@@ -340,6 +327,11 @@ mod tests {
             next_episode_airs_at: Some(150),
             fetched_at: 0,
             expires_at: 100_000,
+            cover_image_url: None,
+            description: None,
+            score: None,
+            studios: None,
+            streaming_links_json: None,
         })
         .unwrap();
         db.upsert_cache(&CacheEntry {
@@ -355,6 +347,11 @@ mod tests {
             next_episode_airs_at: Some(900),
             fetched_at: 0,
             expires_at: 100_000,
+            cover_image_url: None,
+            description: None,
+            score: None,
+            studios: None,
+            streaming_links_json: None,
         })
         .unwrap();
 

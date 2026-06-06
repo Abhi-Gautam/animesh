@@ -101,6 +101,11 @@ mod tests {
             next_episode_airs_at: None,
             fetched_at: 0,
             expires_at: i64::MAX,
+            cover_image_url: None,
+            description: None,
+            score: None,
+            studios: None,
+            streaming_links_json: None,
         })
         .unwrap();
     }

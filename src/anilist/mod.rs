@@ -112,7 +112,9 @@ impl AniListClient {
     }
 
     /// Fetch a single anime by AniList numeric ID. Returns `None` if
-    /// AniList responds with `data.Media: null`.
+    /// AniList responds with `data.Media: null`. Pulls the full
+    /// TUI-detail-pane payload (cover, description, score, studios,
+    /// streaming external links).
     pub async fn by_id(&self, id: i64) -> Result<Option<Media>> {
         let body = r#"
             query ($id: Int) {
@@ -123,6 +125,11 @@ impl AniListClient {
                 episodes
                 format
                 nextAiringEpisode { episode airingAt }
+                coverImage { large medium color }
+                description(asHtml: false)
+                averageScore
+                studios(isMain: true) { nodes { name isAnimationStudio } }
+                externalLinks { site url color type }
               }
             }
         "#;
@@ -221,6 +228,52 @@ pub struct Media {
     pub format: Option<String>,
     #[serde(rename = "nextAiringEpisode")]
     pub next_airing_episode: Option<NextAiringEpisode>,
+    // Extended fields fetched for the TUI's detail pane.
+    #[serde(rename = "coverImage", default)]
+    pub cover_image: Option<MediaCoverImage>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(rename = "averageScore", default)]
+    pub average_score: Option<i64>,
+    #[serde(default)]
+    pub studios: Option<MediaStudios>,
+    #[serde(rename = "externalLinks", default)]
+    pub external_links: Option<Vec<MediaExternalLink>>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct MediaCoverImage {
+    #[serde(default)]
+    pub large: Option<String>,
+    #[serde(default)]
+    pub medium: Option<String>,
+    #[serde(default)]
+    pub color: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct MediaStudios {
+    #[serde(default)]
+    pub nodes: Vec<MediaStudioNode>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct MediaStudioNode {
+    pub name: String,
+    #[serde(rename = "isAnimationStudio", default)]
+    pub is_animation_studio: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
+pub struct MediaExternalLink {
+    #[serde(default)]
+    pub site: Option<String>,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub color: Option<String>,
+    #[serde(rename = "type", default)]
+    pub link_type: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -255,6 +308,51 @@ impl Media {
             .or(self.title.romaji.as_deref())
             .or(self.title.native.as_deref())
             .unwrap_or("(untitled)")
+    }
+
+    /// Pick the highest-resolution cover image URL we have.
+    pub fn cover_url(&self) -> Option<&str> {
+        self.cover_image
+            .as_ref()
+            .and_then(|c| c.large.as_deref().or(c.medium.as_deref()))
+    }
+
+    /// Comma-joined studios. Animation studios first.
+    pub fn studios_joined(&self) -> Option<String> {
+        let s = self.studios.as_ref()?;
+        if s.nodes.is_empty() {
+            return None;
+        }
+        let mut animation: Vec<&str> = s
+            .nodes
+            .iter()
+            .filter(|n| n.is_animation_studio)
+            .map(|n| n.name.as_str())
+            .collect();
+        let other: Vec<&str> = s
+            .nodes
+            .iter()
+            .filter(|n| !n.is_animation_studio)
+            .map(|n| n.name.as_str())
+            .collect();
+        animation.extend(other);
+        Some(animation.join(", "))
+    }
+
+    /// External links that look like streaming services.
+    pub fn streaming_links(&self) -> Vec<&MediaExternalLink> {
+        match &self.external_links {
+            None => Vec::new(),
+            Some(links) => links
+                .iter()
+                .filter(|l| {
+                    l.link_type
+                        .as_deref()
+                        .map(|t| t.eq_ignore_ascii_case("STREAMING"))
+                        .unwrap_or(false)
+                })
+                .collect(),
+        }
     }
 }
 
@@ -388,6 +486,11 @@ mod tests {
             episodes: None,
             format: None,
             next_airing_episode: None,
+            cover_image: None,
+            description: None,
+            average_score: None,
+            studios: None,
+            external_links: None,
         };
         assert_eq!(m.display_title(), "b");
         let m = Media {

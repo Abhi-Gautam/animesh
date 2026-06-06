@@ -88,8 +88,8 @@ fn env_i64(key: &str) -> Option<i64> {
     env::var(key).ok().and_then(|v| v.parse().ok())
 }
 
-/// One row of metadata_cache. Mirrors the schema in V0001.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// One row of metadata_cache. Mirrors V0001 + V0002 columns.
+#[derive(Debug, Clone, PartialEq)]
 pub struct CacheEntry {
     pub source: String,
     pub source_id: String,
@@ -103,9 +103,53 @@ pub struct CacheEntry {
     pub next_episode_airs_at: Option<i64>,
     pub fetched_at: i64,
     pub expires_at: i64,
+    // V0002 — extended TUI detail-pane fields.
+    pub cover_image_url: Option<String>,
+    pub description: Option<String>,
+    pub score: Option<f64>,
+    pub studios: Option<String>,
+    pub streaming_links_json: Option<String>,
 }
 
 impl CacheEntry {
+    /// Build a CacheEntry from an AniList `Media`. Centralizes the
+    /// mapping so call sites (follow/sync/schedule) don't duplicate
+    /// it. Computes expires_at from the supplied TTL config.
+    pub fn from_media(
+        media: &crate::anilist::Media,
+        ttl: &TtlConfig,
+        fetched_at: i64,
+    ) -> Self {
+        let status_enum = CacheStatus::parse(media.status.as_deref());
+        let streaming_json = {
+            let streaming = media.streaming_links();
+            if streaming.is_empty() {
+                None
+            } else {
+                serde_json::to_string(&streaming).ok()
+            }
+        };
+        Self {
+            source: "anilist".into(),
+            source_id: media.id.to_string(),
+            display_title: Some(media.display_title().to_string()),
+            title_english: media.title.english.clone(),
+            title_native: media.title.native.clone(),
+            status: media.status.clone(),
+            total_episodes: media.episodes,
+            format: media.format.clone(),
+            next_episode_number: media.next_airing_episode.map(|n| n.episode),
+            next_episode_airs_at: media.next_airing_episode.map(|n| n.airing_at),
+            fetched_at,
+            expires_at: ttl.expires_at(status_enum, fetched_at),
+            cover_image_url: media.cover_url().map(|s| s.to_string()),
+            description: media.description.clone(),
+            score: media.average_score.map(|s| s as f64),
+            studios: media.studios_joined(),
+            streaming_links_json: streaming_json,
+        }
+    }
+
     fn from_row(row: &Row<'_>) -> rusqlite::Result<Self> {
         Ok(Self {
             source: row.get("source")?,
@@ -120,6 +164,11 @@ impl CacheEntry {
             next_episode_airs_at: row.get("next_episode_airs_at")?,
             fetched_at: row.get("fetched_at")?,
             expires_at: row.get("expires_at")?,
+            cover_image_url: row.get("cover_image_url")?,
+            description: row.get("description")?,
+            score: row.get("score")?,
+            studios: row.get("studios")?,
+            streaming_links_json: row.get("streaming_links_json")?,
         })
     }
 }
@@ -144,8 +193,9 @@ impl Db {
                     source, source_id, display_title, title_english, title_native, \
                     status, total_episodes, format, \
                     next_episode_number, next_episode_airs_at, \
-                    fetched_at, expires_at\
-                 ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12) \
+                    fetched_at, expires_at, \
+                    cover_image_url, description, score, studios, streaming_links_json\
+                 ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17) \
                  ON CONFLICT(source, source_id) DO UPDATE SET \
                     display_title = excluded.display_title,\
                     title_english = excluded.title_english,\
@@ -156,7 +206,12 @@ impl Db {
                     next_episode_number = excluded.next_episode_number,\
                     next_episode_airs_at = excluded.next_episode_airs_at,\
                     fetched_at = excluded.fetched_at,\
-                    expires_at = excluded.expires_at",
+                    expires_at = excluded.expires_at,\
+                    cover_image_url = excluded.cover_image_url,\
+                    description = excluded.description,\
+                    score = excluded.score,\
+                    studios = excluded.studios,\
+                    streaming_links_json = excluded.streaming_links_json",
                 params![
                     entry.source,
                     entry.source_id,
@@ -170,6 +225,11 @@ impl Db {
                     entry.next_episode_airs_at,
                     entry.fetched_at,
                     entry.expires_at,
+                    entry.cover_image_url,
+                    entry.description,
+                    entry.score,
+                    entry.studios,
+                    entry.streaming_links_json,
                 ],
             )
             .context("upsert_cache")?;
@@ -278,6 +338,11 @@ mod tests {
             next_episode_airs_at: Some(fetched_at + 3600),
             fetched_at,
             expires_at,
+            cover_image_url: None,
+            description: None,
+            score: None,
+            studios: None,
+            streaming_links_json: None,
         }
     }
 

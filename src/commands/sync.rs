@@ -11,9 +11,7 @@ use chrono::Utc;
 use crate::{
     anilist::AniListClient,
     commands::Command,
-    store::{
-        resolve_db_path, CacheEntry, CacheStatus, Db, ListFilter, TtlConfig,
-    },
+    store::{resolve_db_path, CacheEntry, Db, ListFilter, TtlConfig},
 };
 
 const KV_LAST_ATTEMPT: &str = "sync.last_attempt_at";
@@ -72,22 +70,7 @@ pub async fn sync_inner(
         };
         match client.by_id(id_n).await {
             Ok(Some(media)) => {
-                let status = CacheStatus::parse(media.status.as_deref());
-                let title = media.display_title().to_string();
-                let entry = CacheEntry {
-                    source: "anilist".into(),
-                    source_id: item.source_id.clone(),
-                    display_title: Some(title),
-                    title_english: media.title.english.clone(),
-                    title_native: media.title.native.clone(),
-                    status: media.status.clone(),
-                    total_episodes: media.episodes,
-                    format: media.format.clone(),
-                    next_episode_number: media.next_airing_episode.map(|n| n.episode),
-                    next_episode_airs_at: media.next_airing_episode.map(|n| n.airing_at),
-                    fetched_at: now,
-                    expires_at: ttl.expires_at(status, now),
-                };
+                let entry = CacheEntry::from_media(&media, &ttl, now);
                 if let Err(e) = db.upsert_cache(&entry) {
                     failures.push((item.source_id.clone(), format!("cache upsert: {e:#}")));
                 } else {
