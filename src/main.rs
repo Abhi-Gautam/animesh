@@ -6,6 +6,7 @@ mod observer;
 mod picker;
 mod renderer;
 mod store;
+mod tui;
 mod utils;
 
 use anyhow::Result;
