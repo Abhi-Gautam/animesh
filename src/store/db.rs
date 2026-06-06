@@ -16,7 +16,7 @@ mod embedded {
 
 /// Highest migration version this binary knows about. Bump alongside
 /// each `Vxxxx__*.sql` file added under `migrations/`.
-pub const MAX_KNOWN_VERSION: u32 = 1;
+pub const MAX_KNOWN_VERSION: u32 = 2;
 
 /// Owning wrapper around a rusqlite Connection. The only struct in the
 /// codebase that holds a `Connection`.
@@ -215,12 +215,14 @@ mod tests {
             rows.collect::<Result<_, _>>().unwrap()
         };
         // Expect: tracked_item, metadata_cache, search_fts (+ its
-        // FTS5 shadow tables), kv, refinery_schema_history.
+        // FTS5 shadow tables), kv, watch_progress (V0002),
+        // refinery_schema_history.
         for required in [
             "tracked_item",
             "metadata_cache",
             "search_fts",
             "kv",
+            "watch_progress",
             "refinery_schema_history",
         ] {
             assert!(
