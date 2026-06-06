@@ -1,26 +1,34 @@
-# 🎬 Anime Schedule CLI
+# animesh
 
 <div align="center">
 
-![Anime Schedule CLI Demo](examples/images/example1.png)
+![animesh demo](examples/images/example1.png)
 
 [![Crates.io](https://img.shields.io/crates/v/animesh)](https://crates.io/crates/animesh)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A powerful command-line tool to track your favorite anime shows and discover new releases from AniList.
+**The terminal anime tracker for people who never leave it.**
 
-[Features](#features) • [Installation](#installation) • [Usage](#usage) • [Examples](#examples)
+[Installation](#installation) • [Usage](#usage) • [Status](#status)
 
 </div>
 
-## ✨ Features
+## What it is
 
-- 📅 View upcoming anime airing schedules
-- ⏰ Real-time countdown to next episodes
-- 🔄 Customizable time range
-- 🌍 Global timezone support
-- 🎨 Beautiful terminal output with colors
-- 📱 Mobile-friendly interface
+1. You follow the shows you care about. animesh remembers them.
+2. When a new episode drops, you get a desktop notification — no phone, no browser.
+3. One command shows you what aired today, what's airing tomorrow, what's late.
+4. Another shows you what's next in your backlog when you've got an hour free.
+5. Click into any show and animesh tells you where to stream it — Crunchyroll, Netflix, wherever it lives.
+6. Add, mark watched, snooze, drop — all keyboard, all from the terminal, all instant.
+7. Your list lives on your machine. No login, no account, no risk of losing it if a service dies.
+8. Pop it open as a tmux overlay or run it standalone. It feels native either way.
+9. Anime first — but the core works for manga, podcasts, F1, anything that drops on a schedule.
+10. Tiny, fast, boring in the best way. Built to still be useful in ten years.
+
+## Status
+
+Early. Today `animesh schedule` works against AniList — see [Usage](#usage) below. The rest of the product described above is the direction we're building toward.
 
 ## 🚀 Installation
 
