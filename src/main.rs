@@ -9,7 +9,7 @@ mod utils;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use commands::{Command, ListCommand, ScheduleCommand};
+use commands::{Command, FollowCommand, ListCommand, ScheduleCommand};
 use store::ListFilter;
 
 /// A powerful CLI tool for anime fans to track their favorite shows
@@ -48,6 +48,13 @@ pub enum Commands {
         #[arg(long)]
         no_color: bool,
     },
+    /// Add a show to your library
+    Follow {
+        /// AniList numeric ID of the show.
+        /// The interactive `animesh follow <query>` picker lands in v0.4.
+        #[arg(long)]
+        id: i64,
+    },
 }
 
 #[tokio::main]
@@ -79,6 +86,9 @@ async fn main() -> Result<()> {
                 ListCommand::new(filter)
             };
             command.execute().await?;
+        }
+        Commands::Follow { id } => {
+            FollowCommand::new(id).execute().await?;
         }
     }
 
