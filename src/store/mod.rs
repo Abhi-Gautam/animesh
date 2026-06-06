@@ -8,9 +8,11 @@
 pub mod db;
 pub mod metadata_cache;
 pub mod path;
+pub mod search;
 pub mod tracked_item;
 
 pub use db::{Db, MAX_KNOWN_VERSION};
 pub use metadata_cache::{CacheEntry, CacheStats, CacheStatus, TtlConfig};
 pub use path::resolve_db_path;
+pub use search::SearchHit;
 pub use tracked_item::{FollowOutcome, ListFilter, TrackedItem};
