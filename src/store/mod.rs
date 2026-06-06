@@ -7,6 +7,8 @@
 
 pub mod db;
 pub mod path;
+pub mod tracked_item;
 
 pub use db::{Db, MAX_KNOWN_VERSION};
 pub use path::resolve_db_path;
+pub use tracked_item::{FollowOutcome, ListFilter, TrackedItem};
