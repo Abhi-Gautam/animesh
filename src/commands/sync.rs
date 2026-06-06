@@ -114,7 +114,7 @@ pub async fn sync_inner(
     })
 }
 
-#[async_trait]
+#[async_trait(?Send)]
 impl Command for SyncCommand {
     async fn execute(&self) -> Result<()> {
         let path = resolve_db_path()?;

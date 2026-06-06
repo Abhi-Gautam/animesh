@@ -76,7 +76,7 @@ pub async fn follow_inner(
     Ok(FollowReport { outcome, media })
 }
 
-#[async_trait]
+#[async_trait(?Send)]
 impl Command for FollowCommand {
     async fn execute(&self) -> Result<()> {
         let path = resolve_db_path()?;

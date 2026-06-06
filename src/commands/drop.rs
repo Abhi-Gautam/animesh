@@ -23,7 +23,7 @@ impl DropCommand {
     }
 }
 
-#[async_trait]
+#[async_trait(?Send)]
 impl Command for DropCommand {
     async fn execute(&self) -> Result<()> {
         let path = resolve_db_path()?;

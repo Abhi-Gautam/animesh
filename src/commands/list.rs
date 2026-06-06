@@ -37,7 +37,7 @@ impl ListCommand {
     }
 }
 
-#[async_trait]
+#[async_trait(?Send)]
 impl Command for ListCommand {
     async fn execute(&self) -> Result<()> {
         let path = resolve_db_path()?;

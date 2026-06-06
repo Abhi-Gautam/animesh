@@ -15,8 +15,13 @@ pub use schedule::ScheduleCommand;
 pub use sync::SyncCommand;
 pub use unfollow::UnfollowCommand;
 
-/// Base trait for all commands
-#[async_trait]
+/// Base trait for all commands.
+///
+/// The futures are intentionally not `Send`: `rusqlite::Connection`
+/// is `!Send` because of its internal statement cache, and commands
+/// regularly hold the Db across `.await` points. `?Send` reflects
+/// reality and costs nothing — the binary is single-threaded.
+#[async_trait(?Send)]
 pub trait Command {
     /// Execute the command
     async fn execute(&self) -> Result<()>;

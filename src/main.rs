@@ -25,7 +25,8 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Commands {
-    /// Show anime airing schedule
+    /// Show anime airing schedule (default: your followed shows; `--all`
+    /// browses the global AniList schedule).
     Schedule {
         /// Number of days to show schedule for
         #[arg(short, long, default_value = "1")]
@@ -35,9 +36,16 @@ pub enum Commands {
         #[arg(short, long)]
         timezone: Option<String>,
 
-        /// Show past episodes instead of upcoming ones
+        /// Show past episodes instead of upcoming ones (implies --all
+        /// in v0.3; followed-only past views require historical episode
+        /// data shipped in SP-3).
         #[arg(short, long)]
         past: bool,
+
+        /// Show the global AniList schedule instead of just your
+        /// followed shows. Side-effects results into the picker cache.
+        #[arg(short = 'A', long)]
+        all: bool,
     },
     /// List shows in your local library
     List {
@@ -86,8 +94,9 @@ async fn main() -> Result<()> {
             interval,
             timezone,
             past,
+            all,
         } => {
-            let command = ScheduleCommand::new(interval, timezone, past);
+            let command = ScheduleCommand::new(interval, timezone, past, all);
             command.execute().await?;
         }
         Commands::List {

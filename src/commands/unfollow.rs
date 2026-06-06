@@ -25,7 +25,7 @@ impl UnfollowCommand {
     }
 }
 
-#[async_trait]
+#[async_trait(?Send)]
 impl Command for UnfollowCommand {
     async fn execute(&self) -> Result<()> {
         let path = resolve_db_path()?;
