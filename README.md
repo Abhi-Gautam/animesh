@@ -28,7 +28,19 @@
 
 ## Status
 
-Early. Today `animesh schedule` works against AniList — see [Usage](#usage) below. The rest of the product described above is the direction we're building toward.
+**v0.3 — local library foundation (SP-1) shipped.**
+
+You can now follow shows, list your library, drop or unfollow, refresh
+the cache, and inspect health via `doctor`. `schedule` now defaults to
+your followed shows (use `--all` for the global AniList view). The
+interactive picker (`animesh follow <query>`), the notification daemon,
+the backlog suggester, and streaming-source lookup are upcoming
+sub-projects — see [docs/superpowers/specs/](docs/superpowers/specs/)
+for the design and roadmap.
+
+> **Breaking change in v0.3:** `animesh schedule` used to show the
+> global AniList airing schedule. It now shows airing of your followed
+> library. The old behavior is available via `animesh schedule --all`.
 
 ## 🚀 Installation
 
@@ -65,23 +77,78 @@ export PATH="$PATH:/path/to/extracted/folder"
 
 ## 📖 Usage
 
-### View Schedule
+### Your library
 
 ```bash
-# Show schedule for next 1 day (default)
+# Follow a show by AniList ID (interactive picker coming in v0.4)
+animesh follow --id 21
+
+# List your library
+animesh list                       # active follows
+animesh list --all                 # including dropped
+animesh list --dropped             # only dropped
+
+# Soft-delete (hides from default views; re-follow restores)
+animesh drop --id 21
+
+# Hard-delete (rare; prefer `drop`)
+animesh unfollow --id 21
+```
+
+### Schedule
+
+```bash
+# Show airing of YOUR followed shows for the next 1 day (default)
 animesh schedule
 
-# Show schedule for next 7 days
-animesh schedule --interval 7
+# Same, next 7 days, in IST
+animesh schedule --interval 7 --timezone "IST"
 
-# Show schedule in a specific timezone
-animesh schedule --timezone "IST"
+# Browse the global AniList schedule (old default behavior)
+animesh schedule --all
 
-# Show past episodes from last 3 days
+# Past episodes (implies --all in v0.3 — followed-only past views
+# require historical episode data shipped in SP-3)
 animesh schedule --interval 3 --past
 ```
 
+### Cache refresh & health
+
+```bash
+# Refresh cached metadata for every active follow
+animesh sync
+
+# EXPLAIN of animesh — DB path, schema version, library + cache
+# counts, last sync timestamps, AniList rate-limit headroom
+animesh doctor
+```
+
 ![Schedule Command Output](examples/images/example2.png)
+
+### Files
+
+animesh stores everything locally in one SQLite file. No login, no
+account.
+
+| OS      | Default path                                              |
+|---------|-----------------------------------------------------------|
+| Linux   | `$XDG_DATA_HOME/animesh/library.db`                       |
+| macOS   | `~/Library/Application Support/animesh/library.db`        |
+| Windows | `%APPDATA%\animesh\library.db`                            |
+
+Override with `ANIMESH_DB_PATH=/some/path/library.db` (useful for
+testing and per-project libraries).
+
+### Exit codes
+
+Scripts can branch on the exit code:
+
+| Code | Meaning                                                     |
+|------|-------------------------------------------------------------|
+| 0    | success                                                     |
+| 1    | user error (bad input, no match)                            |
+| 2    | durable error (DB issue — needs intervention)               |
+| 3    | network error (AniList down/rate-limited — try again)       |
 
 ## 🌍 Timezone Support
 

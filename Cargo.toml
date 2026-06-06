@@ -1,6 +1,6 @@
 [package]
 name = "animesh"
-version = "0.2.3"
+version = "0.3.0"
 edition = "2021"
 authors = ["Abhishek Gautam"]
 description = "A powerful CLI tool for anime fans to track their favorite shows and discover new anime"
