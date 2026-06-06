@@ -5,6 +5,8 @@
 //! once it ships 1.0) is a single-module rewrite — see
 //! `docs/superpowers/specs/2026-06-06-sp1-local-library-design.md`.
 
+pub mod db;
 pub mod path;
 
+pub use db::{Db, MAX_KNOWN_VERSION};
 pub use path::resolve_db_path;
