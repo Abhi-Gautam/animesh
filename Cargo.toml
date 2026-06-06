@@ -25,6 +25,9 @@ crossterm = "0.27"
 rusqlite = { version = "0.31", features = ["bundled"] }
 refinery = { version = "0.8", features = ["rusqlite"] }
 directories = "5"
+ratatui = "0.28"
+nucleo = "0.5"
+open = "5"
 
 [dev-dependencies]
 tokio-test = "0.4"
