@@ -5,9 +5,9 @@ use comfy_table::{Attribute, Cell, Color, ContentArrangement, Table};
 use serde_json::Value;
 
 use crate::{
-    api::AniListClient,
+    anilist::AniListClient,
     commands::Command,
-    display::format_datetime,
+    renderer::format_datetime,
     utils::{get_user_timezone, match_timezone},
 };
 

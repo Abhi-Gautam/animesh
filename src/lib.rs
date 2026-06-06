@@ -1,6 +1,9 @@
-pub mod api;
+pub mod anilist;
 pub mod commands;
-pub mod display;
+pub mod observer;
+pub mod picker;
+pub mod renderer;
+pub mod store;
 pub mod utils;
 
 // Re-export commonly used items

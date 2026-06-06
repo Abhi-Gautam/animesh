@@ -1,7 +1,10 @@
 // src/main.rs
-mod api;
+mod anilist;
 mod commands;
-mod display;
+mod observer;
+mod picker;
+mod renderer;
+mod store;
 mod utils;
 
 use anyhow::Result;
