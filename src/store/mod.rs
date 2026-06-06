@@ -6,9 +6,11 @@
 //! `docs/superpowers/specs/2026-06-06-sp1-local-library-design.md`.
 
 pub mod db;
+pub mod metadata_cache;
 pub mod path;
 pub mod tracked_item;
 
 pub use db::{Db, MAX_KNOWN_VERSION};
+pub use metadata_cache::{CacheEntry, CacheStats, CacheStatus, TtlConfig};
 pub use path::resolve_db_path;
 pub use tracked_item::{FollowOutcome, ListFilter, TrackedItem};
