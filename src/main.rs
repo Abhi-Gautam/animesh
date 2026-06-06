@@ -9,7 +9,9 @@ mod utils;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use commands::{Command, FollowCommand, ListCommand, ScheduleCommand};
+use commands::{
+    Command, DropCommand, FollowCommand, ListCommand, ScheduleCommand, UnfollowCommand,
+};
 use store::ListFilter;
 
 /// A powerful CLI tool for anime fans to track their favorite shows
@@ -55,6 +57,19 @@ pub enum Commands {
         #[arg(long)]
         id: i64,
     },
+    /// Soft-delete a show from your library. Hidden from default
+    /// views; `animesh follow --id N` restores it preserving the
+    /// original follow date.
+    Drop {
+        #[arg(long)]
+        id: i64,
+    },
+    /// Hard-delete a show from your library. The rare path; prefer
+    /// `drop` unless you really mean it.
+    Unfollow {
+        #[arg(long)]
+        id: i64,
+    },
 }
 
 #[tokio::main]
@@ -89,6 +104,12 @@ async fn main() -> Result<()> {
         }
         Commands::Follow { id } => {
             FollowCommand::new(id).execute().await?;
+        }
+        Commands::Drop { id } => {
+            DropCommand::new_anilist(id).execute().await?;
+        }
+        Commands::Unfollow { id } => {
+            UnfollowCommand::new_anilist(id).execute().await?;
         }
     }
 
