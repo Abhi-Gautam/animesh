@@ -3,24 +3,19 @@ name = "animesh"
 version = "0.4.0"
 edition = "2021"
 authors = ["Abhishek Gautam"]
-description = "A powerful CLI tool for anime fans to track their favorite shows and discover new anime"
+description = "Interactive TUI for tracking anime — local-first, AniList-backed"
 license = "MIT"
-repository = "https://github.com/Abhi-Gautam/animesh.git"
-keywords = ["anime", "cli", "schedule", "anilist", "manga"]
-categories = ["command-line-utilities", "games", "multimedia"]
+repository = "https://github.com/Abhi-Gautam/com.git"
+keywords = ["anime", "tui", "ratatui", "anilist"]
+categories = ["command-line-utilities", "multimedia"]
 
 [dependencies]
 chrono = "0.4"
-chrono-tz = "0.8"
-clap = { version = "4.4", features = ["derive"] }
-comfy-table = "7.0"
 reqwest = { version = "0.11", features = ["json"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1.0", features = ["full"] }
 anyhow = "1.0"
-async-trait = "0.1"
-colored = "2.0"
 crossterm = "0.27"
 rusqlite = { version = "0.31", features = ["bundled"] }
 refinery = { version = "0.8", features = ["rusqlite"] }
@@ -28,6 +23,7 @@ directories = "5"
 ratatui = "0.28"
 nucleo = "0.5"
 open = "5"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 
 [dev-dependencies]
 tokio-test = "0.4"
@@ -42,7 +38,3 @@ tempfile = "3"
 strip = true
 lto = "thin"
 codegen-units = 1
-
-[[example]]
-name = "schedule"
-path = "examples/schedule.rs"

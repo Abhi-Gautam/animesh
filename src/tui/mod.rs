@@ -1,12 +1,21 @@
-//! Interactive ratatui-based TUI shell — SP-1.5.
+//! Interactive ratatui-based TUI shell — SP-1.5 + SP-1.6.
 //!
 //! Sync event loop: poll crossterm events with a 100ms timeout; render
 //! every iteration. A 30s tick re-renders relative-time labels and the
 //! wall-clock, and re-derives pane buckets.
 //!
-//! See `docs/superpowers/specs/2026-06-06-sp1.5-interactive-tui.md`.
+//! SP-1.6 (this revision):
+//! - `:` / `/` / `a` open three distinct overlays (vim/lazygit model).
+//! - Pressing `w` and typing `:watched` both go through `App::dispatch`.
+//! - Empty library renders an onboarding welcome instead of empty panes.
+//!
+//! See `docs/superpowers/specs/2026-06-06-sp1.5-interactive-tui.md` for
+//! the original substrate; the SP-1.6 onboarding work is doc-less by
+//! request — see `docs/QA.md` for the manual verification protocol.
 
 pub mod app;
+pub mod ascii_art;
+pub mod command;
 pub mod help;
 pub mod model;
 pub mod palette;
@@ -27,9 +36,12 @@ use crossterm::{
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
 
+use crate::anilist::AniListClient;
 use crate::store::{resolve_db_path, Db};
 use crate::tui::app::{App, Overlay};
+use crate::tui::command::Command;
 use crate::tui::model::Library;
+use crate::tui::palette::{FollowStage, PaletteMode};
 use crate::tui::pane::Windows;
 
 const POLL_TIMEOUT: Duration = Duration::from_millis(100);
@@ -40,18 +52,27 @@ const TICK_INTERVAL: Duration = Duration::from_secs(30);
 pub fn run() -> Result<()> {
     let path = resolve_db_path()?;
     let db = Db::open(&path)?;
+    let client = AniListClient::new();
+
+    // Backfill cover art for any follow with a missing or stale render.
+    // Blocks startup briefly (≈300ms × N stale rows) but only fires on
+    // the first launch after a renderer change.
+    tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(
+            crate::commands::follow::refresh_stale_covers(&db, &client),
+        )
+    });
 
     let windows = Windows::from_env();
     let now = Utc::now().timestamp();
     let library = Library::load(&db, now, windows)?;
-    let app = App::new(db, library, windows, now);
+    let app = App::new(db, client, library, windows, now);
 
     let mut terminal = setup_terminal().context("setup terminal")?;
     install_panic_hook();
 
     let result = event_loop(&mut terminal, app);
 
-    // Restore even if the loop returned an error.
     restore_terminal(&mut terminal).ok();
     result
 }
@@ -80,7 +101,8 @@ fn event_loop(
     Ok(())
 }
 
-fn handle_key(app: &mut App, key: KeyEvent) {
+/// Pure key-dispatch — exposed for integration tests.
+pub fn handle_key(app: &mut App, key: KeyEvent) {
     // Ctrl-C exits no matter what.
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
         app.quit = true;
@@ -88,15 +110,28 @@ fn handle_key(app: &mut App, key: KeyEvent) {
     }
     match app.overlay {
         Overlay::None => handle_key_normal(app, key),
-        Overlay::Palette => handle_key_palette(app, key),
+        Overlay::Command => handle_key_command(app, key),
+        Overlay::Search => handle_key_search(app, key),
+        Overlay::Follow => handle_key_follow(app, key),
         Overlay::Help => handle_key_help(app, key),
     }
 }
 
 fn handle_key_normal(app: &mut App, key: KeyEvent) {
     use KeyCode::*;
+    // Onboarding fast path: empty library has its own minimal keymap.
+    if app.is_first_run() {
+        match key.code {
+            Char('a') => app.open_palette(PaletteMode::Follow),
+            Char(':') => app.open_palette(PaletteMode::Command),
+            Char('?') => app.dispatch(Command::Help),
+            Char('q') => app.dispatch(Command::Quit),
+            _ => {}
+        }
+        return;
+    }
     match key.code {
-        Char('q') => app.quit = true,
+        Char('q') => app.dispatch(Command::Quit),
         Char('j') | Down => app.move_selection(1),
         Char('k') | Up => app.move_selection(-1),
         Tab => app.switch_pane(1),
@@ -106,38 +141,130 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) {
         Char('1') => app.set_pane(0),
         Char('2') => app.set_pane(1),
         Char('3') => app.set_pane(2),
-        Char('?') => app.overlay = Overlay::Help,
-        Char('a') | Char(':') | Char('/') => {
-            app.overlay = Overlay::Palette;
-            app.palette.query.clear();
-            app.palette.selected = 0;
+        Char('?') => app.dispatch(Command::Help),
+        Char(':') => app.open_palette(PaletteMode::Command),
+        Char('/') => {
+            app.open_palette(PaletteMode::Search);
+            app.recompute_search_hits();
         }
-        Char('w') => action_watched(app),
-        Char('s') => action_snooze(app),
-        Char('d') => action_drop(app),
-        Char('g') => action_stream(app),
+        Char('a') => app.open_palette(PaletteMode::Follow),
+        Char('w') => app.dispatch(Command::Watched),
+        Char('s') => app.dispatch(Command::Snooze),
+        Char('d') => app.dispatch(Command::Drop),
+        Char('g') => app.dispatch(Command::Stream),
         _ => {}
     }
 }
 
-fn handle_key_palette(app: &mut App, key: KeyEvent) {
+fn handle_key_command(app: &mut App, key: KeyEvent) {
+    let suggestions = crate::tui::command::suggest(&app.palette.query);
     match key.code {
-        KeyCode::Esc => app.overlay = Overlay::None,
+        KeyCode::Esc => app.close_overlay(),
         KeyCode::Enter => {
-            // T40 wires this; for now just close.
-            app.overlay = Overlay::None;
+            // If there's a clean suggestion list with a selection, run
+            // that. Otherwise parse the raw query so users who type the
+            // full verb don't need to press Tab first.
+            let chosen = suggestions.get(app.palette.selected).map(|s| s.spec.name);
+            let to_parse = match chosen {
+                Some(name) if app.palette.query.trim().is_empty() => name.to_string(),
+                _ => app.palette.query.clone(),
+            };
+            match crate::tui::command::parse(&to_parse) {
+                Ok(cmd) => {
+                    app.close_overlay();
+                    app.dispatch(cmd);
+                }
+                Err(e) => app.toasts.push(format!("{e}")),
+            }
+        }
+        KeyCode::Tab => {
+            if let Some(top) = suggestions.first() {
+                app.palette.query = top.spec.name.to_string();
+                app.palette.selected = 0;
+            }
+        }
+        KeyCode::Down => app.palette.move_selection(1, suggestions.len()),
+        KeyCode::Up => app.palette.move_selection(-1, suggestions.len()),
+        KeyCode::Backspace => {
+            app.palette.query.pop();
+            app.palette.selected = 0;
+        }
+        KeyCode::Char(c) => {
+            app.palette.query.push(c);
+            app.palette.selected = 0;
+        }
+        _ => {}
+    }
+}
+
+fn handle_key_search(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Esc => app.close_overlay(),
+        KeyCode::Enter => {
+            if let Some(&library_idx) = app.palette.search_hits.get(app.palette.selected) {
+                let _ = app.jump_to(library_idx);
+            }
+            app.close_overlay();
+        }
+        KeyCode::Down => {
+            let len = app.palette.search_hits.len();
+            app.palette.move_selection(1, len);
+        }
+        KeyCode::Up => {
+            let len = app.palette.search_hits.len();
+            app.palette.move_selection(-1, len);
         }
         KeyCode::Backspace => {
             app.palette.query.pop();
+            app.recompute_search_hits();
         }
-        KeyCode::Char(c) => app.palette.query.push(c),
+        KeyCode::Char(c) => {
+            app.palette.query.push(c);
+            app.recompute_search_hits();
+        }
         _ => {}
+    }
+}
+
+fn handle_key_follow(app: &mut App, key: KeyEvent) {
+    match app.palette.follow_stage {
+        FollowStage::AwaitingQuery | FollowStage::Searching => match key.code {
+            KeyCode::Esc => app.close_overlay(),
+            KeyCode::Enter => app.run_follow_search(),
+            KeyCode::Backspace => {
+                app.palette.query.pop();
+                app.palette.follow_error = None;
+            }
+            KeyCode::Char(c) => {
+                app.palette.query.push(c);
+                app.palette.follow_error = None;
+            }
+            _ => {}
+        },
+        FollowStage::Picking => match key.code {
+            KeyCode::Esc => app.close_overlay(),
+            KeyCode::Enter => app.confirm_follow(),
+            KeyCode::Down | KeyCode::Char('j') => {
+                let len = app.palette.follow_hits.len();
+                app.palette.move_selection(1, len);
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                let len = app.palette.follow_hits.len();
+                app.palette.move_selection(-1, len);
+            }
+            // Any other char resets to a new query (escape-hatch UX).
+            KeyCode::Char(_) => {
+                app.palette.follow_stage = FollowStage::AwaitingQuery;
+                app.palette.follow_hits.clear();
+            }
+            _ => {}
+        },
     }
 }
 
 fn handle_key_help(app: &mut App, key: KeyEvent) {
-    if matches!(key.code, KeyCode::Esc | KeyCode::Char('?') | KeyCode::Enter) {
-        app.overlay = Overlay::None;
+    if matches!(key.code, KeyCode::Esc | KeyCode::Char('?') | KeyCode::Enter | KeyCode::Char('q')) {
+        app.close_overlay();
     }
 }
 
@@ -161,77 +288,12 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result
     Ok(())
 }
 
+#[cfg(test)]
+mod integration_tests;
+
 /// Install a panic hook that restores the terminal before printing
 /// the panic. Without this, a panic mid-runloop leaves the user with
 /// a hosed terminal.
-fn action_watched(app: &mut App) {
-    let Some(s) = app.current() else { return };
-    let source = s.item.source.clone();
-    let source_id = s.item.source_id.clone();
-    let title = s.display_title().to_string();
-    let total = s.total();
-    let now = Utc::now().timestamp();
-    match app.db.increment_watch(&source, &source_id, total, now) {
-        Ok(seen) => {
-            app.library.set_progress(&source, &source_id, seen, now);
-            app.now = now;
-            app.refresh_buckets();
-            app.toasts
-                .push(format!("✓ Marked {title} — episode {seen} watched"));
-        }
-        Err(e) => app.toasts.push(format!("error: {e}")),
-    }
-}
-
-fn action_snooze(app: &mut App) {
-    if let Some(s) = app.current() {
-        app.toasts
-            .push(format!("▷ Snoozed {} to tomorrow (stub)", s.display_title()));
-    }
-}
-
-fn action_drop(app: &mut App) {
-    let Some(s) = app.current() else { return };
-    let source = s.item.source.clone();
-    let source_id = s.item.source_id.clone();
-    let title = s.display_title().to_string();
-    let now = Utc::now().timestamp();
-    match app.db.drop_follow(&source, &source_id, now) {
-        Ok(true) => {
-            app.library.shows.retain(|sh| {
-                !(sh.item.source == source && sh.item.source_id == source_id)
-            });
-            app.refresh_buckets();
-            app.toasts
-                .push(format!("✗ Dropped {title} — undo with `animesh follow --id`"));
-        }
-        Ok(false) => app.toasts.push("nothing to drop"),
-        Err(e) => app.toasts.push(format!("error: {e}")),
-    }
-}
-
-fn action_stream(app: &mut App) {
-    let Some(s) = app.current() else { return };
-    let title = s.display_title().to_string();
-    let url = s
-        .streaming
-        .iter()
-        .find_map(|l| l.url.clone())
-        .or_else(|| s.item.user_note.clone());
-    let Some(url) = url else {
-        app.toasts.push(format!(
-            "no streaming link cached for {title} — try `animesh sync`"
-        ));
-        return;
-    };
-    match open::that(&url) {
-        Ok(_) => app
-            .toasts
-            .push(format!("↗ Opening {title} — {url}")),
-        Err(e) => app.toasts.push(format!("open failed: {e}")),
-    }
-}
-
 fn install_panic_hook() {
     let original = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {

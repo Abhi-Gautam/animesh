@@ -16,7 +16,7 @@ mod embedded {
 
 /// Highest migration version this binary knows about. Bump alongside
 /// each `Vxxxx__*.sql` file added under `migrations/`.
-pub const MAX_KNOWN_VERSION: u32 = 2;
+pub const MAX_KNOWN_VERSION: u32 = 3;
 
 /// Owning wrapper around a rusqlite Connection. The only struct in the
 /// codebase that holds a `Connection`.
@@ -47,9 +47,7 @@ impl Db {
         Self::configure(&conn)?;
         let mut db = Self { conn };
         db.assert_compatible()?;
-        if db.schema_version()? == 0 {
-            db.run_migrations()?;
-        }
+        db.run_migrations()?;
         Ok(db)
     }
 

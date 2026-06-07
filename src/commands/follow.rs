@@ -1,41 +1,23 @@
-//! `animesh follow` — adds a show to the durable library.
+//! Follow operation — adds a show to the durable library.
 //!
-//! v0.3 ships the scripted `--id N` path. The interactive query
-//! flow (`animesh follow <query>`) lands with the picker module
-//! (T19–T21).
+//! Pure-ish execution path with all I/O dependencies injected. The
+//! TUI's `App::dispatch(Command::Follow(id))` calls this directly.
 
 use anyhow::{anyhow, Context, Result};
-use async_trait::async_trait;
-use chrono::Utc;
 
 use crate::{
     anilist::{AniListClient, Media},
-    commands::Command,
     errors::user_error,
-    store::{resolve_db_path, CacheEntry, Db, FollowOutcome, TtlConfig},
+    store::{CacheEntry, Db, FollowOutcome, TtlConfig},
 };
 
-pub struct FollowCommand {
-    id: i64,
-}
-
-impl FollowCommand {
-    pub fn new(id: i64) -> Self {
-        Self { id }
-    }
-}
-
 /// Result of `follow_inner` — the outcome and the show we resolved.
-/// Returned for testability and for the caller to render.
 #[derive(Debug)]
 pub struct FollowReport {
     pub outcome: FollowOutcome,
     pub media: Media,
 }
 
-/// Pure-ish execution path with all I/O dependencies injected. Tests
-/// build their own in-memory `Db` and a mockito-pointed `AniListClient`
-/// and drive this directly.
 pub async fn follow_inner(
     db: &mut Db,
     client: &AniListClient,
@@ -58,29 +40,105 @@ pub async fn follow_inner(
     db.upsert_cache(&CacheEntry::from_media(&media, &ttl, now))
         .context("upsert_cache after follow")?;
 
+    // Render the cover art whenever the row is missing one. This covers
+    // (a) brand-new follows, (b) re-follow after drop, (c) backfill of
+    // rows that pre-date this feature, and (d) retry after an offline
+    // first follow. Failures are silently swallowed.
+    let needs_cover = db
+        .find_by_source("anilist", &source_id)
+        .ok()
+        .flatten()
+        .map(|row| row.cover_ascii.is_none())
+        .unwrap_or(false);
+    if needs_cover {
+        if let Some(url) = media.cover_url() {
+            if let Ok(ascii) = fetch_and_render_cover(url).await {
+                let color = media
+                    .cover_image
+                    .as_ref()
+                    .and_then(|c| c.color.as_deref());
+                let _ = db.set_cover_ascii("anilist", &source_id, &ascii, color);
+            }
+        }
+    }
+
     Ok(FollowReport { outcome, media })
 }
 
-#[async_trait(?Send)]
-impl Command for FollowCommand {
-    async fn execute(&self) -> Result<()> {
-        let path = resolve_db_path()?;
-        let mut db = Db::open(&path)?;
-        let client = AniListClient::new();
-        let now = Utc::now().timestamp();
-        let report = follow_inner(&mut db, &client, self.id, now).await?;
-        let title = report.media.display_title();
-        let id = report.media.id;
-        let msg = match report.outcome {
-            FollowOutcome::NewlyFollowed => format!("Followed: {title} (id {id})"),
-            FollowOutcome::RestoredFromDrop => {
-                format!("Re-followed (was dropped): {title} (id {id})")
-            }
-            FollowOutcome::AlreadyFollowing => format!("Already following: {title} (id {id})"),
+/// Cover render target. Sized for the ~33%-wide detail pane on a
+/// standard 80-col terminal; scales gracefully on wider terminals via
+/// the Paragraph widget's natural left-alignment.
+const COVER_COLS: u32 = 14;
+const COVER_ROWS: u32 = 7;
+
+async fn fetch_and_render_cover(url: &str) -> Result<String> {
+    let bytes = reqwest::get(url)
+        .await
+        .context("fetch cover image")?
+        .bytes()
+        .await
+        .context("read cover bytes")?;
+    crate::tui::ascii_art::render_ascii(&bytes, COVER_COLS, COVER_ROWS)
+}
+
+/// Backfill cover art for every active follow whose stored ASCII is
+/// either missing or in a stale format (no `█` glyph = produced by an
+/// older renderer version). Run once at TUI startup so a code-side
+/// change to the renderer auto-refreshes existing rows without the
+/// user having to drop+re-follow.
+///
+/// Returns the count of rows refreshed. Per-row failures (offline,
+/// missing cover URL in cache) are silently skipped — the row stays
+/// NULL and will be retried on next launch.
+pub async fn refresh_stale_covers(db: &Db, client: &crate::anilist::AniListClient) -> usize {
+    use crate::store::ListFilter;
+    let Ok(items) = db.list_follows(ListFilter::Active) else {
+        return 0;
+    };
+    let mut refreshed = 0usize;
+    for item in items {
+        let is_stale = match item.cover_ascii.as_deref() {
+            None => true,
+            Some(s) => !s.starts_with(crate::tui::ascii_art::FORMAT_TAG),
         };
-        println!("{msg}");
-        Ok(())
+        if !is_stale {
+            continue;
+        }
+        // Prefer the cached URL; only call AniList by_id as a fallback.
+        let url_from_cache = db
+            .get_cache(&item.source, &item.source_id)
+            .ok()
+            .flatten()
+            .and_then(|c| c.cover_image_url);
+        let (url_opt, color_opt) = if let Some(u) = url_from_cache {
+            (Some(u), None)
+        } else {
+            match item.source_id.parse::<i64>() {
+                Ok(id) => match client.by_id(id).await {
+                    Ok(Some(media)) => {
+                        let url = media.cover_url().map(str::to_string);
+                        let color = media
+                            .cover_image
+                            .as_ref()
+                            .and_then(|c| c.color.clone());
+                        (url, color)
+                    }
+                    _ => (None, None),
+                },
+                Err(_) => (None, None),
+            }
+        };
+        let Some(url) = url_opt else { continue };
+        if let Ok(ascii) = fetch_and_render_cover(&url).await {
+            if db
+                .set_cover_ascii(&item.source, &item.source_id, &ascii, color_opt.as_deref())
+                .is_ok()
+            {
+                refreshed += 1;
+            }
+        }
     }
+    refreshed
 }
 
 #[cfg(test)]
@@ -122,7 +180,6 @@ mod tests {
         let cached = db.get_cache("anilist", "21").unwrap().unwrap();
         assert_eq!(cached.status.as_deref(), Some("RELEASING"));
         assert_eq!(cached.next_episode_number, Some(1100));
-        // Releasing TTL is 6h, so expires_at = fetched_at + 21600.
         assert_eq!(cached.expires_at - cached.fetched_at, 6 * 3600);
     }
 

@@ -5,32 +5,15 @@
 //! attempt/success/error so `doctor` can surface sync health.
 
 use anyhow::{Context, Result};
-use async_trait::async_trait;
-use chrono::Utc;
 
 use crate::{
     anilist::AniListClient,
-    commands::Command,
-    store::{resolve_db_path, CacheEntry, Db, ListFilter, TtlConfig},
+    store::{CacheEntry, Db, ListFilter, TtlConfig},
 };
 
 const KV_LAST_ATTEMPT: &str = "sync.last_attempt_at";
 const KV_LAST_SUCCESS: &str = "sync.last_success_at";
 const KV_LAST_ERROR: &str = "sync.last_error";
-
-pub struct SyncCommand;
-
-impl SyncCommand {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-impl Default for SyncCommand {
-    fn default() -> Self {
-        Self::new()
-    }
-}
 
 /// Per-item outcome of one sync pass.
 #[derive(Debug)]
@@ -95,31 +78,6 @@ pub async fn sync_inner(
         succeeded,
         failures,
     })
-}
-
-#[async_trait(?Send)]
-impl Command for SyncCommand {
-    async fn execute(&self) -> Result<()> {
-        let path = resolve_db_path()?;
-        let mut db = Db::open(&path)?;
-        let client = AniListClient::new();
-        let now = Utc::now().timestamp();
-        let report = sync_inner(&mut db, &client, now).await?;
-        println!(
-            "Sync: {}/{} refreshed{}",
-            report.succeeded,
-            report.total,
-            if report.failures.is_empty() {
-                "".to_string()
-            } else {
-                format!(", {} failed", report.failures.len())
-            }
-        );
-        for (sid, reason) in &report.failures {
-            eprintln!("  ! anilist:{sid} — {reason}");
-        }
-        Ok(())
-    }
 }
 
 #[cfg(test)]

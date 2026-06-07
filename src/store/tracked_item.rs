@@ -21,6 +21,8 @@ pub struct TrackedItem {
     pub followed_at: i64,
     pub dropped_at: Option<i64>,
     pub user_note: Option<String>,
+    pub cover_ascii: Option<String>,
+    pub cover_color: Option<String>,
 }
 
 impl TrackedItem {
@@ -34,6 +36,8 @@ impl TrackedItem {
             followed_at: row.get("followed_at")?,
             dropped_at: row.get("dropped_at")?,
             user_note: row.get("user_note")?,
+            cover_ascii: row.get("cover_ascii").ok(),
+            cover_color: row.get("cover_color").ok(),
         })
     }
 }
@@ -123,6 +127,26 @@ impl Db {
             )
             .context("drop_follow update")?;
         Ok(updated > 0)
+    }
+
+    /// Save the rendered ASCII cover + accent color for a followed
+    /// show. Idempotent: subsequent calls overwrite. No-op if the row
+    /// doesn't exist (no error — the only caller already follows first).
+    pub fn set_cover_ascii(
+        &self,
+        source: &str,
+        source_id: &str,
+        ascii: &str,
+        color: Option<&str>,
+    ) -> Result<()> {
+        self.conn()
+            .execute(
+                "UPDATE tracked_item SET cover_ascii = ?3, cover_color = ?4 \
+                 WHERE source = ?1 AND source_id = ?2",
+                params![source, source_id, ascii, color],
+            )
+            .context("set_cover_ascii")?;
+        Ok(())
     }
 
     /// Hard delete. Returns whether a row was removed.

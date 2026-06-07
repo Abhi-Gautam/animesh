@@ -81,6 +81,10 @@ impl Show {
             .as_ref()
             .and_then(|c| c.cover_image_url.as_deref())
     }
+
+    pub fn cover_ascii(&self) -> Option<&str> {
+        self.item.cover_ascii.as_deref()
+    }
 }
 
 pub struct Library {
