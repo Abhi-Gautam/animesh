@@ -71,8 +71,9 @@ pub fn run() -> Result<()> {
 
     let windows = Windows::from_env();
     let now = Utc::now().timestamp();
-    let shelf = Shelf::load(&facade, now, windows)?;
-    let app = App::new(facade, client, shelf, windows, now);
+    let subs = crate::tui::subs::Subs::load_arc(&facade)?;
+    let shelf = Shelf::load(&facade, now, windows, &subs)?;
+    let app = App::new(facade, client, shelf, windows, subs, now);
 
     let mut terminal = setup_terminal().context("setup terminal")?;
     install_panic_hook();
@@ -155,7 +156,7 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) {
         }
         Char('a') => app.open_palette(PaletteMode::Follow),
         Char('w') => app.dispatch(Command::Watched),
-        Char('s') => app.dispatch(Command::Snooze),
+        Char('c') => app.dispatch(Command::CopyContext),
         Char('d') => app.dispatch(Command::Drop),
         Char('g') => app.dispatch(Command::Stream),
         _ => {}
