@@ -28,6 +28,7 @@ open = "5"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 url = { version = "2", features = ["serde"] }
 toml = "0.8"
+arboard = "3"
 
 [dev-dependencies]
 tokio-test = "0.4"

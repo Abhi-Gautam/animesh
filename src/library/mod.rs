@@ -241,6 +241,24 @@ impl Library {
         db.kv_delete(key)
     }
 
+    /// Persisted streamer subscriptions (canonical-lowercase strings).
+    /// Backed by kv key `subs.streaming` (JSON array). Empty when unset.
+    pub fn subscribed_streamers(&self) -> Result<Vec<String>> {
+        let Some(raw) = self.kv_get("subs.streaming")? else {
+            return Ok(Vec::new());
+        };
+        Ok(serde_json::from_str(&raw).unwrap_or_default())
+    }
+
+    /// Overwrite the streamer subscription list. Empty input clears the key.
+    pub fn set_subscribed_streamers(&self, streamers: &[String]) -> Result<()> {
+        if streamers.is_empty() {
+            return self.kv_delete("subs.streaming");
+        }
+        let json = serde_json::to_string(streamers).context("encode subs")?;
+        self.kv_set("subs.streaming", &json)
+    }
+
     // ------------------------------------------------------------------
     // Canonicalization cache (used by the canonical service)
     // ------------------------------------------------------------------
@@ -513,5 +531,25 @@ mod tests {
         assert_eq!(lib.count_followed().unwrap(), 3);
         lib.drop_canonical(&id("b")).unwrap();
         assert_eq!(lib.count_followed().unwrap(), 2);
+    }
+
+    #[test]
+    fn subscribed_streamers_roundtrip() {
+        let lib = Library::open_in_memory(Arc::new(FixedClock(1))).unwrap();
+        assert!(lib.subscribed_streamers().unwrap().is_empty());
+        lib.set_subscribed_streamers(&["Netflix".to_string(), "Crunchyroll".to_string()])
+            .unwrap();
+        assert_eq!(
+            lib.subscribed_streamers().unwrap(),
+            vec!["Netflix".to_string(), "Crunchyroll".to_string()]
+        );
+    }
+
+    #[test]
+    fn subscribed_streamers_clears_when_empty() {
+        let lib = Library::open_in_memory(Arc::new(FixedClock(1))).unwrap();
+        lib.set_subscribed_streamers(&["Netflix".to_string()]).unwrap();
+        lib.set_subscribed_streamers(&[]).unwrap();
+        assert!(lib.subscribed_streamers().unwrap().is_empty());
     }
 }
