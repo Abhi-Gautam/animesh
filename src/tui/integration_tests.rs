@@ -315,3 +315,100 @@ fn colon_drop_enter_removes_show_from_shelf() {
     let row = app.facade.find_canonical(&cid).unwrap().unwrap();
     assert!(row.dropped_at.is_some(), "canonical_release.dropped_at set");
 }
+
+// ---------- Manifesto-behavior tests (T11) ----------
+
+use crate::tui::app::{PANE_DROPPING, PANE_FOLLOWING, PANE_PLAYABLE};
+use crate::tui::command::Command;
+
+/// Helper: follow a show and return its CanonicalId.
+fn follow_anime(facade: &Facade, source_id: &str, title: &str) -> CanonicalId {
+    let cid = CanonicalId::legacy_from_source(ReleaseKind::Anime, "anilist", source_id);
+    facade
+        .follow_with_source(
+            &cid,
+            ReleaseKind::Anime,
+            title,
+            "anilist",
+            source_id,
+            Some(title),
+            1.0,
+        )
+        .unwrap();
+    cid
+}
+
+#[test]
+fn verified_subscribed_show_lands_in_playable() {
+    let now = 1_700_000_000;
+    let facade = Arc::new(Facade::open_in_memory(Arc::new(FixedClock(now))).unwrap());
+    let cid = follow_anime(&facade, "1", "Frieren");
+    facade
+        .engage(
+            &cid,
+            EngagementEvent::Verified,
+            Some(r#"{"streamer":"Crunchyroll","url":"https://crunchyroll.com/x"}"#),
+        )
+        .unwrap();
+    let mut subs = Subs::default();
+    subs.add(&facade, "Crunchyroll").unwrap();
+    let windows = Windows::DEFAULT;
+    let shelf = Shelf::load(&facade, now, windows, &subs).unwrap();
+    let app = App::new(facade, AniListClient::new(), shelf, windows, subs, now);
+    assert_eq!(app.items_in(PANE_PLAYABLE).len(), 1);
+    assert_eq!(app.items_in(PANE_DROPPING).len(), 0);
+    assert_eq!(app.items_in(PANE_FOLLOWING).len(), 0);
+}
+
+#[test]
+fn verified_unsubscribed_show_is_following_not_playable() {
+    // Verified on Apple TV, but user doesn't subscribe to Apple TV.
+    // Per the manifesto: catalogued but not playable — dim row in
+    // Following, not promoted to Playable.
+    let now = 1_700_000_000;
+    let facade = Arc::new(Facade::open_in_memory(Arc::new(FixedClock(now))).unwrap());
+    let cid = follow_anime(&facade, "42", "Severance");
+    facade
+        .engage(
+            &cid,
+            EngagementEvent::Verified,
+            Some(r#"{"streamer":"Apple TV","url":"https://tv.apple.com/x"}"#),
+        )
+        .unwrap();
+    let subs = Subs::default(); // none subscribed
+    let windows = Windows::DEFAULT;
+    let shelf = Shelf::load(&facade, now, windows, &subs).unwrap();
+    let app = App::new(facade, AniListClient::new(), shelf, windows, subs, now);
+    assert_eq!(app.items_in(PANE_PLAYABLE).len(), 0);
+    assert_eq!(app.items_in(PANE_FOLLOWING).len(), 1);
+}
+
+#[test]
+fn copy_context_builds_well_formed_json() {
+    let now = 1_700_000_000;
+    let facade = Arc::new(Facade::open_in_memory(Arc::new(FixedClock(now))).unwrap());
+    let _cid = follow_anime(&facade, "1", "Frieren");
+    let subs = Subs::default();
+    let shelf = Shelf::load(&facade, now, Windows::DEFAULT, &subs).unwrap();
+    let show = shelf
+        .shows
+        .first()
+        .expect("one show in shelf after follow");
+    let v = crate::tui::llm_context::build(&facade, show).unwrap();
+    assert_eq!(v["title"], "Frieren");
+    assert_eq!(v["kind"], "anime");
+    let refs = v["refs"].as_array().expect("refs is array");
+    assert!(!refs.is_empty(), "follow attaches a source_ref");
+    assert_eq!(refs[0]["source"], "anilist");
+    assert_eq!(refs[0]["source_id"], "1");
+}
+
+#[test]
+fn subs_add_remove_via_command() {
+    let mut app = empty_app(1_700_000_000);
+    app.dispatch(Command::SubsAdd("Netflix".into()));
+    assert!(app.subs.matches("netflix"));
+    assert!(app.subs.matches("NETFLIX"), "match is case-insensitive");
+    app.dispatch(Command::SubsRemove("Netflix".into()));
+    assert!(!app.subs.matches("netflix"));
+}
