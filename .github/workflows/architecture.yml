@@ -1,0 +1,72 @@
+name: Architecture
+
+# Enforces the layering rules documented in src/library/mod.rs and
+# src/sources/mod.rs:
+#
+#   * `rusqlite::` may only appear in src/store/ and src/ids.rs
+#     (the latter for ToSql/FromSql trait impls only — value-type
+#     boundary, not query code).
+#   * `reqwest::` may only appear in src/sources/, src/llm/,
+#     src/notifier/, and src/errors.rs (the last for one
+#     reqwest::Error type-check).
+#   * crate::store::Db may only be imported by src/library/ and
+#     src/store/. Everything else must go through Library.
+#
+# These rules are mechanically observable. If they ever drift, the
+# fix should be moving the violation back into its layer, not
+# weakening this check.
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+
+jobs:
+  layering:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: rusqlite must stay inside src/store/ and src/ids.rs
+        run: |
+          set -euo pipefail
+          # grep -r exits 1 on no match — which is the success case
+          # here. Wrap so the workflow only fails on actual matches.
+          if grep -rn --include='*.rs' 'rusqlite::' src \
+              | grep -v '^src/store/' \
+              | grep -v '^src/ids.rs:' ; then
+            echo "::error::rusqlite:: used outside src/store/ and src/ids.rs"
+            exit 1
+          fi
+          echo "rusqlite layering: OK"
+
+      - name: reqwest must stay inside src/sources/, src/llm/, src/notifier/
+        run: |
+          set -euo pipefail
+          if grep -rn --include='*.rs' 'reqwest::' src \
+              | grep -v '^src/sources/' \
+              | grep -v '^src/llm/' \
+              | grep -v '^src/notifier/' \
+              | grep -v '^src/errors.rs:' ; then
+            # errors.rs is allowed to reference reqwest::Error for
+            # error classification only.
+            echo "::error::reqwest:: used outside src/sources/, src/llm/, src/notifier/, src/errors.rs"
+            exit 1
+          fi
+          echo "reqwest layering: OK"
+
+      - name: Library must be the only owner of Db inside the crate
+        run: |
+          set -euo pipefail
+          # Matches both `use crate::store::Db` and `use crate::store::{Db, ...}`
+          # forms by looking for `Db` as a whole word in any import or
+          # qualified reference rooted at `crate::store`.
+          if grep -rnE --include='*.rs' '\bcrate::store::[^;]*\bDb\b' src \
+              | grep -v '^src/library/' \
+              | grep -v '^src/store/' ; then
+            echo "::error::Db referenced outside src/library/ + src/store/"
+            echo "::error::All business logic must go through Library, not Db directly."
+            exit 1
+          fi
+          echo "Library facade rule: OK"

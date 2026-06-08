@@ -8,7 +8,7 @@
 //! The `mode` discriminator lets one render path handle all three with
 //! different headers, candidates, and Enter wiring.
 
-use crate::anilist::Media;
+use crate::sources::anilist::Media;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PaletteMode {

@@ -36,11 +36,15 @@ use crossterm::{
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
 
-use crate::anilist::AniListClient;
-use crate::store::{resolve_db_path, Db};
+use std::sync::Arc;
+
+use crate::library::Library as Facade;
+use crate::sources::anilist::AniListClient;
+use crate::store::resolve_db_path;
+use crate::time::SystemClock;
 use crate::tui::app::{App, Overlay};
 use crate::tui::command::Command;
-use crate::tui::model::Library;
+use crate::tui::model::Shelf;
 use crate::tui::palette::{FollowStage, PaletteMode};
 use crate::tui::pane::Windows;
 
@@ -51,22 +55,22 @@ const TICK_INTERVAL: Duration = Duration::from_secs(30);
 /// with no subcommand.
 pub fn run() -> Result<()> {
     let path = resolve_db_path()?;
-    let db = Db::open(&path)?;
     let client = AniListClient::new();
+    let facade = Arc::new(Facade::open(&path, Arc::new(SystemClock))?);
 
     // Backfill cover art for any follow with a missing or stale render.
     // Blocks startup briefly (≈300ms × N stale rows) but only fires on
     // the first launch after a renderer change.
     tokio::task::block_in_place(|| {
         tokio::runtime::Handle::current().block_on(
-            crate::commands::follow::refresh_stale_covers(&db, &client),
+            crate::commands::follow::refresh_stale_covers(&facade, &client),
         )
     });
 
     let windows = Windows::from_env();
     let now = Utc::now().timestamp();
-    let library = Library::load(&db, now, windows)?;
-    let app = App::new(db, client, library, windows, now);
+    let shelf = Shelf::load(&facade, now, windows)?;
+    let app = App::new(facade, client, shelf, windows, now);
 
     let mut terminal = setup_terminal().context("setup terminal")?;
     install_panic_hook();

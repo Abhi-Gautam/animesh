@@ -1,17 +1,22 @@
 //! Synthetic-key integration tests for the TUI state machine.
 //!
 //! These don't touch a real terminal — they drive `handle_key` directly
-//! against an in-memory `Db`. They exist because the original `:` →
-//! Enter bug slipped past unit tests: the verb registry compiled, the
-//! palette compiled, but the wire between them was a `// stub` comment.
-//! These tests verify the wire.
+//! against an in-memory [`Facade`]. They exist because the original `:`
+//! → Enter bug slipped past unit tests: the verb registry compiled,
+//! the palette compiled, but the wire between them was a `// stub`
+//! comment. These tests verify the wire.
+
+use std::sync::Arc;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::anilist::AniListClient;
-use crate::store::{CacheEntry, Db};
+use crate::ids::{CanonicalId, ReleaseKind};
+use crate::library::Library as Facade;
+use crate::sources::anilist::AniListClient;
+use crate::store::CacheEntry;
+use crate::time::FixedClock;
 use crate::tui::app::{App, Overlay};
-use crate::tui::model::Library;
+use crate::tui::model::Shelf;
 use crate::tui::pane::Windows;
 use crate::tui::palette::PaletteMode;
 
@@ -32,8 +37,18 @@ fn type_str(app: &mut App, s: &str) {
 /// Build an App with one followed show airing in 1h (lands in Today
 /// pane, so the default focused pane has a selection ready to act on).
 fn app_with_one_show(now: i64) -> App {
-    let mut db = Db::open_in_memory().unwrap();
-    db.add_follow("anilist", "21", "anime", "One Piece", now - 100)
+    let facade = Arc::new(Facade::open_in_memory(Arc::new(FixedClock(now))).unwrap());
+    let cid = CanonicalId::legacy_from_source(ReleaseKind::Anime, "anilist", "21");
+    facade
+        .follow_with_source(
+            &cid,
+            ReleaseKind::Anime,
+            "One Piece",
+            "anilist",
+            "21",
+            Some("One Piece"),
+            1.0,
+        )
         .unwrap();
     let cache = CacheEntry {
         source: "anilist".into(),
@@ -54,19 +69,19 @@ fn app_with_one_show(now: i64) -> App {
         studios: None,
         streaming_links_json: None,
     };
-    db.upsert_cache(&cache).unwrap();
+    facade.upsert_cache(&cache).unwrap();
     let windows = Windows::from_env();
-    let library = Library::load(&db, now, windows).unwrap();
+    let shelf = Shelf::load(&facade, now, windows).unwrap();
     let client = AniListClient::new();
-    App::new(db, client, library, windows, now)
+    App::new(facade, client, shelf, windows, now)
 }
 
 fn empty_app(now: i64) -> App {
-    let db = Db::open_in_memory().unwrap();
+    let facade = Arc::new(Facade::open_in_memory(Arc::new(FixedClock(now))).unwrap());
     let windows = Windows::from_env();
-    let library = Library::load(&db, now, windows).unwrap();
+    let shelf = Shelf::load(&facade, now, windows).unwrap();
     let client = AniListClient::new();
-    App::new(db, client, library, windows, now)
+    App::new(facade, client, shelf, windows, now)
 }
 
 // ---------- Command mode (`:`) ----------
@@ -85,9 +100,9 @@ fn colon_watched_enter_increments_progress_and_pushes_toast() {
     let now = 1_700_000_000;
     let mut app = app_with_one_show(now);
     // Pre-condition: 0 watched, show in Today.
-    assert_eq!(app.library.shows[0].seen(), 0);
+    assert_eq!(app.shelf.shows[0].seen(), 0);
     assert!(matches!(
-        app.library.shows[0].pane,
+        app.shelf.shows[0].pane,
         Some(crate::tui::pane::Pane::Today)
     ));
 
@@ -96,10 +111,22 @@ fn colon_watched_enter_increments_progress_and_pushes_toast() {
     super::handle_key(&mut app, key(KeyCode::Enter));
 
     assert_eq!(app.overlay, Overlay::None, "overlay closes after Enter");
-    assert_eq!(app.library.shows[0].seen(), 1, "watched should increment");
+    assert_eq!(app.shelf.shows[0].seen(), 1, "watched should increment");
     let toast = app.toasts.visible().unwrap_or("");
     assert!(toast.contains("Marked"), "toast was: {toast:?}");
     assert!(toast.contains("One Piece"), "toast was: {toast:?}");
+
+    // Durable: the engagement event was appended.
+    let last = app
+        .facade
+        .last_engagement(
+            &CanonicalId::legacy_from_source(ReleaseKind::Anime, "anilist", "21"),
+            crate::store::EngagementEvent::Completed,
+        )
+        .unwrap()
+        .expect("engagement was persisted");
+    let meta = last.meta.expect("seen meta JSON");
+    assert!(meta.contains("\"seen\":1"), "meta was: {meta}");
 }
 
 #[test]
@@ -110,7 +137,7 @@ fn colon_alias_w_works_same_as_watched() {
     super::handle_key(&mut app, char_key(':'));
     type_str(&mut app, "w");
     super::handle_key(&mut app, key(KeyCode::Enter));
-    assert_eq!(app.library.shows[0].seen(), 1);
+    assert_eq!(app.shelf.shows[0].seen(), 1);
 }
 
 #[test]
@@ -132,7 +159,7 @@ fn colon_unknown_verb_shows_error_toast_and_stays_safe() {
     assert!(toast.contains("unknown command"), "toast was: {toast:?}");
     assert!(!app.quit);
     // Critical: state didn't drift.
-    assert_eq!(app.library.shows[0].seen(), 0);
+    assert_eq!(app.shelf.shows[0].seen(), 0);
 }
 
 #[test]
@@ -151,7 +178,7 @@ fn colon_enter_on_empty_query_runs_selected_suggestion() {
     let mut app = app_with_one_show(1_700_000_000);
     super::handle_key(&mut app, char_key(':'));
     super::handle_key(&mut app, key(KeyCode::Enter));
-    assert_eq!(app.library.shows[0].seen(), 1);
+    assert_eq!(app.shelf.shows[0].seen(), 1);
 }
 
 #[test]
@@ -161,13 +188,13 @@ fn keymap_w_and_colon_watched_take_same_path() {
 
     let mut a = app_with_one_show(now);
     super::handle_key(&mut a, char_key('w'));
-    let after_w = a.library.shows[0].seen();
+    let after_w = a.shelf.shows[0].seen();
 
     let mut b = app_with_one_show(now);
     super::handle_key(&mut b, char_key(':'));
     type_str(&mut b, "watched");
     super::handle_key(&mut b, key(KeyCode::Enter));
-    let after_palette = b.library.shows[0].seen();
+    let after_palette = b.shelf.shows[0].seen();
 
     assert_eq!(after_w, after_palette);
     assert_eq!(after_w, 1);
@@ -259,12 +286,17 @@ fn empty_library_ignores_navigation_keys() {
 // ---------- Drop ----------
 
 #[test]
-fn colon_drop_enter_removes_show_from_library() {
+fn colon_drop_enter_removes_show_from_shelf() {
     let mut app = app_with_one_show(1_700_000_000);
-    assert_eq!(app.library.shows.len(), 1);
+    assert_eq!(app.shelf.shows.len(), 1);
     super::handle_key(&mut app, char_key(':'));
     type_str(&mut app, "drop");
     super::handle_key(&mut app, key(KeyCode::Enter));
-    assert_eq!(app.library.shows.len(), 0);
+    assert_eq!(app.shelf.shows.len(), 0);
     assert!(app.is_first_run(), "dropping last show re-enters first-run");
+
+    // Durable: the canonical_release was dropped.
+    let cid = CanonicalId::legacy_from_source(ReleaseKind::Anime, "anilist", "21");
+    let row = app.facade.find_canonical(&cid).unwrap().unwrap();
+    assert!(row.dropped_at.is_some(), "canonical_release.dropped_at set");
 }

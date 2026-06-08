@@ -1,5 +1,14 @@
-pub mod anilist;
+pub mod canonical;
 pub mod commands;
+pub mod config;
+pub mod context;
 pub mod errors;
+pub mod ids;
+pub mod library;
+pub mod llm;
+pub mod notifier;
+pub mod sources;
 pub mod store;
+pub mod sync;
+pub mod time;
 pub mod tui;

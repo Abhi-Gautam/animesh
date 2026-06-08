@@ -1,29 +1,53 @@
-//! In-memory view model the TUI renders from.
+//! In-memory view-model the TUI renders from.
 //!
-//! `Library::load(db, now, windows)` reads every active follow + its
-//! cache + its watch progress and produces one `Show` per item. Panes
-//! are derived (not persisted) by calling `bucket()` per show.
+//! `Shelf::load(facade, now, windows)` reads every active follow from
+//! the [`Library`] facade, joins each with its attached source_ref +
+//! cache + latest "completed" engagement, and bucketizes per pane.
+//!
+//! Renamed from the v0.4 `Library` to disambiguate from the durable
+//! [`crate::library::Library`] facade. This shelf is rebuilt every
+//! time the durable state mutates (follow, drop, watched, sync).
 
 use anyhow::Result;
 use serde::Deserialize;
 
-use crate::store::{CacheEntry, Db, ListFilter, TrackedItem, WatchProgress};
+use crate::ids::CanonicalId;
+use crate::library::Library as Facade;
+use crate::store::{
+    CacheEntry, CanonicalRelease, Engagement, EngagementEvent, SourceRef,
+};
 use crate::tui::pane::{bucket, BucketInputs, Pane, Windows};
 
 #[derive(Debug, Clone)]
 pub struct Show {
-    pub item: TrackedItem,
+    /// Durable canonical row. Replaces the v0.4 `TrackedItem`.
+    pub canonical: CanonicalRelease,
+    /// First attached source_ref (highest confidence). Used for cache
+    /// lookups and the legacy display of `(source, source_id)` pairs.
+    /// Required: a followed canonical always has at least one
+    /// source_ref by `follow_with_source`'s invariant.
+    pub primary_source: SourceRef,
     pub cache: Option<CacheEntry>,
-    pub progress: Option<WatchProgress>,
+    /// Most recent `Completed` engagement event for this canonical.
+    /// `seen` derives from its `meta.seen` JSON.
+    pub last_completed: Option<Engagement>,
     pub pane: Option<Pane>,
     /// Parsed streaming links (if cached).
     pub streaming: Vec<StreamingLink>,
 }
 
+/// Tolerant streaming-link shape. The cache JSON might come from one of
+/// two writers — the legacy v0.4 `MediaExternalLink` (with `color` and
+/// `type` fields) or the v0.5 [`crate::sources::StreamingLink`]
+/// (just `site` and `url`). Both deserialize cleanly into this shape
+/// because every field is optional with serde default.
 #[derive(Debug, Clone, Deserialize)]
 pub struct StreamingLink {
+    #[serde(default)]
     pub site: Option<String>,
+    #[serde(default)]
     pub url: Option<String>,
+    #[serde(default)]
     pub color: Option<String>,
     #[serde(default, rename = "type")]
     pub link_type: Option<String>,
@@ -31,7 +55,17 @@ pub struct StreamingLink {
 
 impl Show {
     pub fn seen(&self) -> i64 {
-        self.progress.as_ref().map(|p| p.seen).unwrap_or(0)
+        let Some(ev) = &self.last_completed else {
+            return 0;
+        };
+        let Some(meta) = &ev.meta else {
+            return 0;
+        };
+        // meta is JSON `{"seen": N}`. Anything else → 0.
+        serde_json::from_str::<serde_json::Value>(meta)
+            .ok()
+            .and_then(|v| v.get("seen").and_then(|s| s.as_i64()))
+            .unwrap_or(0)
     }
 
     pub fn total(&self) -> Option<i64> {
@@ -47,7 +81,23 @@ impl Show {
     }
 
     pub fn display_title(&self) -> &str {
-        &self.item.display_title
+        &self.canonical.display_title
+    }
+
+    pub fn canonical_id(&self) -> &CanonicalId {
+        &self.canonical.id
+    }
+
+    pub fn source(&self) -> &str {
+        &self.primary_source.source
+    }
+
+    pub fn source_id(&self) -> &str {
+        &self.primary_source.source_id
+    }
+
+    pub fn user_note(&self) -> Option<&str> {
+        self.canonical.user_note.as_deref()
     }
 
     pub fn romaji(&self) -> Option<&str> {
@@ -83,30 +133,39 @@ impl Show {
     }
 
     pub fn cover_ascii(&self) -> Option<&str> {
-        self.item.cover_ascii.as_deref()
+        self.canonical.cover_ascii.as_deref()
     }
 }
 
-pub struct Library {
+pub struct Shelf {
     pub shows: Vec<Show>,
 }
 
-impl Library {
-    pub fn load(db: &Db, now: i64, windows: Windows) -> Result<Self> {
-        let items = db.list_follows(ListFilter::Active)?;
-        let mut shows = Vec::with_capacity(items.len());
-        for item in items {
-            let cache = db.get_cache(&item.source, &item.source_id)?;
-            let progress = db.get_watch(&item.source, &item.source_id)?;
+impl Shelf {
+    /// Build the view-model from the durable state. Canonicals with no
+    /// attached source_ref are silently skipped — they shouldn't exist
+    /// in practice (every followed canonical attaches one at follow
+    /// time) but we don't want a misshapen row to crash the TUI.
+    pub fn load(facade: &Facade, now: i64, windows: Windows) -> Result<Self> {
+        let canonicals = facade.followed()?;
+        let mut shows = Vec::with_capacity(canonicals.len());
+        for canonical in canonicals {
+            let refs = facade.source_refs_for(&canonical.id)?;
+            let Some(primary_source) = refs.into_iter().next() else {
+                continue;
+            };
+            let cache = facade.get_cache(&primary_source.source, &primary_source.source_id)?;
+            let last_completed = facade.last_engagement(&canonical.id, EngagementEvent::Completed)?;
             let streaming: Vec<StreamingLink> = cache
                 .as_ref()
                 .and_then(|c| c.streaming_links_json.as_deref())
                 .and_then(|j| serde_json::from_str::<Vec<StreamingLink>>(j).ok())
                 .unwrap_or_default();
             let mut show = Show {
-                item,
+                canonical,
+                primary_source,
                 cache,
-                progress,
+                last_completed,
                 pane: None,
                 streaming,
             };
@@ -124,13 +183,22 @@ impl Library {
         }
     }
 
-    /// Replace progress for one show in-memory (mirror of a store mutation).
-    pub fn set_progress(&mut self, source: &str, source_id: &str, seen: i64, now: i64) {
+    /// Replace progress for one show in-memory (mirror of a durable
+    /// `engage(Completed, …)` write). Synthesizes an in-memory
+    /// engagement so `seen()` reflects the new value without a reload.
+    pub fn set_progress(&mut self, canonical_id: &CanonicalId, seen: i64, now: i64) {
         for s in &mut self.shows {
-            if s.item.source == source && s.item.source_id == source_id {
-                s.progress = Some(WatchProgress {
-                    seen,
-                    updated_at: now,
+            if &s.canonical.id == canonical_id {
+                s.last_completed = Some(Engagement {
+                    // id=0 is the sentinel for "in-memory, never
+                    // persisted with this id" — only set_progress
+                    // creates these. A reload via Shelf::load
+                    // overwrites with the real row.
+                    id: 0,
+                    canonical_id: canonical_id.clone(),
+                    event: EngagementEvent::Completed,
+                    occurred_at: now,
+                    meta: Some(format!("{{\"seen\":{seen}}}")),
                 });
             }
         }

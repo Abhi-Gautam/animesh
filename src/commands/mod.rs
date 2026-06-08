@@ -5,5 +5,8 @@
 //! the only surface, the wrappers were deleted; the inner functions
 //! remain because the TUI's `App::dispatch` calls them directly.
 
+pub mod context;
 pub mod follow;
+pub mod probe;
+pub mod sub;
 pub mod sync;

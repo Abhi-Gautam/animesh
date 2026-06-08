@@ -62,7 +62,7 @@ pub fn render(f: &mut Frame, app: &App) {
 }
 
 fn render_status_line(f: &mut Frame, app: &App, area: Rect) {
-    let active = app.library.shows.len();
+    let active = app.shelf.shows.len();
     let late = app.items_in(crate::tui::app::PANE_LATE).len();
     let clock = Local
         .timestamp_opt(app.now, 0)
@@ -471,7 +471,7 @@ fn render_search_palette(f: &mut Frame, app: &App, area: Rect) {
         )));
     } else {
         for (i, &idx) in app.palette.search_hits.iter().enumerate().take(12) {
-            let s = &app.library.shows[idx];
+            let s = &app.shelf.shows[idx];
             let selected = i == app.palette.selected;
             let arrow = Span::styled(
                 if selected { "▸ " } else { "  " },

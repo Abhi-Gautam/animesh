@@ -5,17 +5,24 @@
 //! it, so they can never drift apart. Async verbs (`:sync`, `:follow`)
 //! `block_in_place` on the current tokio runtime — main constructs a
 //! multi-thread runtime so this is sound.
+//!
+//! v0.5: the App holds an `Arc<Facade>` (the durable [`Library`])
+//! and no direct `Db`. Every read/write goes through Library; the
+//! TUI never touches SQL.
+
+use std::sync::Arc;
 
 use anyhow::Result;
 use chrono::Utc;
 use tokio::runtime::Handle;
 
-use crate::anilist::AniListClient;
 use crate::commands::follow::follow_inner;
 use crate::commands::sync::sync_inner;
-use crate::store::{Db, FollowOutcome};
+use crate::library::Library as Facade;
+use crate::sources::anilist::AniListClient;
+use crate::store::{CanonicalFollowOutcome, EngagementEvent};
 use crate::tui::command::Command;
-use crate::tui::model::Library;
+use crate::tui::model::Shelf;
 use crate::tui::palette::{FollowStage, PaletteMode, PaletteState};
 use crate::tui::pane::{Pane, Windows};
 use crate::tui::toast::ToastQueue;
@@ -43,9 +50,9 @@ pub const PANE_LABELS: [&str; 3] = ["TODAY", "LATE · UNWATCHED", "BACKLOG"];
 pub const PANE_KINDS: [Pane; 3] = [Pane::Today, Pane::Late, Pane::Backlog { behind: 0 }];
 
 pub struct App {
-    pub db: Db,
+    pub facade: Arc<Facade>,
     pub client: AniListClient,
-    pub library: Library,
+    pub shelf: Shelf,
     pub focused_pane: usize,
     /// Per-pane cursor; remembered across pane switches.
     pub selection: [usize; 3],
@@ -59,11 +66,17 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(db: Db, client: AniListClient, library: Library, windows: Windows, now: i64) -> Self {
+    pub fn new(
+        facade: Arc<Facade>,
+        client: AniListClient,
+        shelf: Shelf,
+        windows: Windows,
+        now: i64,
+    ) -> Self {
         Self {
-            db,
+            facade,
             client,
-            library,
+            shelf,
             focused_pane: PANE_TODAY,
             selection: [0; 3],
             overlay: Overlay::None,
@@ -81,7 +94,7 @@ impl App {
 
     pub fn items_in(&self, pane: usize) -> Vec<&crate::tui::model::Show> {
         let pane_kind = PANE_KINDS[pane];
-        self.library
+        self.shelf
             .shows
             .iter()
             .filter(move |s| match (pane_kind, s.pane) {
@@ -123,7 +136,7 @@ impl App {
 
     /// Called on the 30s tick (and after any state-changing action).
     pub fn refresh_buckets(&mut self) {
-        self.library.recompute_panes(self.now, self.windows);
+        self.shelf.recompute_panes(self.now, self.windows);
         for i in 0..3 {
             let n = self.items_in(i).len();
             if self.selection[i] >= n {
@@ -132,9 +145,9 @@ impl App {
         }
     }
 
-    /// Library is empty → render the onboarding empty state.
+    /// Shelf is empty → render the onboarding empty state.
     pub fn is_first_run(&self) -> bool {
-        self.library.shows.is_empty()
+        self.shelf.shows.is_empty()
     }
 
     /// Single dispatch entry point. Pressing `w` calls
@@ -164,18 +177,26 @@ impl App {
             self.toasts.push("nothing selected");
             return;
         };
-        let source = s.item.source.clone();
-        let source_id = s.item.source_id.clone();
+        let canonical_id = s.canonical_id().clone();
         let title = s.display_title().to_string();
         let total = s.total();
+        let prev_seen = s.seen();
         let now = Utc::now().timestamp();
-        match self.db.increment_watch(&source, &source_id, total, now) {
-            Ok(seen) => {
-                self.library.set_progress(&source, &source_id, seen, now);
+        let new_seen = match total {
+            Some(t) if prev_seen + 1 > t => t,
+            _ => prev_seen + 1,
+        };
+        let meta = format!("{{\"seen\":{new_seen}}}");
+        match self
+            .facade
+            .engage(&canonical_id, EngagementEvent::Completed, Some(&meta))
+        {
+            Ok(()) => {
+                self.shelf.set_progress(&canonical_id, new_seen, now);
                 self.now = now;
                 self.refresh_buckets();
                 self.toasts
-                    .push(format!("✓ Marked {title} — episode {seen} watched"));
+                    .push(format!("✓ Marked {title} — episode {new_seen} watched"));
             }
             Err(e) => self.toasts.push(format!("error: {e}")),
         }
@@ -195,15 +216,14 @@ impl App {
             self.toasts.push("nothing selected");
             return;
         };
-        let source = s.item.source.clone();
-        let source_id = s.item.source_id.clone();
+        let canonical_id = s.canonical_id().clone();
         let title = s.display_title().to_string();
-        let now = Utc::now().timestamp();
-        match self.db.drop_follow(&source, &source_id, now) {
+        let source_id = s.source_id().to_string();
+        match self.facade.drop_canonical(&canonical_id) {
             Ok(true) => {
-                self.library
+                self.shelf
                     .shows
-                    .retain(|sh| !(sh.item.source == source && sh.item.source_id == source_id));
+                    .retain(|sh| sh.canonical.id != canonical_id);
                 self.refresh_buckets();
                 self.toasts
                     .push(format!("✗ Dropped {title} — undo with `:follow {source_id}`"));
@@ -223,7 +243,7 @@ impl App {
             .streaming
             .iter()
             .find_map(|l| l.url.clone())
-            .or_else(|| s.item.user_note.clone());
+            .or_else(|| s.user_note().map(str::to_string));
         let Some(url) = url else {
             self.toasts.push(format!(
                 "no streaming link cached for {title} — try `:sync`"
@@ -239,18 +259,26 @@ impl App {
     fn do_follow(&mut self, id: i64) {
         let now = Utc::now().timestamp();
         let result = tokio::task::block_in_place(|| {
-            Handle::current().block_on(follow_inner(&mut self.db, &self.client, id, now))
+            Handle::current().block_on(follow_inner(&self.facade, &self.client, id, now))
         });
         match result {
             Ok(report) => {
                 let title = report.media.display_title().to_string();
                 let msg = match report.outcome {
-                    FollowOutcome::NewlyFollowed => format!("✓ Followed {title}"),
-                    FollowOutcome::RestoredFromDrop => format!("↻ Restored {title}"),
-                    FollowOutcome::AlreadyFollowing => format!("already following {title}"),
+                    CanonicalFollowOutcome::NewlyFollowed => format!("✓ Followed {title}"),
+                    CanonicalFollowOutcome::RestoredFromDrop => format!("↻ Restored {title}"),
+                    CanonicalFollowOutcome::AlreadyFollowing => {
+                        format!("already following {title}")
+                    }
+                    // follow_with_source upserts the canonical first, so
+                    // NotFound should be impossible here. Surface it as
+                    // a clear error rather than silently swallowing.
+                    CanonicalFollowOutcome::NotFound => {
+                        format!("follow failed: canonical missing for {title}")
+                    }
                 };
                 self.toasts.push(msg);
-                self.reload_library(now);
+                self.reload_shelf(now);
             }
             Err(e) => self.toasts.push(format!("follow failed: {e}")),
         }
@@ -259,7 +287,7 @@ impl App {
     fn do_sync(&mut self) {
         let now = Utc::now().timestamp();
         let result = tokio::task::block_in_place(|| {
-            Handle::current().block_on(sync_inner(&mut self.db, &self.client, now))
+            Handle::current().block_on(sync_inner(&self.facade, &self.client, now))
         });
         match result {
             Ok(report) => {
@@ -274,24 +302,24 @@ impl App {
                     )
                 };
                 self.toasts.push(msg);
-                self.reload_library(now);
+                self.reload_shelf(now);
             }
             Err(e) => self.toasts.push(format!("sync failed: {e}")),
         }
     }
 
     fn do_doctor(&mut self) {
-        match self.db.count_active() {
+        match self.facade.count_followed() {
             Ok(n) => self.toasts.push(format!("following {n} shows")),
             Err(e) => self.toasts.push(format!("doctor: {e}")),
         }
     }
 
-    /// Reload the library from disk after a write that touched it
-    /// (follow/sync). Re-derives panes.
-    fn reload_library(&mut self, now: i64) {
-        if let Ok(lib) = Library::load(&self.db, now, self.windows) {
-            self.library = lib;
+    /// Reload the shelf from durable state after a write that touched
+    /// it (follow/sync). Re-derives panes.
+    fn reload_shelf(&mut self, now: i64) {
+        if let Ok(shelf) = Shelf::load(&self.facade, now, self.windows) {
+            self.shelf = shelf;
             self.now = now;
             self.refresh_buckets();
         }
@@ -320,14 +348,14 @@ impl App {
         let q = self.palette.query.trim();
         self.palette.search_hits.clear();
         if q.is_empty() {
-            self.palette.search_hits = (0..self.library.shows.len()).collect();
+            self.palette.search_hits = (0..self.shelf.shows.len()).collect();
             self.palette.selected = 0;
             return;
         }
         let mut matcher = Matcher::new(Config::DEFAULT);
         let pattern = Pattern::parse(q, CaseMatching::Ignore, Normalization::Smart);
         let mut scored: Vec<(usize, u32)> = self
-            .library
+            .shelf
             .shows
             .iter()
             .enumerate()
@@ -345,13 +373,13 @@ impl App {
         }
     }
 
-    /// Jump the focused pane's cursor to the show at `library_idx`.
+    /// Jump the focused pane's cursor to the show at `shelf_idx`.
     /// Switches to whichever pane the show lives in.
-    pub fn jump_to(&mut self, library_idx: usize) -> Result<()> {
+    pub fn jump_to(&mut self, shelf_idx: usize) -> Result<()> {
         let show = self
-            .library
+            .shelf
             .shows
-            .get(library_idx)
+            .get(shelf_idx)
             .ok_or_else(|| anyhow::anyhow!("show out of range"))?;
         let pane_idx = match show.pane {
             Some(Pane::Today) => PANE_TODAY,
@@ -361,11 +389,8 @@ impl App {
         };
         self.focused_pane = pane_idx;
         let items = self.items_in(pane_idx);
-        let target = (show.item.source.as_str(), show.item.source_id.as_str());
-        if let Some(pos) = items
-            .iter()
-            .position(|s| (s.item.source.as_str(), s.item.source_id.as_str()) == target)
-        {
+        let target = show.canonical_id().clone();
+        if let Some(pos) = items.iter().position(|s| *s.canonical_id() == target) {
             self.selection[pane_idx] = pos;
         }
         Ok(())
@@ -409,5 +434,4 @@ impl App {
         self.close_overlay();
         self.dispatch(Command::Follow(id));
     }
-
 }

@@ -116,7 +116,7 @@ impl CacheEntry {
     /// mapping so call sites (follow/sync/schedule) don't duplicate
     /// it. Computes expires_at from the supplied TTL config.
     pub fn from_media(
-        media: &crate::anilist::Media,
+        media: &crate::sources::anilist::Media,
         ttl: &TtlConfig,
         fetched_at: i64,
     ) -> Self {
@@ -170,6 +170,43 @@ impl CacheEntry {
             studios: row.get("studios")?,
             streaming_links_json: row.get("streaming_links_json")?,
         })
+    }
+
+    /// Generic constructor from a [`crate::sources::SourceRecord`].
+    /// Used by the sync engine to cache any adapter's refreshed
+    /// metadata. AniList-specific fields (`format`, `total_episodes`,
+    /// `next_episode_number`) are left None for non-AniList sources —
+    /// they're best-effort optimization fields, not required.
+    pub fn from_source_record(
+        record: &crate::sources::SourceRecord,
+        ttl: &TtlConfig,
+        fetched_at: i64,
+    ) -> Self {
+        let status_enum = CacheStatus::parse(record.status.as_deref());
+        let streaming_json = if record.streaming_links.is_empty() {
+            None
+        } else {
+            serde_json::to_string(&record.streaming_links).ok()
+        };
+        Self {
+            source: record.source.to_string(),
+            source_id: record.source_id.clone(),
+            display_title: Some(record.display_title.clone()),
+            title_english: None,
+            title_native: None,
+            status: record.status.clone(),
+            total_episodes: None,
+            format: None,
+            next_episode_number: None,
+            next_episode_airs_at: record.next_episode_at,
+            fetched_at,
+            expires_at: ttl.expires_at(status_enum, fetched_at),
+            cover_image_url: record.cover_url.clone(),
+            description: record.description.clone(),
+            score: None,
+            studios: None,
+            streaming_links_json: streaming_json,
+        }
     }
 }
 

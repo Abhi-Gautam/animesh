@@ -1,17 +1,22 @@
-//! AniList HTTP client.
+//! AniList HTTP client + Source-trait adapter.
 //!
-//! The only module in the crate that imports `reqwest`. Exposes both
-//! a raw `query<T, V>` escape hatch (used by the legacy schedule path
-//! until T24 rewires it) and typed `search` / `by_id` /
-//! `schedule_window` methods. Rate-limit headers from each response
+//! Exposes both the typed legacy methods (`search`, `by_id`,
+//! `schedule_window`) that the existing TUI/commands call directly,
+//! and the generic [`Source`] impl that the canonical service + sync
+//! loop drive once they land. Rate-limit headers from each response
 //! are parsed and held in-memory; later tasks will persist them via
 //! the kv store for the `doctor` surface.
 
 use std::sync::Mutex;
 
 use anyhow::{anyhow, Context, Result};
+use async_trait::async_trait;
 use reqwest::Client;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
+
+use crate::ids::ReleaseKind;
+
+use super::{Source, SourceRecord, StreamingLink};
 
 const DEFAULT_BASE_URL: &str = "https://graphql.anilist.co";
 
@@ -177,6 +182,83 @@ impl AniListClient {
 impl Default for AniListClient {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Source trait impl. The projection from AniList's `Media` to the
+// generic `SourceRecord` lives here — adapter-specific knowledge stays
+// inside the adapter.
+// ---------------------------------------------------------------------------
+
+/// Kinds AniList handles. AniList only covers anime in this codebase;
+/// extending to manga would be another entry here.
+const ANILIST_KINDS: &[ReleaseKind] = &[ReleaseKind::Anime];
+
+#[async_trait]
+impl Source for AniListClient {
+    fn name(&self) -> &'static str {
+        "anilist"
+    }
+
+    fn kinds(&self) -> &[ReleaseKind] {
+        ANILIST_KINDS
+    }
+
+    async fn search(&self, query: &str, limit: u32) -> Result<Vec<SourceRecord>> {
+        let media = AniListClient::search(self, query, limit).await?;
+        Ok(media.iter().map(media_to_record).collect())
+    }
+
+    async fn fetch(&self, source_id: &str) -> Result<Option<SourceRecord>> {
+        let id: i64 = source_id
+            .parse()
+            .with_context(|| format!("anilist source_id must be numeric, got {source_id:?}"))?;
+        let media = AniListClient::by_id(self, id).await?;
+        Ok(media.as_ref().map(media_to_record))
+    }
+}
+
+fn media_to_record(m: &Media) -> SourceRecord {
+    let mut aliases = Vec::new();
+    if let Some(rom) = m.title.romaji.as_deref() {
+        if Some(rom) != m.title.english.as_deref() {
+            aliases.push(rom.to_string());
+        }
+    }
+    if let Some(native) = m.title.native.as_deref() {
+        aliases.push(native.to_string());
+    }
+
+    let streaming_links: Vec<StreamingLink> = m
+        .streaming_links()
+        .iter()
+        .filter_map(|l| {
+            let url = l.url.clone()?;
+            let site = l.site.clone().unwrap_or_else(|| "unknown".to_string());
+            Some(StreamingLink { site, url })
+        })
+        .collect();
+
+    SourceRecord {
+        source: "anilist",
+        source_id: m.id.to_string(),
+        kind: ReleaseKind::Anime,
+        display_title: m.display_title().to_string(),
+        raw_title: m
+            .title
+            .romaji
+            .as_deref()
+            .or(m.title.english.as_deref())
+            .or(m.title.native.as_deref())
+            .unwrap_or("(untitled)")
+            .to_string(),
+        aliases,
+        status: m.status.clone(),
+        cover_url: m.cover_url().map(|s| s.to_string()),
+        description: m.description.clone(),
+        streaming_links,
+        next_episode_at: m.next_airing_episode.map(|n| n.airing_at),
     }
 }
 
@@ -511,5 +593,120 @@ mod tests {
             ..m
         };
         assert_eq!(m.display_title(), "c");
+    }
+
+    // ------------------------------------------------------------------
+    // Source-trait projection tests. The legacy `search` / `by_id`
+    // methods are tested above; these confirm that wrapping the
+    // adapter as a `Box<dyn Source>` lands the expected SourceRecord
+    // shape downstream.
+    // ------------------------------------------------------------------
+
+    fn sample_media() -> Media {
+        Media {
+            id: 21,
+            title: MediaTitle {
+                romaji: Some("ONE PIECE".into()),
+                english: Some("One Piece".into()),
+                native: Some("ワンピース".into()),
+            },
+            status: Some("RELEASING".into()),
+            episodes: Some(1100),
+            format: Some("TV".into()),
+            next_airing_episode: Some(NextAiringEpisode {
+                episode: 1101,
+                airing_at: 1_700_000_000,
+            }),
+            cover_image: Some(MediaCoverImage {
+                large: Some("https://img.example/large.jpg".into()),
+                medium: None,
+                color: Some("#ff0000".into()),
+            }),
+            description: Some("Pirate's life for me.".into()),
+            average_score: Some(87),
+            studios: None,
+            external_links: Some(vec![
+                MediaExternalLink {
+                    site: Some("Crunchyroll".into()),
+                    url: Some("https://crunchyroll.com/one-piece".into()),
+                    color: None,
+                    link_type: Some("STREAMING".into()),
+                },
+                MediaExternalLink {
+                    site: Some("Twitter".into()),
+                    url: Some("https://twitter.com/onepiece".into()),
+                    color: None,
+                    link_type: Some("SOCIAL".into()),
+                },
+            ]),
+        }
+    }
+
+    #[test]
+    fn media_to_record_projects_identity_fields() {
+        let r = media_to_record(&sample_media());
+        assert_eq!(r.source, "anilist");
+        assert_eq!(r.source_id, "21");
+        assert_eq!(r.kind, ReleaseKind::Anime);
+        assert_eq!(r.display_title, "One Piece");
+        // raw_title prefers romaji per the AniList convention.
+        assert_eq!(r.raw_title, "ONE PIECE");
+    }
+
+    #[test]
+    fn media_to_record_collects_aliases_excluding_display() {
+        let r = media_to_record(&sample_media());
+        // Romaji + native, English skipped because it's already the display.
+        assert!(r.aliases.contains(&"ワンピース".to_string()));
+        assert!(r.aliases.iter().any(|a| a.contains("ONE PIECE")));
+    }
+
+    #[test]
+    fn media_to_record_filters_streaming_links_only() {
+        let r = media_to_record(&sample_media());
+        assert_eq!(r.streaming_links.len(), 1);
+        assert_eq!(r.streaming_links[0].site, "Crunchyroll");
+        assert_eq!(
+            r.streaming_links[0].url,
+            "https://crunchyroll.com/one-piece"
+        );
+    }
+
+    #[test]
+    fn media_to_record_carries_next_episode_at() {
+        let r = media_to_record(&sample_media());
+        assert_eq!(r.next_episode_at, Some(1_700_000_000));
+    }
+
+    #[tokio::test]
+    async fn source_trait_search_returns_normalized_records() {
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("POST", "/")
+            .with_status(200)
+            .with_body(body_for_search())
+            .create_async()
+            .await;
+        let client: Box<dyn Source> = Box::new(AniListClient::with_base_url(server.url()));
+        let records = client.search("piece", 50).await.unwrap();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].source, "anilist");
+        assert_eq!(records[0].source_id, "21");
+        assert_eq!(records[0].kind, ReleaseKind::Anime);
+    }
+
+    #[tokio::test]
+    async fn source_trait_fetch_rejects_non_numeric_source_id() {
+        let server = mockito::Server::new_async().await;
+        let client: Box<dyn Source> = Box::new(AniListClient::with_base_url(server.url()));
+        let err = client.fetch("not-a-number").await.unwrap_err();
+        assert!(format!("{err:#}").contains("numeric"));
+    }
+
+    #[test]
+    fn source_trait_metadata_matches_adapter_name_and_kinds() {
+        let client: Box<dyn Source> = Box::new(AniListClient::new());
+        assert_eq!(client.name(), "anilist");
+        assert_eq!(client.kinds(), &[ReleaseKind::Anime]);
     }
 }

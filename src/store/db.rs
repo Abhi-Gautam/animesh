@@ -16,7 +16,7 @@ mod embedded {
 
 /// Highest migration version this binary knows about. Bump alongside
 /// each `Vxxxx__*.sql` file added under `migrations/`.
-pub const MAX_KNOWN_VERSION: u32 = 3;
+pub const MAX_KNOWN_VERSION: u32 = 5;
 
 /// Owning wrapper around a rusqlite Connection. The only struct in the
 /// codebase that holds a `Connection`.
@@ -212,21 +212,310 @@ mod tests {
             let rows = stmt.query_map([], |row| row.get::<_, String>(0)).unwrap();
             rows.collect::<Result<_, _>>().unwrap()
         };
-        // Expect: tracked_item, metadata_cache, search_fts (+ its
-        // FTS5 shadow tables), kv, watch_progress (V0002),
-        // refinery_schema_history.
+        // V0005 dropped tracked_item + watch_progress. The canonical
+        // substrate (V0004) + the metadata cache + kv + FTS index
+        // remain.
         for required in [
-            "tracked_item",
             "metadata_cache",
             "search_fts",
             "kv",
-            "watch_progress",
             "refinery_schema_history",
+            "canonical_release",
+            "source_ref",
+            "engagement",
+            "canonicalization_cache",
         ] {
             assert!(
                 names.iter().any(|n| n == required),
                 "missing table {required} in {names:?}"
             );
+        }
+        for forbidden in ["tracked_item", "watch_progress"] {
+            assert!(
+                !names.iter().any(|n| n == forbidden),
+                "legacy table {forbidden} should be dropped by V0005, still in {names:?}"
+            );
+        }
+    }
+
+    // V0004 data-migration tests. Build a V0003-state DB by running the
+    // legacy migrations directly, plant legacy rows, then run V0004 and
+    // verify the canonical tables hold the expected projection. This
+    // does not go through refinery for V0004 so we can isolate the
+    // migration's data-shape contract from the runner.
+    fn build_v3_then_run_v4() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        conn.execute_batch(include_str!("../../migrations/V0001__initial.sql"))
+            .unwrap();
+        conn.execute_batch(include_str!("../../migrations/V0002__sp1_5_tui.sql"))
+            .unwrap();
+        conn.execute_batch(include_str!("../../migrations/V0003__cover_ascii.sql"))
+            .unwrap();
+        conn
+    }
+
+    fn apply_v4(conn: &Connection) {
+        conn.execute_batch(include_str!("../../migrations/V0004__canonical_schema.sql"))
+            .unwrap();
+    }
+
+    #[test]
+    fn v0004_backfills_canonical_release_from_tracked_item() {
+        let conn = build_v3_then_run_v4();
+        conn.execute(
+            "INSERT INTO tracked_item \
+             (source, source_id, kind, display_title, followed_at, dropped_at, user_note, cover_ascii, cover_color) \
+             VALUES \
+             ('anilist', '21', 'anime', 'One Piece', 1000, NULL, 'pirate king', 'ascii-art-1', '#ff0000'), \
+             ('anilist', '99', 'anime', 'Dropped Show', 500, 800, NULL, NULL, NULL)",
+            [],
+        )
+        .unwrap();
+
+        apply_v4(&conn);
+
+        let canonical_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM canonical_release", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(canonical_count, 2);
+
+        // Active follow preserves all fields, including cover.
+        let (id, kind, title, cover_ascii, cover_color, followed_at, dropped_at, user_note): (
+            String,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            Option<i64>,
+            Option<i64>,
+            Option<String>,
+        ) = conn
+            .query_row(
+                "SELECT id, kind, display_title, cover_ascii, cover_color, \
+                        followed_at, dropped_at, user_note \
+                 FROM canonical_release \
+                 WHERE display_title = 'One Piece'",
+                [],
+                |r| {
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                        r.get(6)?,
+                        r.get(7)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(kind, "anime");
+        assert_eq!(title, "One Piece");
+        assert_eq!(cover_ascii.as_deref(), Some("ascii-art-1"));
+        assert_eq!(cover_color.as_deref(), Some("#ff0000"));
+        assert_eq!(followed_at, Some(1000));
+        assert_eq!(dropped_at, None);
+        assert_eq!(user_note.as_deref(), Some("pirate king"));
+        // The synthesized id must be deterministic and embed source+source_id.
+        assert!(
+            id.starts_with("release:anime:legacy-anilist-21"),
+            "unexpected canonical id: {id}"
+        );
+
+        // Dropped row's dropped_at must come through.
+        let dropped_at_for_99: Option<i64> = conn
+            .query_row(
+                "SELECT dropped_at FROM canonical_release \
+                 WHERE id = 'release:anime:legacy-anilist-99'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(dropped_at_for_99, Some(800));
+    }
+
+    #[test]
+    fn v0004_backfills_source_ref_with_full_confidence_for_legacy_rows() {
+        let conn = build_v3_then_run_v4();
+        conn.execute(
+            "INSERT INTO tracked_item (source, source_id, kind, display_title, followed_at) \
+             VALUES ('anilist', '21', 'anime', 'One Piece', 1000)",
+            [],
+        )
+        .unwrap();
+        apply_v4(&conn);
+
+        let (canonical_id, raw_title, confidence): (String, String, f64) = conn
+            .query_row(
+                "SELECT canonical_id, raw_title, confidence FROM source_ref \
+                 WHERE source = 'anilist' AND source_id = '21'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(canonical_id, "release:anime:legacy-anilist-21");
+        assert_eq!(raw_title, "One Piece");
+        // Legacy rows are user-verified by virtue of being followed.
+        assert!((confidence - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn v0004_migrates_watch_progress_into_engagement() {
+        let conn = build_v3_then_run_v4();
+        conn.execute(
+            "INSERT INTO tracked_item (source, source_id, kind, display_title, followed_at) \
+             VALUES ('anilist', '21', 'anime', 'One Piece', 1000)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO watch_progress (source, source_id, seen, updated_at) \
+             VALUES ('anilist', '21', 7, 1500)",
+            [],
+        )
+        .unwrap();
+        apply_v4(&conn);
+
+        let (canonical_id, event, occurred_at, meta): (String, String, i64, Option<String>) = conn
+            .query_row(
+                "SELECT canonical_id, event, occurred_at, meta FROM engagement \
+                 ORDER BY id DESC LIMIT 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(canonical_id, "release:anime:legacy-anilist-21");
+        assert_eq!(event, "completed");
+        assert_eq!(occurred_at, 1500);
+        // meta carries the original seen count as JSON.
+        let meta_str = meta.expect("engagement meta should be present");
+        assert!(
+            meta_str.contains("\"seen\"") && meta_str.contains("7"),
+            "meta should carry seen count, got: {meta_str}"
+        );
+    }
+
+    #[test]
+    fn v0004_orphaned_watch_progress_does_not_create_engagement_rows() {
+        let conn = build_v3_then_run_v4();
+        // A watch_progress row with no matching tracked_item — should be
+        // silently dropped, not raise an FK error.
+        conn.execute(
+            "INSERT INTO watch_progress (source, source_id, seen, updated_at) \
+             VALUES ('orphan', 'xyz', 3, 9999)",
+            [],
+        )
+        .unwrap();
+        apply_v4(&conn);
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM engagement", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0, "orphan watch_progress must not produce engagement rows");
+    }
+
+    #[test]
+    fn v0004_canonical_release_kind_check_constraint_rejects_unknown_kinds() {
+        let conn = build_v3_then_run_v4();
+        apply_v4(&conn);
+        let err = conn
+            .execute(
+                "INSERT INTO canonical_release (id, kind, display_title, created_at) \
+                 VALUES ('release:bogus:x', 'bogus', 'Bogus', 1)",
+                [],
+            )
+            .expect_err("CHECK constraint on kind must reject unknown values");
+        let msg = format!("{err}");
+        assert!(msg.contains("CHECK"), "expected CHECK violation, got: {msg}");
+    }
+
+    #[test]
+    fn v0004_source_ref_confidence_bounds_check_constraint() {
+        let conn = build_v3_then_run_v4();
+        apply_v4(&conn);
+        conn.execute(
+            "INSERT INTO canonical_release (id, kind, display_title, created_at) \
+             VALUES ('release:tv:foo', 'tv', 'Foo', 1)",
+            [],
+        )
+        .unwrap();
+        let err = conn
+            .execute(
+                "INSERT INTO source_ref (canonical_id, source, source_id, raw_title, confidence) \
+                 VALUES ('release:tv:foo', 'tmdb', '1', 'Foo', 1.5)",
+                [],
+            )
+            .expect_err("CHECK constraint must reject confidence > 1.0");
+        assert!(format!("{err}").contains("CHECK"));
+    }
+
+    #[test]
+    fn v0004_engagement_event_check_constraint_rejects_unknown_events() {
+        let conn = build_v3_then_run_v4();
+        apply_v4(&conn);
+        conn.execute(
+            "INSERT INTO canonical_release (id, kind, display_title, created_at) \
+             VALUES ('release:tv:foo', 'tv', 'Foo', 1)",
+            [],
+        )
+        .unwrap();
+        let err = conn
+            .execute(
+                "INSERT INTO engagement (canonical_id, event, occurred_at) \
+                 VALUES ('release:tv:foo', 'bogus_event', 100)",
+                [],
+            )
+            .expect_err("CHECK constraint must reject unknown engagement event");
+        assert!(format!("{err}").contains("CHECK"));
+    }
+
+    #[test]
+    fn v0004_source_ref_cascades_delete_when_canonical_release_removed() {
+        let conn = build_v3_then_run_v4();
+        apply_v4(&conn);
+        conn.execute(
+            "INSERT INTO canonical_release (id, kind, display_title, created_at) \
+             VALUES ('release:tv:foo', 'tv', 'Foo', 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO source_ref (canonical_id, source, source_id, raw_title, confidence) \
+             VALUES ('release:tv:foo', 'tmdb', '1', 'Foo', 0.9)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO engagement (canonical_id, event, occurred_at) \
+             VALUES ('release:tv:foo', 'opened', 100)",
+            [],
+        )
+        .unwrap();
+
+        conn.execute("DELETE FROM canonical_release WHERE id = 'release:tv:foo'", [])
+            .unwrap();
+
+        let source_refs: i64 = conn
+            .query_row("SELECT COUNT(*) FROM source_ref", [], |r| r.get(0))
+            .unwrap();
+        let engagements: i64 = conn
+            .query_row("SELECT COUNT(*) FROM engagement", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(source_refs, 0, "source_ref must cascade-delete with canonical_release");
+        assert_eq!(engagements, 0, "engagement must cascade-delete with canonical_release");
+    }
+
+    #[test]
+    fn v0004_runs_cleanly_on_empty_v3_database() {
+        let conn = build_v3_then_run_v4();
+        apply_v4(&conn);
+        for table in ["canonical_release", "source_ref", "engagement", "canonicalization_cache"] {
+            let count: i64 = conn
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(count, 0, "{table} should be empty on fresh DB");
         }
     }
 
