@@ -22,7 +22,7 @@ impl Subs {
         &self.streamers
     }
 
-    /// Case-insensitive substring-equality match.
+    /// Case-insensitive full-string match against the subscription list.
     pub fn matches(&self, streamer: &str) -> bool {
         let needle = streamer.to_ascii_lowercase();
         self.streamers.iter().any(|s| s.to_ascii_lowercase() == needle)
@@ -49,9 +49,7 @@ impl Subs {
         lib.set_subscribed_streamers(&self.streamers)?;
         Ok(true)
     }
-}
 
-impl Subs {
     pub fn load_arc(lib: &Arc<Library>) -> Result<Self> {
         Self::load(lib.as_ref())
     }
