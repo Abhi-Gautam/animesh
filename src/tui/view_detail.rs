@@ -184,7 +184,7 @@ fn render_hero(f: &mut Frame, s: &crate::tui::model::Show, now: i64, area: Rect)
             stat.push(Span::styled("DROPS  ", Style::default().fg(DIMMER)));
             match s.next_drop_at() {
                 Some(at) => stat.push(Span::styled(
-                    relative(at, now),
+                    crate::tui::view::relative_short(at, now),
                     Style::default().fg(SOON).add_modifier(Modifier::BOLD),
                 )),
                 None => stat.push(Span::styled(
@@ -391,19 +391,6 @@ fn render_synopsis(f: &mut Frame, s: &crate::tui::model::Show, area: Rect) {
         Line::from(Span::styled(body, Style::default().fg(INK_2))),
     ];
     f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), area);
-}
-
-fn relative(at: i64, now: i64) -> String {
-    let diff = at - now;
-    let a = diff.abs();
-    let body = if a >= 86400 {
-        format!("{}d", a / 86400)
-    } else if a >= 3600 {
-        format!("{}h", a / 3600)
-    } else {
-        format!("{}m", (a / 60).max(1))
-    };
-    if diff < 0 { format!("{body} ago") } else { format!("in {body}") }
 }
 
 fn strip_html(s: &str) -> String {
