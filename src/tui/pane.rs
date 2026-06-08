@@ -1,36 +1,50 @@
-//! Pane bucketing — the canonical algorithm from spec §2.
+//! Pane bucketing — manifesto-aligned playability state.
 //!
-//! Pure function. All inputs are explicit (no clock, no env). Tests
-//! drive it directly; the TUI calls `bucket()` once per tracked item
-//! per render tick.
+//! Three coequal panes:
+//! - `Playable`: verified streamable now on a subscribed streamer.
+//! - `Dropping`: scheduled to drop inside `today_secs`, not yet verified.
+//! - `Following`: everything else not fully done.
+//!
+//! Pure function. Kind-agnostic — drives anime, TV, film, music alike.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pane {
-    Today,
-    Late,
-    Backlog { behind: i64 },
+    Playable,
+    Dropping,
+    Following,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct BucketInputs {
-    pub seen: i64,
-    pub total: Option<i64>,
-    pub next_episode_number: Option<i64>,
-    pub next_episode_airs_at: Option<i64>,
+    /// Earliest known future drop time across all kinds (anime episode
+    /// air time, music release date, film release date). None when
+    /// the source has no scheduled drop.
+    pub next_drop_at: Option<i64>,
+    /// Most recent `EngagementEvent::Verified` timestamp.
+    pub verified_playable_at: Option<i64>,
+    /// Streamer name from the verify event (preserved casing).
+    pub verified_streamer: Option<String>,
+    /// True iff `verified_streamer` matches the user's subs.
+    pub subscribed: bool,
+    /// True iff the canonical is fully consumed (e.g. all episodes
+    /// watched, album played). Hides from every pane.
+    pub fully_done: bool,
 }
 
-/// Default windows; pulled from env at app startup, then passed to
-/// `bucket` for the life of the runloop.
 #[derive(Debug, Clone, Copy)]
 pub struct Windows {
+    /// Inclusive horizon for `Dropping` — drops at-or-before
+    /// `now + today_secs` show in Dropping.
     pub today_secs: i64,
-    pub late_secs: i64,
+    /// A verified link is considered "still playable" for this long
+    /// after the verification timestamp.
+    pub playable_secs: i64,
 }
 
 impl Windows {
     pub const DEFAULT: Self = Self {
         today_secs: 24 * 3600,
-        late_secs: 48 * 3600,
+        playable_secs: 24 * 3600,
     };
 
     pub fn from_env() -> Self {
@@ -44,205 +58,111 @@ impl Windows {
         };
         Self {
             today_secs: read("ANIMESH_TODAY_WINDOW_HOURS", d.today_secs),
-            late_secs: read("ANIMESH_LATE_WINDOW_HOURS", d.late_secs),
+            playable_secs: read("ANIMESH_PLAYABLE_WINDOW_HOURS", d.playable_secs),
         }
     }
 }
 
-/// Spec §2 bucketing algorithm. Pure.
-///
-/// Returns `None` when the show should be hidden from all panes —
-/// either fully watched, or caught up with no near-term airing.
 pub fn bucket(i: BucketInputs, now: i64, w: Windows) -> Option<Pane> {
-    // Fully watched → hidden.
-    if let Some(t) = i.total {
-        if i.seen >= t {
-            return None;
+    if i.fully_done {
+        return None;
+    }
+    if let Some(v) = i.verified_playable_at {
+        if i.subscribed && v <= now && now - v <= w.playable_secs {
+            return Some(Pane::Playable);
         }
     }
-
-    // Behind on aired episodes → Backlog with count.
-    let behind = i
-        .next_episode_number
-        .map(|n| (n - 1).saturating_sub(i.seen))
-        .unwrap_or(0);
-    if behind > 0 {
-        return Some(Pane::Backlog { behind });
-    }
-
-    // Caught up — split on airing time.
-    if let Some(at) = i.next_episode_airs_at {
-        if at > now && at <= now + w.today_secs {
-            return Some(Pane::Today);
-        }
-        if at <= now
-            && at >= now - w.late_secs
-            && i.next_episode_number.map_or(false, |n| i.seen < n)
-        {
-            return Some(Pane::Late);
+    if let Some(d) = i.next_drop_at {
+        if d > now && d <= now + w.today_secs {
+            return Some(Pane::Dropping);
         }
     }
-
-    // Not fully done, no imminent airing → finale-waiting Backlog.
-    if i.total.map_or(false, |t| i.seen < t) {
-        return Some(Pane::Backlog { behind: 0 });
-    }
-
-    None
+    Some(Pane::Following)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use proptest::prelude::*;
 
     const NOW: i64 = 1_700_000_000;
     const W: Windows = Windows::DEFAULT;
 
-    fn inputs(
-        seen: i64,
-        total: Option<i64>,
-        next: Option<i64>,
-        airs: Option<i64>,
-    ) -> BucketInputs {
+    fn empty() -> BucketInputs {
         BucketInputs {
-            seen,
-            total,
-            next_episode_number: next,
-            next_episode_airs_at: airs,
+            next_drop_at: None,
+            verified_playable_at: None,
+            verified_streamer: None,
+            subscribed: false,
+            fully_done: false,
         }
     }
 
     #[test]
-    fn fully_watched_is_hidden() {
-        assert_eq!(
-            bucket(inputs(12, Some(12), Some(12), Some(NOW + 3600)), NOW, W),
-            None
-        );
-        assert_eq!(
-            bucket(inputs(13, Some(12), Some(12), None), NOW, W),
-            None
-        );
+    fn verified_within_window_and_subscribed_is_playable() {
+        let i = BucketInputs {
+            verified_playable_at: Some(NOW - 5 * 60),
+            verified_streamer: Some("crunchyroll".into()),
+            subscribed: true,
+            ..empty()
+        };
+        assert_eq!(bucket(i, NOW, W), Some(Pane::Playable));
     }
 
     #[test]
-    fn behind_is_backlog_with_count() {
-        // next_ep=5 aired; seen=2 → behind=2 (eps 3 and 4 unwatched).
-        let r = bucket(
-            inputs(2, Some(12), Some(5), Some(NOW - 3600)),
-            NOW,
-            W,
-        );
-        assert_eq!(r, Some(Pane::Backlog { behind: 2 }));
+    fn verified_but_unsubscribed_is_following_not_playable() {
+        let i = BucketInputs {
+            verified_playable_at: Some(NOW - 5 * 60),
+            verified_streamer: Some("hbo".into()),
+            subscribed: false,
+            ..empty()
+        };
+        assert_eq!(bucket(i, NOW, W), Some(Pane::Following));
     }
 
     #[test]
-    fn caught_up_with_imminent_airing_is_today() {
-        let r = bucket(
-            inputs(4, Some(12), Some(5), Some(NOW + 3600)),
-            NOW,
-            W,
-        );
-        assert_eq!(r, Some(Pane::Today));
+    fn scheduled_inside_today_window_is_dropping() {
+        let i = BucketInputs {
+            next_drop_at: Some(NOW + 3 * 3600),
+            ..empty()
+        };
+        assert_eq!(bucket(i, NOW, W), Some(Pane::Dropping));
     }
 
     #[test]
-    fn caught_up_and_just_aired_is_late() {
-        // next_ep=5 aired 3h ago; seen=4 → late.
-        let r = bucket(
-            inputs(4, Some(12), Some(5), Some(NOW - 3 * 3600)),
-            NOW,
-            W,
-        );
-        assert_eq!(r, Some(Pane::Late));
+    fn scheduled_far_future_is_following() {
+        let i = BucketInputs {
+            next_drop_at: Some(NOW + 60 * 24 * 3600),
+            ..empty()
+        };
+        assert_eq!(bucket(i, NOW, W), Some(Pane::Following));
     }
 
     #[test]
-    fn caught_up_long_past_window_is_hidden() {
-        // Aired 10 days ago; out of the 48h late window. Caught up,
-        // total unknown → hidden.
-        let r = bucket(
-            inputs(4, None, Some(5), Some(NOW - 10 * 24 * 3600)),
-            NOW,
-            W,
-        );
-        assert_eq!(r, None);
+    fn fully_done_is_hidden() {
+        let i = BucketInputs {
+            fully_done: true,
+            next_drop_at: Some(NOW + 3600),
+            ..empty()
+        };
+        assert_eq!(bucket(i, NOW, W), None);
     }
 
     #[test]
-    fn caught_up_far_future_is_hidden_until_inside_today_window() {
-        // Next ep airs in 3 days; caught up; total unknown → hidden.
-        let r = bucket(
-            inputs(4, None, Some(5), Some(NOW + 3 * 24 * 3600)),
-            NOW,
-            W,
-        );
-        assert_eq!(r, None);
+    fn no_drop_no_verify_is_following() {
+        assert_eq!(bucket(empty(), NOW, W), Some(Pane::Following));
     }
 
     #[test]
-    fn finale_waiting_is_backlog_zero() {
-        // dandadan case: seen=11, total=12, no upcoming airing.
-        let r = bucket(inputs(11, Some(12), Some(12), None), NOW, W);
-        assert_eq!(r, Some(Pane::Backlog { behind: 0 }));
-    }
-
-    #[test]
-    fn unknown_state_is_hidden_when_caught_up_and_unknown_total() {
-        let r = bucket(inputs(0, None, None, None), NOW, W);
-        assert_eq!(r, None);
-    }
-
-    #[test]
-    fn windows_from_env_defaults_when_unset() {
-        // We can't set env in test reliably, so just smoke that
-        // DEFAULT is what we think.
-        assert_eq!(Windows::DEFAULT.today_secs, 24 * 3600);
-        assert_eq!(Windows::DEFAULT.late_secs, 48 * 3600);
-    }
-
-    // Property tests: the algorithm should be total (every input
-    // produces a defined output) and monotone in a few directions.
-
-    proptest! {
-        #![proptest_config(ProptestConfig { cases: 256, .. ProptestConfig::default() })]
-
-        #[test]
-        fn never_panics(
-            seen in 0i64..1000,
-            total_opt in proptest::option::of(0i64..1000),
-            next_opt in proptest::option::of(0i64..1000),
-            airs_offset in -10_000_000i64..10_000_000,
-            airs_some in any::<bool>(),
-        ) {
-            let airs = if airs_some { Some(NOW + airs_offset) } else { None };
-            let _ = bucket(inputs(seen, total_opt, next_opt, airs), NOW, W);
-        }
-
-        #[test]
-        fn fully_watched_always_hidden_regardless_of_airing(
-            seen in 0i64..1000,
-            extra in 0i64..100,
-            airs_offset in -10_000_000i64..10_000_000,
-        ) {
-            // total == seen - any extra → fully (or over-) watched.
-            let total = Some(seen.saturating_sub(extra));
-            let airs = Some(NOW + airs_offset);
-            prop_assert_eq!(bucket(inputs(seen, total, Some(seen + 1), airs), NOW, W), None);
-        }
-
-        #[test]
-        fn behind_count_matches_arithmetic(
-            seen in 0i64..500,
-            ep in 1i64..1000,
-            airs_offset in -10_000_000i64..-1i64,  // ensure aired (past)
-        ) {
-            let next = ep;
-            let airs = Some(NOW + airs_offset);
-            let result = bucket(inputs(seen, Some(1000), Some(next), airs), NOW, W);
-            if next - 1 > seen {
-                prop_assert_eq!(result, Some(Pane::Backlog { behind: next - 1 - seen }));
-            }
-        }
+    fn verified_takes_precedence_over_scheduled() {
+        // Even with a scheduled drop in the future, an active verified
+        // playable on a subscribed streamer wins the Playable pane.
+        let i = BucketInputs {
+            next_drop_at: Some(NOW + 3600),
+            verified_playable_at: Some(NOW - 60),
+            verified_streamer: Some("netflix".into()),
+            subscribed: true,
+            ..empty()
+        };
+        assert_eq!(bucket(i, NOW, W), Some(Pane::Playable));
     }
 }
