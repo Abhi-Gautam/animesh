@@ -13,12 +13,13 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use crate::ids::{CanonicalId, ReleaseKind};
 use crate::library::Library as Facade;
 use crate::sources::anilist::AniListClient;
-use crate::store::CacheEntry;
+use crate::store::{CacheEntry, EngagementEvent};
 use crate::time::FixedClock;
 use crate::tui::app::{App, Overlay};
 use crate::tui::model::Shelf;
 use crate::tui::pane::Windows;
 use crate::tui::palette::PaletteMode;
+use crate::tui::subs::Subs;
 
 fn key(code: KeyCode) -> KeyEvent {
     KeyEvent::new(code, KeyModifiers::NONE)
@@ -34,8 +35,10 @@ fn type_str(app: &mut App, s: &str) {
     }
 }
 
-/// Build an App with one followed show airing in 1h (lands in Today
-/// pane, so the default focused pane has a selection ready to act on).
+/// Build an App with one followed show that's verified-playable on a
+/// subscribed streamer. This lands the show in the PLAYABLE pane (the
+/// default focused pane), so `:watched`, `c`, `d`, etc. all act on a
+/// non-empty selection.
 fn app_with_one_show(now: i64) -> App {
     let facade = Arc::new(Facade::open_in_memory(Arc::new(FixedClock(now))).unwrap());
     let cid = CanonicalId::legacy_from_source(ReleaseKind::Anime, "anilist", "21");
@@ -70,18 +73,30 @@ fn app_with_one_show(now: i64) -> App {
         streaming_links_json: None,
     };
     facade.upsert_cache(&cache).unwrap();
+    // Verified-on-subscribed → Playable. Lets existing tests select
+    // the show under the default focused pane (PANE_PLAYABLE).
+    facade
+        .engage(
+            &cid,
+            EngagementEvent::Verified,
+            Some(r#"{"streamer":"Netflix","url":"https://netflix.com/x"}"#),
+        )
+        .unwrap();
+    let mut subs = Subs::default();
+    subs.add(&facade, "Netflix").unwrap();
     let windows = Windows::from_env();
-    let shelf = Shelf::load(&facade, now, windows).unwrap();
+    let shelf = Shelf::load(&facade, now, windows, &subs).unwrap();
     let client = AniListClient::new();
-    App::new(facade, client, shelf, windows, now)
+    App::new(facade, client, shelf, windows, subs, now)
 }
 
 fn empty_app(now: i64) -> App {
     let facade = Arc::new(Facade::open_in_memory(Arc::new(FixedClock(now))).unwrap());
+    let subs = Subs::default();
     let windows = Windows::from_env();
-    let shelf = Shelf::load(&facade, now, windows).unwrap();
+    let shelf = Shelf::load(&facade, now, windows, &subs).unwrap();
     let client = AniListClient::new();
-    App::new(facade, client, shelf, windows, now)
+    App::new(facade, client, shelf, windows, subs, now)
 }
 
 // ---------- Command mode (`:`) ----------
@@ -99,11 +114,11 @@ fn colon_open_then_close_with_esc() {
 fn colon_watched_enter_increments_progress_and_pushes_toast() {
     let now = 1_700_000_000;
     let mut app = app_with_one_show(now);
-    // Pre-condition: 0 watched, show in Today.
+    // Pre-condition: 0 watched, show in Playable (verified-on-subscribed).
     assert_eq!(app.shelf.shows[0].seen(), 0);
     assert!(matches!(
         app.shelf.shows[0].pane,
-        Some(crate::tui::pane::Pane::Today)
+        Some(crate::tui::pane::Pane::Playable)
     ));
 
     super::handle_key(&mut app, char_key(':'));
