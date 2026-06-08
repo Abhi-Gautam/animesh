@@ -23,6 +23,14 @@ pub enum Command {
     Quit,
     /// `:follow 12345` — numeric AniList id only for now.
     Follow(i64),
+    /// `c` / `:context` — copy LLM context for current selection.
+    CopyContext,
+    /// `:subs add <name>` — subscribe to a streamer.
+    SubsAdd(String),
+    /// `:subs remove <name>` — unsubscribe from a streamer.
+    SubsRemove(String),
+    /// `:subs` — toast the current subscription list.
+    SubsList,
 }
 
 /// Static metadata for the palette. `name` is the canonical spelling

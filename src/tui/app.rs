@@ -41,13 +41,13 @@ pub enum Overlay {
     Help,
 }
 
-/// Which pane is focused. `0/1/2` map to Today / Late / Backlog so
-/// number keys (`1` `2` `3`) trivially map to indices.
-pub const PANE_TODAY: usize = 0;
-pub const PANE_LATE: usize = 1;
-pub const PANE_BACKLOG: usize = 2;
-pub const PANE_LABELS: [&str; 3] = ["TODAY", "LATE · UNWATCHED", "BACKLOG"];
-pub const PANE_KINDS: [Pane; 3] = [Pane::Today, Pane::Late, Pane::Backlog { behind: 0 }];
+/// Which pane is focused. `0/1/2` map to Playable / Dropping / Following
+/// so number keys (`1` `2` `3`) trivially map to indices.
+pub const PANE_PLAYABLE: usize = 0;
+pub const PANE_DROPPING: usize = 1;
+pub const PANE_FOLLOWING: usize = 2;
+pub const PANE_LABELS: [&str; 3] = ["PLAYABLE", "DROPPING", "FOLLOWING"];
+pub const PANE_KINDS: [Pane; 3] = [Pane::Playable, Pane::Dropping, Pane::Following];
 
 pub struct App {
     pub facade: Arc<Facade>,
@@ -60,6 +60,7 @@ pub struct App {
     pub palette: PaletteState,
     pub toasts: ToastQueue,
     pub windows: Windows,
+    pub subs: crate::tui::subs::Subs,
     pub now: i64,
     /// Set to true to exit the run loop.
     pub quit: bool,
@@ -71,18 +72,20 @@ impl App {
         client: AniListClient,
         shelf: Shelf,
         windows: Windows,
+        subs: crate::tui::subs::Subs,
         now: i64,
     ) -> Self {
         Self {
             facade,
             client,
             shelf,
-            focused_pane: PANE_TODAY,
+            focused_pane: PANE_PLAYABLE,
             selection: [0; 3],
             overlay: Overlay::None,
             palette: PaletteState::default(),
             toasts: ToastQueue::default(),
             windows,
+            subs,
             now,
             quit: false,
         }
@@ -97,11 +100,13 @@ impl App {
         self.shelf
             .shows
             .iter()
-            .filter(move |s| match (pane_kind, s.pane) {
-                (Pane::Today, Some(Pane::Today)) => true,
-                (Pane::Late, Some(Pane::Late)) => true,
-                (Pane::Backlog { .. }, Some(Pane::Backlog { .. })) => true,
-                _ => false,
+            .filter(move |s| {
+                matches!(
+                    (pane_kind, s.pane),
+                    (Pane::Playable, Some(Pane::Playable))
+                        | (Pane::Dropping, Some(Pane::Dropping))
+                        | (Pane::Following, Some(Pane::Following))
+                )
             })
             .collect()
     }
@@ -136,7 +141,7 @@ impl App {
 
     /// Called on the 30s tick (and after any state-changing action).
     pub fn refresh_buckets(&mut self) {
-        self.shelf.recompute_panes(self.now, self.windows);
+        self.shelf.recompute_panes(self.now, self.windows, &self.subs);
         for i in 0..3 {
             let n = self.items_in(i).len();
             if self.selection[i] >= n {
@@ -157,9 +162,12 @@ impl App {
     pub fn dispatch(&mut self, cmd: Command) {
         match cmd {
             Command::Watched => self.do_watched(),
-            Command::Snooze => self.do_snooze(),
             Command::Drop => self.do_drop(),
             Command::Stream => self.do_stream(),
+            Command::CopyContext => self.do_copy_context(),
+            Command::SubsAdd(name) => self.do_subs_add(&name),
+            Command::SubsRemove(name) => self.do_subs_remove(&name),
+            Command::SubsList => self.do_subs_list(),
             Command::Help => {
                 self.overlay = Overlay::Help;
             }
@@ -169,6 +177,10 @@ impl App {
             Command::Follow(id) => self.do_follow(id),
             Command::Sync => self.do_sync(),
             Command::Doctor => self.do_doctor(),
+            // Snooze is a Task-6 leftover the parser still exposes;
+            // manifesto excludes progress-tracker UX, so it's a no-op
+            // until the verb is removed.
+            Command::Snooze => {}
         }
     }
 
@@ -202,15 +214,6 @@ impl App {
         }
     }
 
-    fn do_snooze(&mut self) {
-        if let Some(s) = self.current() {
-            self.toasts
-                .push(format!("▷ Snoozed {} to tomorrow (stub)", s.display_title()));
-        } else {
-            self.toasts.push("nothing selected");
-        }
-    }
-
     fn do_drop(&mut self) {
         let Some(s) = self.current() else {
             self.toasts.push("nothing selected");
@@ -239,20 +242,109 @@ impl App {
             return;
         };
         let title = s.display_title().to_string();
-        let url = s
-            .streaming
-            .iter()
-            .find_map(|l| l.url.clone())
-            .or_else(|| s.user_note().map(str::to_string));
-        let Some(url) = url else {
-            self.toasts.push(format!(
-                "no streaming link cached for {title} — try `:sync`"
-            ));
+
+        // Prefer verified URL on a subscribed streamer.
+        if let (Some(url), Some(streamer)) = (s.verified_url(), s.verified_streamer()) {
+            if self.subs.matches(&streamer) {
+                return self.open_url(&title, &url, None);
+            }
+        }
+        // Fall back: any cached streaming link whose site is subscribed.
+        let preferred = s.streaming.iter().find_map(|l| {
+            let site = l.site.as_deref()?;
+            let url = l.url.as_deref()?;
+            if self.subs.matches(site) {
+                Some(url.to_string())
+            } else {
+                None
+            }
+        });
+        if let Some(url) = preferred {
+            return self.open_url(&title, &url, None);
+        }
+        // Last resort: first link with a URL, but warn it isn't subscribed.
+        if let Some((url, site)) = s.streaming.iter().find_map(|l| {
+            let url = l.url.clone()?;
+            Some((url, l.site.clone().unwrap_or_else(|| "unknown".into())))
+        }) {
+            return self.open_url(
+                &title,
+                &url,
+                Some(format!("opens on {site} — not in your subs")),
+            );
+        }
+        self.toasts
+            .push(format!("no streaming link cached for {title} — try `:sync`"));
+    }
+
+    fn open_url(&mut self, title: &str, url: &str, warn: Option<String>) {
+        match open::that(url) {
+            Ok(_) => {
+                let msg = match warn {
+                    Some(w) => format!("⚠ {w} · ↗ {title}"),
+                    None => format!("↗ Opening {title} — {url}"),
+                };
+                self.toasts.push(msg);
+            }
+            Err(e) => self.toasts.push(format!("open failed: {e}")),
+        }
+    }
+
+    fn do_copy_context(&mut self) {
+        let Some(s) = self.current() else {
+            self.toasts.push("nothing selected");
             return;
         };
-        match open::that(&url) {
-            Ok(_) => self.toasts.push(format!("↗ Opening {title} — {url}")),
-            Err(e) => self.toasts.push(format!("open failed: {e}")),
+        let title = s.display_title().to_string();
+        let value = match crate::tui::llm_context::build(&self.facade, s) {
+            Ok(v) => v,
+            Err(e) => {
+                self.toasts.push(format!("context build failed: {e}"));
+                return;
+            }
+        };
+        let pretty = serde_json::to_string_pretty(&value).unwrap_or_default();
+        let bytes = pretty.len();
+        match arboard::Clipboard::new().and_then(|mut c| c.set_text(pretty)) {
+            Ok(_) => self.toasts.push(format!(
+                "⧉ context for \"{title}\" copied ({:.1} KB)",
+                bytes as f64 / 1024.0
+            )),
+            Err(e) => self.toasts.push(format!("clipboard error: {e}")),
+        }
+    }
+
+    fn do_subs_add(&mut self, name: &str) {
+        let lib = self.facade.clone();
+        match self.subs.add(&lib, name) {
+            Ok(true) => {
+                self.toasts.push(format!("✓ subscribed to {name}"));
+                self.refresh_buckets();
+            }
+            Ok(false) => self.toasts.push(format!("already subscribed to {name}")),
+            Err(e) => self.toasts.push(format!("subs: {e}")),
+        }
+    }
+
+    fn do_subs_remove(&mut self, name: &str) {
+        let lib = self.facade.clone();
+        match self.subs.remove(&lib, name) {
+            Ok(true) => {
+                self.toasts.push(format!("✗ removed {name}"));
+                self.refresh_buckets();
+            }
+            Ok(false) => self.toasts.push(format!("not subscribed to {name}")),
+            Err(e) => self.toasts.push(format!("subs: {e}")),
+        }
+    }
+
+    fn do_subs_list(&mut self) {
+        let s = self.subs.streamers();
+        if s.is_empty() {
+            self.toasts
+                .push("no subs — `:subs add netflix` to start");
+        } else {
+            self.toasts.push(format!("subs › {}", s.join(" · ")));
         }
     }
 
@@ -318,7 +410,7 @@ impl App {
     /// Reload the shelf from durable state after a write that touched
     /// it (follow/sync). Re-derives panes.
     fn reload_shelf(&mut self, now: i64) {
-        if let Ok(shelf) = Shelf::load(&self.facade, now, self.windows) {
+        if let Ok(shelf) = Shelf::load(&self.facade, now, self.windows, &self.subs) {
             self.shelf = shelf;
             self.now = now;
             self.refresh_buckets();
@@ -382,9 +474,9 @@ impl App {
             .get(shelf_idx)
             .ok_or_else(|| anyhow::anyhow!("show out of range"))?;
         let pane_idx = match show.pane {
-            Some(Pane::Today) => PANE_TODAY,
-            Some(Pane::Late) => PANE_LATE,
-            Some(Pane::Backlog { .. }) => PANE_BACKLOG,
+            Some(Pane::Playable) => PANE_PLAYABLE,
+            Some(Pane::Dropping) => PANE_DROPPING,
+            Some(Pane::Following) => PANE_FOLLOWING,
             None => return Err(anyhow::anyhow!("show is hidden (fully watched)")),
         };
         self.focused_pane = pane_idx;

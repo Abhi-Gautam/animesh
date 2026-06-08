@@ -17,6 +17,7 @@ pub mod app;
 pub mod ascii_art;
 pub mod command;
 pub mod help;
+pub mod llm_context;
 pub mod model;
 pub mod palette;
 pub mod pane;
