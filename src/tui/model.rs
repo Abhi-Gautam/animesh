@@ -31,6 +31,11 @@ pub struct Show {
     /// Most recent `Completed` engagement event for this canonical.
     /// `seen` derives from its `meta.seen` JSON.
     pub last_completed: Option<Engagement>,
+    /// Most recent `EngagementEvent::Verified`, if any. Meta JSON shape:
+    /// `{"streamer": "Netflix", "url": "..."}` (written by sync engine).
+    pub last_verified: Option<Engagement>,
+    /// True when `last_verified.streamer` is in user's subs.
+    pub subscribed_match: bool,
     pub pane: Option<Pane>,
     /// Parsed streaming links (if cached).
     pub streaming: Vec<StreamingLink>,
@@ -135,6 +140,39 @@ impl Show {
     pub fn cover_ascii(&self) -> Option<&str> {
         self.canonical.cover_ascii.as_deref()
     }
+
+    pub fn verified_streamer(&self) -> Option<String> {
+        let meta = self.last_verified.as_ref()?.meta.as_deref()?;
+        serde_json::from_str::<serde_json::Value>(meta)
+            .ok()
+            .and_then(|v| v.get("streamer")?.as_str().map(str::to_string))
+    }
+
+    pub fn verified_url(&self) -> Option<String> {
+        let meta = self.last_verified.as_ref()?.meta.as_deref()?;
+        serde_json::from_str::<serde_json::Value>(meta)
+            .ok()
+            .and_then(|v| v.get("url")?.as_str().map(str::to_string))
+    }
+
+    pub fn verified_at(&self) -> Option<i64> {
+        Some(self.last_verified.as_ref()?.occurred_at)
+    }
+
+    /// First future air/release time across cache fields. Today only
+    /// `next_episode_airs_at` is populated; this is the seam where music
+    /// and film release-date fields will plug in later without changing
+    /// callers.
+    pub fn next_drop_at(&self) -> Option<i64> {
+        self.cache.as_ref().and_then(|c| c.next_episode_airs_at)
+    }
+
+    pub fn fully_done(&self) -> bool {
+        match (self.total(), Some(self.seen())) {
+            (Some(t), Some(s)) => s >= t,
+            _ => false,
+        }
+    }
 }
 
 pub struct Shelf {
@@ -146,7 +184,12 @@ impl Shelf {
     /// attached source_ref are silently skipped — they shouldn't exist
     /// in practice (every followed canonical attaches one at follow
     /// time) but we don't want a misshapen row to crash the TUI.
-    pub fn load(facade: &Facade, now: i64, windows: Windows) -> Result<Self> {
+    pub fn load(
+        facade: &Facade,
+        now: i64,
+        windows: Windows,
+        subs: &crate::tui::subs::Subs,
+    ) -> Result<Self> {
         let canonicals = facade.followed()?;
         let mut shows = Vec::with_capacity(canonicals.len());
         for canonical in canonicals {
@@ -155,7 +198,10 @@ impl Shelf {
                 continue;
             };
             let cache = facade.get_cache(&primary_source.source, &primary_source.source_id)?;
-            let last_completed = facade.last_engagement(&canonical.id, EngagementEvent::Completed)?;
+            let last_completed =
+                facade.last_engagement(&canonical.id, EngagementEvent::Completed)?;
+            let last_verified =
+                facade.last_engagement(&canonical.id, EngagementEvent::Verified)?;
             let streaming: Vec<StreamingLink> = cache
                 .as_ref()
                 .and_then(|c| c.streaming_links_json.as_deref())
@@ -166,9 +212,16 @@ impl Shelf {
                 primary_source,
                 cache,
                 last_completed,
+                last_verified,
+                subscribed_match: false,
                 pane: None,
                 streaming,
             };
+            show.subscribed_match = show
+                .verified_streamer()
+                .as_deref()
+                .map(|s| subs.matches(s))
+                .unwrap_or(false);
             show.pane = bucket(show_inputs(&show), now, windows);
             shows.push(show);
         }
@@ -177,8 +230,18 @@ impl Shelf {
 
     /// Re-derive each show's `pane` from current state. Call after
     /// the user mutates progress (e.g. `w` key) or on tick.
-    pub fn recompute_panes(&mut self, now: i64, windows: Windows) {
+    pub fn recompute_panes(
+        &mut self,
+        now: i64,
+        windows: Windows,
+        subs: &crate::tui::subs::Subs,
+    ) {
         for s in &mut self.shows {
+            s.subscribed_match = s
+                .verified_streamer()
+                .as_deref()
+                .map(|n| subs.matches(n))
+                .unwrap_or(false);
             s.pane = bucket(show_inputs(s), now, windows);
         }
     }
@@ -207,9 +270,10 @@ impl Shelf {
 
 fn show_inputs(s: &Show) -> BucketInputs {
     BucketInputs {
-        seen: s.seen(),
-        total: s.total(),
-        next_episode_number: s.next_episode(),
-        next_episode_airs_at: s.airs_at(),
+        next_drop_at: s.next_drop_at(),
+        verified_playable_at: s.verified_at(),
+        verified_streamer: s.verified_streamer(),
+        subscribed: s.subscribed_match,
+        fully_done: s.fully_done(),
     }
 }
