@@ -20,6 +20,7 @@ pub mod help;
 pub mod model;
 pub mod palette;
 pub mod pane;
+pub mod subs;
 pub mod toast;
 pub mod view;
 pub mod view_detail;
