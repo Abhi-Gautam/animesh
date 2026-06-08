@@ -177,10 +177,6 @@ impl App {
             Command::Follow(id) => self.do_follow(id),
             Command::Sync => self.do_sync(),
             Command::Doctor => self.do_doctor(),
-            // Snooze is a Task-6 leftover the parser still exposes;
-            // manifesto excludes progress-tracker UX, so it's a no-op
-            // until the verb is removed.
-            Command::Snooze => {}
         }
     }
 

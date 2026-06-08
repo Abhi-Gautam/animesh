@@ -14,7 +14,6 @@ use nucleo::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
     Watched,
-    Snooze,
     Drop,
     Stream,
     Sync,
@@ -51,12 +50,6 @@ pub const SPECS: &[CommandSpec] = &[
         name: "watched",
         aliases: &["w", "mark", "seen"],
         description: "Mark current episode watched",
-        arg_hint: None,
-    },
-    CommandSpec {
-        name: "snooze",
-        aliases: &["s"],
-        description: "Snooze current show to tomorrow",
         arg_hint: None,
     },
     CommandSpec {
@@ -100,6 +93,18 @@ pub const SPECS: &[CommandSpec] = &[
         aliases: &["q", "exit"],
         description: "Quit animesh",
         arg_hint: None,
+    },
+    CommandSpec {
+        name: "context",
+        aliases: &["c", "copy"],
+        description: "Copy LLM context for selection",
+        arg_hint: None,
+    },
+    CommandSpec {
+        name: "subs",
+        aliases: &[],
+        description: "List or modify streamer subs",
+        arg_hint: Some("[add|remove] <name>"),
     },
 ];
 
@@ -153,13 +158,31 @@ pub fn parse(query: &str) -> Result<Command, ParseError> {
 
     match spec.name {
         "watched" => Ok(Command::Watched),
-        "snooze" => Ok(Command::Snooze),
         "drop" => Ok(Command::Drop),
         "stream" => Ok(Command::Stream),
         "sync" => Ok(Command::Sync),
         "doctor" => Ok(Command::Doctor),
         "help" => Ok(Command::Help),
         "quit" => Ok(Command::Quit),
+        "context" => Ok(Command::CopyContext),
+        "subs" => {
+            if rest.is_empty() {
+                return Ok(Command::SubsList);
+            }
+            let mut it = rest.splitn(2, char::is_whitespace);
+            match (it.next(), it.next()) {
+                (Some("add"), Some(name)) if !name.trim().is_empty() => {
+                    Ok(Command::SubsAdd(name.trim().to_string()))
+                }
+                (Some("remove"), Some(name)) if !name.trim().is_empty() => {
+                    Ok(Command::SubsRemove(name.trim().to_string()))
+                }
+                _ => Err(ParseError::BadArg {
+                    verb: "subs",
+                    reason: "usage: :subs [add|remove] <name>".to_string(),
+                }),
+            }
+        }
         "follow" => {
             if rest.is_empty() {
                 return Err(ParseError::MissingArg {
@@ -249,7 +272,6 @@ mod tests {
     #[test]
     fn parse_canonical_names() {
         assert_eq!(parse("watched").unwrap(), Command::Watched);
-        assert_eq!(parse("snooze").unwrap(), Command::Snooze);
         assert_eq!(parse("drop").unwrap(), Command::Drop);
         assert_eq!(parse("stream").unwrap(), Command::Stream);
         assert_eq!(parse("sync").unwrap(), Command::Sync);
@@ -321,11 +343,42 @@ mod tests {
 
     #[test]
     fn suggest_typo_tolerance() {
-        // nucleo allows non-contiguous subsequence; 'snoz' should
-        // still find 'snooze'.
-        let s = suggest("snoz");
+        // nucleo allows non-contiguous subsequence; 'wtchd' should
+        // still find 'watched'.
+        let s = suggest("wtchd");
         let names: Vec<_> = s.iter().map(|x| x.spec.name).collect();
-        assert!(names.contains(&"snooze"), "snoz → snooze; got {names:?}");
+        assert!(names.contains(&"watched"), "wtchd → watched; got {names:?}");
+    }
+
+    #[test]
+    fn parses_context() {
+        assert!(matches!(parse("context").unwrap(), Command::CopyContext));
+    }
+
+    #[test]
+    fn parses_subs_no_arg_is_list() {
+        assert!(matches!(parse("subs").unwrap(), Command::SubsList));
+    }
+
+    #[test]
+    fn parses_subs_add() {
+        match parse("subs add Netflix").unwrap() {
+            Command::SubsAdd(s) => assert_eq!(s, "Netflix"),
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn parses_subs_remove() {
+        match parse("subs remove Netflix").unwrap() {
+            Command::SubsRemove(s) => assert_eq!(s, "Netflix"),
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn subs_without_subcmd_arg_errors() {
+        assert!(parse("subs add").is_err());
     }
 
     #[test]
