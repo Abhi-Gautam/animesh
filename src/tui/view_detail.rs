@@ -59,6 +59,8 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
             Constraint::Length(5), // hero (title + sub + stats)
             Constraint::Length(2), // progress
             Constraint::Length(3), // watch-on
+            Constraint::Length(5), // refs (header + up to 4 source rows)
+            Constraint::Length(3), // verification provenance
             Constraint::Length(4), // episodes
             Constraint::Min(0),    // synopsis
         ])
@@ -67,8 +69,10 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
     render_hero(f, s, app.now, chunks[0]);
     render_progress(f, s, chunks[1]);
     render_watch_on(f, s, chunks[2]);
-    render_episodes(f, s, chunks[3]);
-    render_synopsis(f, s, chunks[4]);
+    render_refs(f, app, s, chunks[3]);
+    render_verification(f, s, app.now, chunks[4]);
+    render_episodes(f, s, chunks[5]);
+    render_synopsis(f, s, chunks[6]);
 }
 
 /// Paint the title gradient-colored across the show's palette. Each
@@ -163,33 +167,46 @@ fn render_hero(f: &mut Frame, s: &crate::tui::model::Show, now: i64, area: Rect)
 
     let mut stat: Vec<Span<'static>> = Vec::new();
     match s.pane {
-        Some(Pane::Today) => {
-            let ep = s.next_episode().unwrap_or(0);
-            let rel = relative(s.airs_at().unwrap_or(now), now);
-            stat.push(Span::styled("NEXT EPISODE  ", Style::default().fg(DIMMER)));
-            stat.push(Span::styled(format!("E{ep}"), Style::default().fg(EP_GOLD).add_modifier(Modifier::BOLD)));
-            stat.push(Span::styled(" · ", Style::default().fg(DIM)));
-            stat.push(Span::styled(rel, Style::default().fg(SOON)));
+        Some(Pane::Playable) => {
+            stat.push(Span::styled("PLAYABLE NOW  ", Style::default().fg(DIMMER)));
+            match s.verified_streamer() {
+                Some(streamer) => stat.push(Span::styled(
+                    streamer.to_lowercase(),
+                    Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+                )),
+                None => stat.push(Span::styled(
+                    "verified",
+                    Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+                )),
+            }
         }
-        Some(Pane::Late) => {
-            let ep = s.next_episode().unwrap_or(0);
-            let rel = relative(s.airs_at().unwrap_or(now), now);
-            stat.push(Span::styled("AIRED  ", Style::default().fg(DIMMER)));
-            stat.push(Span::styled(format!("E{ep}"), Style::default().fg(EP_GOLD).add_modifier(Modifier::BOLD)));
-            stat.push(Span::styled(" · ", Style::default().fg(DIM)));
-            stat.push(Span::styled(rel, Style::default().fg(LATE)));
+        Some(Pane::Dropping) => {
+            stat.push(Span::styled("DROPS  ", Style::default().fg(DIMMER)));
+            match s.next_drop_at() {
+                Some(at) => stat.push(Span::styled(
+                    relative(at, now),
+                    Style::default().fg(SOON).add_modifier(Modifier::BOLD),
+                )),
+                None => stat.push(Span::styled(
+                    "soon",
+                    Style::default().fg(SOON).add_modifier(Modifier::BOLD),
+                )),
+            }
         }
-        Some(Pane::Backlog { behind }) => {
-            let ep = s.next_episode().unwrap_or(s.seen() + 1);
-            stat.push(Span::styled("RESUME  ", Style::default().fg(DIMMER)));
-            stat.push(Span::styled(format!("E{ep}"), Style::default().fg(EP_GOLD).add_modifier(Modifier::BOLD)));
-            stat.push(Span::styled(" · ", Style::default().fg(DIM)));
-            let tail = if behind > 0 {
-                Span::styled(format!("{behind} behind"), Style::default().fg(LATE))
+        Some(Pane::Following) => {
+            let ep = s.next_episode().unwrap_or(0);
+            if ep > 0 {
+                stat.push(Span::styled("RESUME  ", Style::default().fg(DIMMER)));
+                stat.push(Span::styled(
+                    format!("E{ep}"),
+                    Style::default().fg(EP_GOLD).add_modifier(Modifier::BOLD),
+                ));
             } else {
-                Span::styled("finale", Style::default().fg(SOON))
-            };
-            stat.push(tail);
+                stat.push(Span::styled(
+                    "FOLLOWING",
+                    Style::default().fg(DIMMER).add_modifier(Modifier::BOLD),
+                ));
+            }
         }
         None => {}
     }
@@ -251,6 +268,80 @@ fn render_watch_on(f: &mut Frame, s: &crate::tui::model::Show, area: Rect) {
             Line::from(spans),
         ]
     };
+    f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
+}
+
+/// REFS — every source the canonicalizer attached. Shows the
+/// substrate, not just the row. Limited to four lines to keep the
+/// fixed-height pane from clipping; if a canonical ever has more,
+/// `+N more` could land here.
+fn render_refs(f: &mut Frame, app: &App, s: &crate::tui::model::Show, area: Rect) {
+    let refs = app
+        .facade
+        .source_refs_for(s.canonical_id())
+        .unwrap_or_default();
+    let mut lines: Vec<Line> = vec![Line::from(Span::styled(
+        "REFS",
+        Style::default().fg(DIMMER).add_modifier(Modifier::BOLD),
+    ))];
+    if refs.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  (none)",
+            Style::default().fg(DIM),
+        )));
+    } else {
+        for r in refs.iter().take(4) {
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("  {:<8}", r.source),
+                    Style::default().fg(INK_2),
+                ),
+                Span::styled(format!("#{}", r.source_id), Style::default().fg(DIM)),
+            ]));
+        }
+    }
+    f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
+}
+
+/// VERIFICATION — when we last saw the source confirm playability on
+/// a streamer. Glyph + color shift with subscribed_match: ▶/ACCENT
+/// means hit `g` and it works; ·/DIM means the link exists but on a
+/// service the user doesn't subscribe to.
+fn render_verification(
+    f: &mut Frame,
+    s: &crate::tui::model::Show,
+    now: i64,
+    area: Rect,
+) {
+    let mut lines: Vec<Line> = vec![Line::from(Span::styled(
+        "VERIFICATION",
+        Style::default().fg(DIMMER).add_modifier(Modifier::BOLD),
+    ))];
+    if let (Some(streamer), Some(at)) = (s.verified_streamer(), s.verified_at()) {
+        let glyph = if s.subscribed_match { "▶" } else { "·" };
+        let color = if s.subscribed_match { ACCENT } else { DIM };
+        lines.push(Line::from(vec![
+            Span::styled(format!("  {glyph} "), Style::default().fg(color)),
+            Span::styled(streamer.to_lowercase(), Style::default().fg(color)),
+            Span::styled(
+                format!("  · verified {}", crate::tui::view::relative_short(at, now)),
+                Style::default().fg(INK_2),
+            ),
+        ]));
+    } else if let Some(drop_at) = s.next_drop_at() {
+        lines.push(Line::from(vec![
+            Span::styled("  🛈 scheduled  ", Style::default().fg(SOON)),
+            Span::styled(
+                crate::tui::view::relative_short(drop_at, now),
+                Style::default().fg(INK_2),
+            ),
+        ]));
+    } else {
+        lines.push(Line::from(Span::styled(
+            "  no drops scheduled",
+            Style::default().fg(DIM),
+        )));
+    }
     f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
 }
 
