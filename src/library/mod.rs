@@ -247,7 +247,8 @@ impl Library {
         let Some(raw) = self.kv_get("subs.streaming")? else {
             return Ok(Vec::new());
         };
-        Ok(serde_json::from_str(&raw).unwrap_or_default())
+        serde_json::from_str(&raw)
+            .with_context(|| format!("decode subs.streaming: {raw:?}"))
     }
 
     /// Overwrite the streamer subscription list. Empty input clears the key.
@@ -551,5 +552,14 @@ mod tests {
         lib.set_subscribed_streamers(&["Netflix".to_string()]).unwrap();
         lib.set_subscribed_streamers(&[]).unwrap();
         assert!(lib.subscribed_streamers().unwrap().is_empty());
+    }
+
+    #[test]
+    fn subscribed_streamers_surfaces_corrupt_json() {
+        let lib = Library::open_in_memory(Arc::new(FixedClock(1))).unwrap();
+        lib.kv_set("subs.streaming", "not json").unwrap();
+        let err = lib.subscribed_streamers().unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("decode subs.streaming"), "got: {msg}");
     }
 }
