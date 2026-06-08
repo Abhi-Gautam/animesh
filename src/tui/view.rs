@@ -13,7 +13,6 @@ use ratatui::{
 use crate::tui::app::{App, Overlay, PANE_LABELS};
 use crate::tui::command::{self, Suggestion};
 use crate::tui::help::HELP_PAIRS;
-use crate::tui::pane::Pane;
 use crate::tui::palette::FollowStage;
 
 const ACCENT: Color = Color::Rgb(0xff, 0x7a, 0x59);
@@ -63,13 +62,18 @@ pub fn render(f: &mut Frame, app: &App) {
 
 fn render_status_line(f: &mut Frame, app: &App, area: Rect) {
     let active = app.shelf.shows.len();
-    let late = app.items_in(crate::tui::app::PANE_LATE).len();
+    let playable = app
+        .items_in(crate::tui::app::PANE_PLAYABLE)
+        .len();
+    let dropping = app
+        .items_in(crate::tui::app::PANE_DROPPING)
+        .len();
     let clock = Local
         .timestamp_opt(app.now, 0)
         .single()
         .map(|t| t.format("%H:%M").to_string())
         .unwrap_or_else(|| "--:--".into());
-    let left = vec![
+    let mut left = vec![
         Span::styled("~", Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
         Span::styled("animesh", Style::default().fg(INK).add_modifier(Modifier::BOLD)),
         Span::raw("   "),
@@ -77,13 +81,26 @@ fn render_status_line(f: &mut Frame, app: &App, area: Rect) {
         Span::raw(" › "),
         Span::styled(PANE_LABELS[app.focused_index()].to_lowercase(), Style::default().fg(DIM)),
     ];
+    let subs_text = if app.subs.streamers().is_empty() {
+        "(none — :subs add netflix)".to_string()
+    } else {
+        app.subs.streamers().join(" · ").to_lowercase()
+    };
+    left.extend(vec![
+        Span::raw("   "),
+        Span::styled("subs", Style::default().fg(INK_2)),
+        Span::raw(" › "),
+        Span::styled(subs_text, Style::default().fg(DIM)),
+    ]);
     let right = vec![
         Span::styled(format!("{active} followed"), Style::default().fg(DIM)),
         Span::raw(" · "),
         Span::styled(
-            format!("{late} late"),
-            Style::default().fg(if late > 0 { LATE } else { DIM }),
+            format!("{playable} playable"),
+            Style::default().fg(if playable > 0 { ACCENT } else { DIM }),
         ),
+        Span::raw(" · "),
+        Span::styled(format!("{dropping} dropping"), Style::default().fg(SOON)),
         Span::raw(" · "),
         Span::styled(clock, Style::default().fg(INK_2)),
     ];
@@ -153,11 +170,11 @@ fn render_empty_state(f: &mut Frame, area: Rect) {
         ]),
         Line::raw(""),
         Line::from(Span::styled(
-            "  Once you've followed a show, this screen becomes the three-pane view",
+            "  Once you've followed shows, panes split into",
             Style::default().fg(DIM),
         )),
         Line::from(Span::styled(
-            "  Today  ·  Late  ·  Backlog. Mark watched with  w  .",
+            "  Playable now  ·  Dropping soon  ·  Following. Press c for LLM context.",
             Style::default().fg(DIM),
         )),
     ];
@@ -216,13 +233,15 @@ fn render_row(
     pane_idx: usize,
     now: i64,
 ) -> Line<'static> {
+    let _ = pane_idx;
     let mark_color = if selected && pane_focused { ACCENT } else { DIMMER };
     let mark = Span::styled("▸ ", Style::default().fg(mark_color));
-    let title_color = if selected && pane_focused {
-        Color::White
-    } else {
-        INK_2
-    };
+
+    // Dim rows where we have a verified link but on no subscribed
+    // streamer — they're catalogued but the user can't watch.
+    let unreachable = s.last_verified.is_some() && !s.subscribed_match;
+    let base = if unreachable { DIM } else { INK_2 };
+    let title_color = if selected && pane_focused { Color::White } else { base };
     let title_style = if selected && pane_focused {
         Style::default().fg(title_color).add_modifier(Modifier::BOLD)
     } else {
@@ -230,36 +249,67 @@ fn render_row(
     };
     let title = Span::styled(s.display_title().to_string(), title_style);
 
-    let (badge, badge_color) = match s.pane {
-        Some(Pane::Today) => {
-            let rel = relative_short(s.airs_at().unwrap_or(now), now);
-            let ep = s.next_episode().unwrap_or(0);
-            (format!("E{ep} · {rel}"), SOON)
-        }
-        Some(Pane::Late) => {
-            let ep = s.next_episode().unwrap_or(0);
-            (format!("E{ep} ✓?"), LATE)
-        }
-        Some(Pane::Backlog { behind }) => {
-            if behind > 0 {
-                (format!("+{behind}"), LATE)
-            } else {
-                ("1 left".to_string(), SOON)
-            }
-        }
-        None => (String::new(), DIM),
-    };
-    let _ = pane_idx;
+    let middle = kind_descriptor(s);
+    let (glyph, glyph_text, glyph_color) = badge_for(s, now);
+    let glyph_span = Span::styled(format!(" {glyph} "), Style::default().fg(glyph_color));
+    let glyph_label = Span::styled(glyph_text, Style::default().fg(glyph_color));
 
     Line::from(vec![
         mark,
         title,
         Span::raw("  "),
-        Span::styled(badge, Style::default().fg(badge_color)),
+        Span::styled(middle, Style::default().fg(DIM)),
+        glyph_span,
+        glyph_label,
     ])
 }
 
-fn relative_short(at: i64, now: i64) -> String {
+/// Middle-column descriptor for a row. Kind-aware so anime/TV show
+/// episode numbers, film shows "theatrical", music shows the cached
+/// release format (album/single/EP).
+fn kind_descriptor(s: &crate::tui::model::Show) -> String {
+    use crate::ids::ReleaseKind::*;
+    match s.canonical_id().kind() {
+        Anime | Tv => {
+            let ep = s.next_episode().unwrap_or(0);
+            if ep == 0 {
+                String::new()
+            } else {
+                format!("E{ep}")
+            }
+        }
+        Film => "theatrical".to_string(),
+        MusicArtist => s
+            .format()
+            .map(|f| f.to_lowercase())
+            .unwrap_or_else(|| "release".to_string()),
+    }
+}
+
+/// Trailing badge glyph + label + color.
+///
+/// Precedence:
+/// 1. Verified + subscribed streamer → ▶ <streamer> in ACCENT.
+/// 2. Future scheduled drop → 🛈 in SOON.
+/// 3. Past scheduled drop (no verification) → ✗ in LATE.
+/// 4. Otherwise → · (idle) in DIM.
+fn badge_for(s: &crate::tui::model::Show, now: i64) -> (&'static str, String, Color) {
+    if let (Some(at), Some(streamer)) = (s.verified_at(), s.verified_streamer()) {
+        if s.subscribed_match {
+            return ("▶", streamer.to_lowercase(), ACCENT);
+        }
+        let _ = at;
+    }
+    if let Some(drop_at) = s.next_drop_at() {
+        if drop_at > now {
+            return ("🛈", relative_short(drop_at, now), SOON);
+        }
+        return ("✗", relative_short(drop_at, now), LATE);
+    }
+    ("·", String::new(), DIM)
+}
+
+pub fn relative_short(at: i64, now: i64) -> String {
     let diff = at - now;
     let a = diff.abs();
     let mins = (a / 60).max(1);
@@ -319,6 +369,7 @@ fn render_hint_bar(f: &mut Frame, app: &App, area: Rect) {
                 ("tab", "pane"),
                 ("w", "watched"),
                 ("g", "stream"),
+                ("c", "context"),
                 (":", "cmd"),
                 ("/", "jump"),
                 ("a", "add"),
