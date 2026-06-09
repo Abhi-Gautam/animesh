@@ -13,7 +13,9 @@ use std::fmt;
 use std::str::FromStr;
 
 use anyhow::{anyhow, Context, Result};
-use rusqlite::{params, OptionalExtension, Row};
+use rusqlite::{params, Row};
+#[cfg(test)]
+use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 
 use crate::ids::CanonicalId;
@@ -248,9 +250,10 @@ impl Db {
         Ok(conn.last_insert_rowid())
     }
 
-    /// Last engagement of the given kind for a canonical. The notifier
-    /// uses this to dedupe and the upcoming-drop computer uses it to
-    /// avoid re-prompting an already-completed episode.
+    /// Last engagement of the given kind for a canonical. Production
+    /// reads pull this through the [`crate::library::Library::load_resolved`]
+    /// join; the standalone form survives for tests.
+    #[cfg(test)]
     pub fn last_engagement(
         &self,
         canonical_id: &CanonicalId,
@@ -276,7 +279,7 @@ impl Db {
     ) -> Result<Vec<Engagement>> {
         let conn = self.conn();
         let mut stmt = conn
-            .prepare(
+            .prepare_cached(
                 "SELECT * FROM engagement WHERE canonical_id = ?1 \
                  ORDER BY occurred_at DESC, id DESC",
             )

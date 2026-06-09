@@ -36,9 +36,25 @@ use anyhow::{Context, Result};
 use crate::ids::{CanonicalId, ReleaseKind};
 use crate::store::{
     CacheEntry, CanonicalFollowOutcome, CanonicalRelease, Db, Engagement, EngagementEvent,
-    EngagementMeta, SourceRef,
+    EngagementMeta, EngagementSource, SourceRef,
 };
 use crate::time::Clock;
+
+/// One fully-resolved canonical the TUI can render directly. Produced
+/// by [`Library::load_resolved`] in a single query — no per-row joins
+/// from the caller.
+#[derive(Debug, Clone)]
+pub struct ResolvedRelease {
+    pub canonical: CanonicalRelease,
+    /// Highest-confidence attached source_ref. Invariant: a followed
+    /// canonical has at least one attached ref (enforced at follow
+    /// time), so this is never absent for the rows `load_resolved`
+    /// returns.
+    pub primary_source: SourceRef,
+    pub cache: Option<CacheEntry>,
+    pub last_completed: Option<Engagement>,
+    pub last_verified: Option<Engagement>,
+}
 
 /// The domain facade. Hold one of these per process; share via
 /// `Arc<Library>` to async tasks and the TUI.
@@ -119,6 +135,15 @@ impl Library {
         db.list_active_canonical()
     }
 
+    /// Active follows with their primary source_ref, cache row, and
+    /// last `Completed` + `Verified` engagement events — all in one
+    /// prepared, cached query. Replaces the N+1 the TUI's `Shelf::load`
+    /// used to do.
+    pub fn load_resolved(&self) -> Result<Vec<ResolvedRelease>> {
+        let db = self.lock_db()?;
+        load_resolved_rows(&db)
+    }
+
     #[cfg(test)]
     pub fn find_canonical(&self, id: &CanonicalId) -> Result<Option<CanonicalRelease>> {
         let db = self.lock_db()?;
@@ -148,6 +173,10 @@ impl Library {
     }
 
     /// Last engagement of a given event kind for one canonical.
+    /// Tests use this directly; production reads go through
+    /// [`Library::load_resolved`] which folds the same lookup into a
+    /// single join.
+    #[cfg(test)]
     pub fn last_engagement(
         &self,
         canonical_id: &CanonicalId,
@@ -172,6 +201,9 @@ impl Library {
         db.source_refs_for_canonical(canonical_id)
     }
 
+    /// Test-only — production reads source the cache through
+    /// [`Library::load_resolved`].
+    #[cfg(test)]
     pub fn get_cache(&self, source: &str, source_id: &str) -> Result<Option<CacheEntry>> {
         let db = self.lock_db()?;
         db.get_cache(source, source_id)
@@ -231,6 +263,160 @@ impl Library {
             .lock()
             .map_err(|_| anyhow::anyhow!("Library DB mutex poisoned"))
     }
+}
+
+/// One prepared-and-cached statement runs every per-frame resolved
+/// load. The window-function picks the highest-confidence source_ref
+/// per canonical and the newest `Completed`/`Verified` event per
+/// canonical — all in a single round trip.
+const LOAD_RESOLVED_SQL: &str = "\
+WITH primary_sr AS (\
+    SELECT canonical_id, source, source_id, raw_title, confidence \
+    FROM (\
+        SELECT canonical_id, source, source_id, raw_title, confidence, \
+               ROW_NUMBER() OVER ( \
+                   PARTITION BY canonical_id \
+                   ORDER BY confidence DESC, source ASC \
+               ) AS rn \
+        FROM source_ref\
+    ) WHERE rn = 1\
+), \
+last_engagement_by_event AS (\
+    SELECT canonical_id, event, id, occurred_at, meta \
+    FROM (\
+        SELECT canonical_id, event, id, occurred_at, meta, \
+               ROW_NUMBER() OVER ( \
+                   PARTITION BY canonical_id, event \
+                   ORDER BY occurred_at DESC, id DESC \
+               ) AS rn \
+        FROM engagement \
+        WHERE event IN ('completed', 'verified')\
+    ) WHERE rn = 1\
+) \
+SELECT \
+    cr.id, cr.kind, cr.display_title, cr.cover_ascii, cr.cover_color, \
+    cr.followed_at, cr.dropped_at, cr.user_note, cr.created_at, \
+    psr.source, psr.source_id, psr.raw_title, psr.confidence, \
+    mc.display_title, mc.title_english, mc.title_native, mc.status, \
+    mc.total_episodes, mc.format, mc.next_episode_number, mc.next_episode_airs_at, \
+    mc.fetched_at, mc.expires_at, mc.cover_image_url, mc.description, \
+    mc.score, mc.studios, mc.streaming_links_json, \
+    lc.id, lc.occurred_at, lc.meta, \
+    lv.id, lv.occurred_at, lv.meta \
+FROM canonical_release cr \
+JOIN primary_sr psr ON psr.canonical_id = cr.id \
+LEFT JOIN metadata_cache mc \
+    ON mc.source = psr.source AND mc.source_id = psr.source_id \
+LEFT JOIN last_engagement_by_event lc \
+    ON lc.canonical_id = cr.id AND lc.event = 'completed' \
+LEFT JOIN last_engagement_by_event lv \
+    ON lv.canonical_id = cr.id AND lv.event = 'verified' \
+WHERE cr.followed_at IS NOT NULL AND cr.dropped_at IS NULL \
+ORDER BY cr.followed_at DESC";
+
+fn load_resolved_rows(db: &Db) -> Result<Vec<ResolvedRelease>> {
+    let conn = db.conn();
+    let mut stmt = conn
+        .prepare_cached(LOAD_RESOLVED_SQL)
+        .context("prepare load_resolved")?;
+    let rows = stmt
+        .query_map([], map_resolved_row)
+        .context("query load_resolved")?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .context("collect load_resolved rows")
+}
+
+fn map_resolved_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ResolvedRelease> {
+    // canonical_release block (cols 0..9).
+    let cr_id: CanonicalId = row.get(0)?;
+    let kind_str: String = row.get(1)?;
+    let kind = kind_str.parse::<ReleaseKind>().map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(
+            1,
+            rusqlite::types::Type::Text,
+            Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())),
+        )
+    })?;
+    let canonical = CanonicalRelease {
+        id: cr_id.clone(),
+        kind,
+        display_title: row.get(2)?,
+        cover_ascii: row.get(3)?,
+        cover_color: row.get(4)?,
+        followed_at: row.get(5)?,
+        dropped_at: row.get(6)?,
+        user_note: row.get(7)?,
+        created_at: row.get(8)?,
+    };
+
+    // primary source_ref (cols 9..13).
+    let primary_source = SourceRef {
+        canonical_id: cr_id.clone(),
+        source: row.get(9)?,
+        source_id: row.get(10)?,
+        raw_title: row.get(11)?,
+        confidence: row.get(12)?,
+    };
+
+    // metadata_cache (cols 13..28). `fetched_at` is NOT NULL when the
+    // LEFT JOIN matched; we use it as the "row exists" signal.
+    let mc_fetched_at: Option<i64> = row.get(21)?;
+    let cache = if let Some(fetched_at) = mc_fetched_at {
+        Some(CacheEntry {
+            source: primary_source.source.clone(),
+            source_id: primary_source.source_id.clone(),
+            display_title: row.get(13)?,
+            title_english: row.get(14)?,
+            title_native: row.get(15)?,
+            status: row.get(16)?,
+            total_episodes: row.get(17)?,
+            format: row.get(18)?,
+            next_episode_number: row.get(19)?,
+            next_episode_airs_at: row.get(20)?,
+            fetched_at,
+            expires_at: row.get(22)?,
+            cover_image_url: row.get(23)?,
+            description: row.get(24)?,
+            score: row.get(25)?,
+            studios: row.get(26)?,
+            streaming_links_json: row.get(27)?,
+        })
+    } else {
+        None
+    };
+
+    // last_completed engagement (cols 28..31).
+    let last_completed = engagement_from_join(row, 28, EngagementEvent::Completed, &cr_id)?;
+
+    // last_verified engagement (cols 31..34).
+    let last_verified = engagement_from_join(row, 31, EngagementEvent::Verified, &cr_id)?;
+
+    Ok(ResolvedRelease {
+        canonical,
+        primary_source,
+        cache,
+        last_completed,
+        last_verified,
+    })
+}
+
+fn engagement_from_join(
+    row: &rusqlite::Row<'_>,
+    base: usize,
+    event: EngagementEvent,
+    canonical_id: &CanonicalId,
+) -> rusqlite::Result<Option<Engagement>> {
+    let id: Option<i64> = row.get(base)?;
+    let Some(id) = id else { return Ok(None) };
+    let occurred_at: i64 = row.get(base + 1)?;
+    let raw_meta: Option<String> = row.get(base + 2)?;
+    Ok(Some(Engagement {
+        source: EngagementSource::Persisted(id),
+        canonical_id: canonical_id.clone(),
+        event,
+        occurred_at,
+        meta: EngagementMeta::decode(event, raw_meta.as_deref()),
+    }))
 }
 
 #[cfg(test)]
@@ -463,5 +649,153 @@ mod tests {
         let err = lib.subscribed_streamers().unwrap_err();
         let msg = format!("{err:#}");
         assert!(msg.contains("decode subs.streaming"), "got: {msg}");
+    }
+
+    // ------------------------------------------------------------------
+    // load_resolved — the single-query read path
+    // ------------------------------------------------------------------
+
+    use crate::store::{CacheEntry, EngagementMeta, TtlConfig};
+
+    fn cache_for(source_id: &str, status: &str, fetched_at: i64) -> CacheEntry {
+        let ttl = TtlConfig::DEFAULT;
+        let status_enum = crate::store::metadata_cache::CacheStatus::parse(Some(status));
+        CacheEntry {
+            source: "tmdb".into(),
+            source_id: source_id.into(),
+            display_title: Some(format!("Title {source_id}")),
+            title_english: Some(format!("English {source_id}")),
+            title_native: None,
+            status: Some(status.into()),
+            total_episodes: Some(12),
+            format: Some("TV".into()),
+            next_episode_number: Some(3),
+            next_episode_airs_at: Some(fetched_at + 3600),
+            fetched_at,
+            expires_at: ttl.expires_at(status_enum, fetched_at),
+            cover_image_url: None,
+            description: Some("desc".into()),
+            score: Some(82.0),
+            studios: Some("Studio X".into()),
+            streaming_links_json: Some(r#"[{"site":"Netflix","url":"https://nfx/x"}]"#.into()),
+        }
+    }
+
+    #[test]
+    fn load_resolved_empty_library_returns_empty_vec() {
+        let lib = lib_at(1_000);
+        let resolved = lib.load_resolved().unwrap();
+        assert!(resolved.is_empty());
+    }
+
+    #[test]
+    fn load_resolved_returns_one_row_per_active_follow_with_cache_and_no_engagements() {
+        let lib = lib_at(1_000);
+        let cid = id("severance");
+        lib.follow_with_source(&cid, ReleaseKind::Tv, "Severance", "tmdb", "95396", None, 1.0)
+            .unwrap();
+        lib.upsert_cache(&cache_for("95396", "RELEASING", 1_000))
+            .unwrap();
+
+        let resolved = lib.load_resolved().unwrap();
+        assert_eq!(resolved.len(), 1);
+        let r = &resolved[0];
+        assert_eq!(r.canonical.id, cid);
+        assert_eq!(r.primary_source.source, "tmdb");
+        assert_eq!(r.primary_source.source_id, "95396");
+        let cache = r.cache.as_ref().expect("cache row present");
+        assert_eq!(cache.status(), Some("RELEASING"));
+        assert_eq!(cache.total_episodes(), Some(12));
+        assert!(r.last_completed.is_none());
+        assert!(r.last_verified.is_none());
+    }
+
+    #[test]
+    fn load_resolved_omits_cache_when_uncached() {
+        let lib = lib_at(1_000);
+        let cid = id("uncached");
+        lib.follow_with_source(&cid, ReleaseKind::Tv, "U", "tmdb", "0", None, 1.0)
+            .unwrap();
+        let resolved = lib.load_resolved().unwrap();
+        assert_eq!(resolved.len(), 1);
+        assert!(resolved[0].cache.is_none());
+    }
+
+    #[test]
+    fn load_resolved_picks_most_recent_completed_and_verified() {
+        let clock = AdvanceableClock::new(1_000);
+        let lib = Library::open_in_memory(Arc::new(clock.clone())).unwrap();
+        let cid = id("with-events");
+        lib.follow_with_source(&cid, ReleaseKind::Tv, "X", "tmdb", "1", None, 1.0)
+            .unwrap();
+        clock.set(2_000);
+        lib.engage(
+            &cid,
+            EngagementEvent::Completed,
+            Some(EngagementMeta::Completed { seen: 1 }),
+        )
+        .unwrap();
+        clock.set(3_000);
+        lib.engage(
+            &cid,
+            EngagementEvent::Completed,
+            Some(EngagementMeta::Completed { seen: 2 }),
+        )
+        .unwrap();
+        clock.set(4_000);
+        lib.engage(
+            &cid,
+            EngagementEvent::Verified,
+            Some(EngagementMeta::Verified {
+                streamer: "Netflix".into(),
+                url: "https://netflix.com/x".into(),
+            }),
+        )
+        .unwrap();
+
+        let resolved = lib.load_resolved().unwrap();
+        let r = &resolved[0];
+        let lc = r.last_completed.as_ref().expect("last_completed present");
+        assert_eq!(lc.occurred_at, 3_000);
+        assert_eq!(lc.seen(), Some(2));
+        let lv = r.last_verified.as_ref().expect("last_verified present");
+        assert_eq!(lv.occurred_at, 4_000);
+        assert_eq!(lv.streamer(), Some("Netflix"));
+        assert_eq!(lv.verified_url(), Some("https://netflix.com/x"));
+    }
+
+    #[test]
+    fn load_resolved_orders_active_by_followed_at_desc_and_skips_dropped() {
+        let clock = AdvanceableClock::new(1_000);
+        let lib = Library::open_in_memory(Arc::new(clock.clone())).unwrap();
+        for (slug, t) in [("oldest", 1_000), ("middle", 2_000), ("newest", 3_000)] {
+            clock.set(t);
+            lib.follow_with_source(&id(slug), ReleaseKind::Tv, slug, "tmdb", slug, None, 1.0)
+                .unwrap();
+        }
+        // Drop the middle one — must be excluded from load_resolved.
+        lib.drop_canonical(&id("middle")).unwrap();
+
+        let resolved = lib.load_resolved().unwrap();
+        let order: Vec<&str> = resolved.iter().map(|r| r.canonical.display_title.as_str()).collect();
+        assert_eq!(order, ["newest", "oldest"]);
+    }
+
+    #[test]
+    fn load_resolved_picks_highest_confidence_source_ref_as_primary() {
+        let lib = lib_at(1_000);
+        let cid = id("multi-source");
+        // First (and lower confidence) source_ref.
+        lib.follow_with_source(&cid, ReleaseKind::Tv, "X", "tmdb", "1", None, 0.7)
+            .unwrap();
+        // Second source_ref on the same canonical, higher confidence.
+        lib.follow_with_source(&cid, ReleaseKind::Tv, "X", "anilist", "21", None, 0.95)
+            .unwrap();
+
+        let resolved = lib.load_resolved().unwrap();
+        assert_eq!(resolved.len(), 1);
+        // The window picks the highest-confidence ref.
+        assert_eq!(resolved[0].primary_source.source, "anilist");
+        assert!((resolved[0].primary_source.confidence - 0.95).abs() < f64::EPSILON);
     }
 }

@@ -125,7 +125,7 @@ impl Db {
     ) -> Result<Vec<SourceRef>> {
         let conn = self.conn();
         let mut stmt = conn
-            .prepare(
+            .prepare_cached(
                 "SELECT * FROM source_ref WHERE canonical_id = ?1 \
                  ORDER BY confidence DESC, source ASC",
             )

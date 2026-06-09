@@ -181,7 +181,7 @@ impl Db {
     pub fn list_active_canonical(&self) -> Result<Vec<CanonicalRelease>> {
         let conn = self.conn();
         let mut stmt = conn
-            .prepare(
+            .prepare_cached(
                 "SELECT * FROM canonical_release \
                  WHERE followed_at IS NOT NULL AND dropped_at IS NULL \
                  ORDER BY followed_at DESC",

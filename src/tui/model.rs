@@ -54,6 +54,42 @@ pub struct StreamingLink {
 }
 
 impl Show {
+    /// Project a single resolved row into the TUI's display model.
+    /// Parses streaming_links_json once, computes the subs match once,
+    /// and runs the pane bucketing once — all O(1) per show with no
+    /// further DB hits.
+    fn from_resolved(
+        r: crate::library::ResolvedRelease,
+        now: i64,
+        windows: Windows,
+        subs: &crate::tui::subs::Subs,
+    ) -> Self {
+        let streaming: Vec<StreamingLink> = r
+            .cache
+            .as_ref()
+            .and_then(|c| c.streaming_links_json.as_deref())
+            .and_then(|j| serde_json::from_str::<Vec<StreamingLink>>(j).ok())
+            .unwrap_or_default();
+        let subscribed_match = r
+            .last_verified
+            .as_ref()
+            .and_then(|e| e.streamer())
+            .map(|s| subs.matches(s))
+            .unwrap_or(false);
+        let mut show = Self {
+            canonical: r.canonical,
+            primary_source: r.primary_source,
+            cache: r.cache,
+            last_completed: r.last_completed,
+            last_verified: r.last_verified,
+            subscribed_match,
+            pane: None,
+            streaming,
+        };
+        show.pane = bucket(show_inputs(&show), now, windows);
+        show
+    }
+
     pub fn seen(&self) -> i64 {
         self.last_completed
             .as_ref()
@@ -142,50 +178,20 @@ pub struct Shelf {
 }
 
 impl Shelf {
-    /// Build the view-model from the durable state. Canonicals with no
-    /// attached source_ref are silently skipped — they shouldn't exist
-    /// in practice (every followed canonical attaches one at follow
-    /// time) but we don't want a misshapen row to crash the TUI.
+    /// Build the view-model from the durable state. One round trip to
+    /// the DB regardless of follow count — see
+    /// [`Facade::load_resolved`].
     pub fn load(
         facade: &Facade,
         now: i64,
         windows: Windows,
         subs: &crate::tui::subs::Subs,
     ) -> Result<Self> {
-        let canonicals = facade.followed()?;
-        let mut shows = Vec::with_capacity(canonicals.len());
-        for canonical in canonicals {
-            let refs = facade.source_refs_for(&canonical.id)?;
-            let Some(primary_source) = refs.into_iter().next() else {
-                continue;
-            };
-            let cache = facade.get_cache(&primary_source.source, &primary_source.source_id)?;
-            let last_completed =
-                facade.last_engagement(&canonical.id, EngagementEvent::Completed)?;
-            let last_verified =
-                facade.last_engagement(&canonical.id, EngagementEvent::Verified)?;
-            let streaming: Vec<StreamingLink> = cache
-                .as_ref()
-                .and_then(|c| c.streaming_links_json.as_deref())
-                .and_then(|j| serde_json::from_str::<Vec<StreamingLink>>(j).ok())
-                .unwrap_or_default();
-            let mut show = Show {
-                canonical,
-                primary_source,
-                cache,
-                last_completed,
-                last_verified,
-                subscribed_match: false,
-                pane: None,
-                streaming,
-            };
-            show.subscribed_match = show
-                .verified_streamer()
-                .map(|s| subs.matches(s))
-                .unwrap_or(false);
-            show.pane = bucket(show_inputs(&show), now, windows);
-            shows.push(show);
-        }
+        let resolved = facade.load_resolved()?;
+        let shows = resolved
+            .into_iter()
+            .map(|r| Show::from_resolved(r, now, windows, subs))
+            .collect();
         Ok(Self { shows })
     }
 

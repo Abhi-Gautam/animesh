@@ -9,7 +9,9 @@
 use std::env;
 
 use anyhow::{Context, Result};
-use rusqlite::{params, OptionalExtension, Row};
+use rusqlite::params;
+#[cfg(test)]
+use rusqlite::{OptionalExtension, Row};
 
 use super::Db;
 
@@ -192,6 +194,7 @@ impl CacheEntry {
         self.next_episode_airs_at
     }
 
+    #[cfg(test)]
     fn from_row(row: &Row<'_>) -> rusqlite::Result<Self> {
         Ok(Self {
             source: row.get("source")?,
@@ -269,7 +272,10 @@ impl Db {
         Ok(())
     }
 
-    /// Get a row regardless of freshness.
+    /// Get a row regardless of freshness. Production callers go
+    /// through [`crate::library::Library::load_resolved`]; this stays
+    /// for tests.
+    #[cfg(test)]
     pub fn get_cache(&self, source: &str, source_id: &str) -> Result<Option<CacheEntry>> {
         self.conn()
             .query_row(
