@@ -3,7 +3,9 @@
 mod commands;
 mod errors;
 mod ids;
+mod ingest;
 mod library;
+mod search;
 mod sources;
 mod store;
 mod time;

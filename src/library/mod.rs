@@ -34,9 +34,11 @@ use std::sync::{Arc, Mutex};
 use anyhow::{Context, Result};
 
 use crate::ids::{CanonicalId, ReleaseKind};
+use crate::ingest::{RawSourcePayload, SourceObservation};
+use crate::search::source_candidate::SourceCandidateResult;
 use crate::store::{
     CacheEntry, CanonicalFollowOutcome, CanonicalRelease, Db, Engagement, EngagementEvent,
-    EngagementMeta, EngagementSource, SourceRef,
+    EngagementMeta, EngagementSource, SourceParseError, SourceRef,
 };
 use crate::time::Clock;
 
@@ -215,6 +217,35 @@ impl Library {
     }
 
     // ------------------------------------------------------------------
+    // Source ingestion: raw payloads -> observations -> candidates.
+    // ------------------------------------------------------------------
+
+    pub fn store_raw_source_payload(&self, payload: &RawSourcePayload) -> Result<()> {
+        let db = self.lock_db()?;
+        db.upsert_raw_source_payload(payload)
+    }
+
+    pub fn store_source_observation(&self, observation: &SourceObservation) -> Result<()> {
+        let mut db = self.lock_db()?;
+        db.upsert_source_observation(observation)
+    }
+
+    #[allow(dead_code)]
+    pub fn record_source_parse_error(&self, err: &SourceParseError) -> Result<()> {
+        let db = self.lock_db()?;
+        db.insert_source_parse_error(err)
+    }
+
+    pub fn search_source_candidates(
+        &self,
+        query: &str,
+        limit: u32,
+    ) -> Result<Vec<SourceCandidateResult>> {
+        let db = self.lock_db()?;
+        db.search_source_candidates(query, limit)
+    }
+
+    // ------------------------------------------------------------------
     // Small kv store (used by the notifier for dedupe markers,
     // by sync for last-tick state).
     // ------------------------------------------------------------------
@@ -241,8 +272,7 @@ impl Library {
         let Some(raw) = self.kv_get("subs.streaming")? else {
             return Ok(Vec::new());
         };
-        serde_json::from_str(&raw)
-            .with_context(|| format!("decode subs.streaming: {raw:?}"))
+        serde_json::from_str(&raw).with_context(|| format!("decode subs.streaming: {raw:?}"))
     }
 
     /// Overwrite the streamer subscription list. Empty input clears the key.
@@ -334,7 +364,10 @@ fn map_resolved_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ResolvedRelease
         rusqlite::Error::FromSqlConversionFailure(
             1,
             rusqlite::types::Type::Text,
-            Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())),
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                e.to_string(),
+            )),
         )
     })?;
     let canonical = CanonicalRelease {
@@ -455,15 +488,25 @@ mod tests {
         assert_eq!(row.created_at, 1_000);
 
         let refs = lib.source_refs_for(&cid).unwrap();
-        assert!(refs.iter().any(|r| r.source == "tmdb" && r.source_id == "95396"));
+        assert!(refs
+            .iter()
+            .any(|r| r.source == "tmdb" && r.source_id == "95396"));
     }
 
     #[test]
     fn second_source_ref_for_same_canonical_extends_mapping() {
         let lib = lib_at(1_000);
         let cid = id("severance");
-        lib.follow_with_source(&cid, ReleaseKind::Tv, "Severance", "tmdb", "95396", None, 0.95)
-            .unwrap();
+        lib.follow_with_source(
+            &cid,
+            ReleaseKind::Tv,
+            "Severance",
+            "tmdb",
+            "95396",
+            None,
+            0.95,
+        )
+        .unwrap();
         // Same canonical, different source — both refs map.
         let out = lib
             .follow_with_source(
@@ -480,8 +523,12 @@ mod tests {
         // outcome, even when adding a second source ref.
         assert_eq!(out, CanonicalFollowOutcome::AlreadyFollowing);
         let refs = lib.source_refs_for(&cid).unwrap();
-        assert!(refs.iter().any(|r| r.source == "tmdb" && r.source_id == "95396"));
-        assert!(refs.iter().any(|r| r.source == "tvmaze" && r.source_id == "44060"));
+        assert!(refs
+            .iter()
+            .any(|r| r.source == "tmdb" && r.source_id == "95396"));
+        assert!(refs
+            .iter()
+            .any(|r| r.source == "tvmaze" && r.source_id == "44060"));
     }
 
     #[test]
@@ -508,16 +555,8 @@ mod tests {
         let lib = Library::open_in_memory(Arc::new(clock.clone())).unwrap();
         for (slug, dt) in [("a", 0), ("b", 100), ("c", 200)] {
             clock.set(1_000 + dt);
-            lib.follow_with_source(
-                &id(slug),
-                ReleaseKind::Tv,
-                slug,
-                "tmdb",
-                slug,
-                None,
-                1.0,
-            )
-            .unwrap();
+            lib.follow_with_source(&id(slug), ReleaseKind::Tv, slug, "tmdb", slug, None, 1.0)
+                .unwrap();
         }
         let followed = lib.followed().unwrap();
         let slugs: Vec<&str> = followed.iter().map(|r| r.id.slug()).collect();
@@ -606,16 +645,8 @@ mod tests {
         let lib = lib_at(1_000);
         assert_eq!(lib.count_followed().unwrap(), 0);
         for slug in ["a", "b", "c"] {
-            lib.follow_with_source(
-                &id(slug),
-                ReleaseKind::Tv,
-                slug,
-                "tmdb",
-                slug,
-                None,
-                1.0,
-            )
-            .unwrap();
+            lib.follow_with_source(&id(slug), ReleaseKind::Tv, slug, "tmdb", slug, None, 1.0)
+                .unwrap();
         }
         assert_eq!(lib.count_followed().unwrap(), 3);
         lib.drop_canonical(&id("b")).unwrap();
@@ -637,7 +668,8 @@ mod tests {
     #[test]
     fn subscribed_streamers_clears_when_empty() {
         let lib = Library::open_in_memory(Arc::new(FixedClock(1))).unwrap();
-        lib.set_subscribed_streamers(&["Netflix".to_string()]).unwrap();
+        lib.set_subscribed_streamers(&["Netflix".to_string()])
+            .unwrap();
         lib.set_subscribed_streamers(&[]).unwrap();
         assert!(lib.subscribed_streamers().unwrap().is_empty());
     }
@@ -649,6 +681,70 @@ mod tests {
         let err = lib.subscribed_streamers().unwrap_err();
         let msg = format!("{err:#}");
         assert!(msg.contains("decode subs.streaming"), "got: {msg}");
+    }
+
+    // ------------------------------------------------------------------
+    // source ingestion — raw payloads -> observations -> candidates
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn source_observation_materializes_searchable_candidate() {
+        use crate::ingest::{
+            AliasObservation, ExternalIdObservation, HttpMethod, RawSourcePayload,
+            SourceObservation,
+        };
+
+        let lib = lib_at(1_000);
+        let raw = RawSourcePayload {
+            id: "raw:tvmaze:1".into(),
+            source: "tvmaze".into(),
+            endpoint: "search_shows".into(),
+            method: HttpMethod::Get,
+            request_key: "tvmaze:search:severance".into(),
+            request_hash: "req-hash".into(),
+            request_json: None,
+            http_status: 200,
+            response_hash: "resp-hash".into(),
+            response_json: r#"{"ok":true}"#.into(),
+            fetched_at: 1_000,
+            expires_at: Some(2_000),
+            created_at: 1_000,
+        };
+        lib.store_raw_source_payload(&raw).unwrap();
+
+        let obs = SourceObservation {
+            source: "tvmaze".into(),
+            source_id: "44933".into(),
+            raw_payload_id: raw.id.clone(),
+            kind: ReleaseKind::Tv,
+            display_title: "Severance".into(),
+            raw_title: None,
+            description: Some("workplace sci-fi".into()),
+            status: Some("Running".into()),
+            observed_at: 1_000,
+            source_updated_at: None,
+            aliases: vec![AliasObservation {
+                alias: "Severance".into(),
+                locale: Some("English".into()),
+                alias_kind: Some("primary".into()),
+                confidence: 1.0,
+            }],
+            external_ids: vec![ExternalIdObservation {
+                id_kind: "imdb".into(),
+                id_value: "tt11280740".into(),
+                confidence: 1.0,
+            }],
+            release_events: vec![],
+            links: vec![],
+            images: vec![],
+        };
+        lib.store_source_observation(&obs).unwrap();
+
+        let hits = lib.search_source_candidates("severance", 10).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].source, "tvmaze");
+        assert_eq!(hits[0].source_id, "44933");
+        assert_eq!(hits[0].kind, ReleaseKind::Tv);
     }
 
     // ------------------------------------------------------------------
@@ -692,8 +788,16 @@ mod tests {
     fn load_resolved_returns_one_row_per_active_follow_with_cache_and_no_engagements() {
         let lib = lib_at(1_000);
         let cid = id("severance");
-        lib.follow_with_source(&cid, ReleaseKind::Tv, "Severance", "tmdb", "95396", None, 1.0)
-            .unwrap();
+        lib.follow_with_source(
+            &cid,
+            ReleaseKind::Tv,
+            "Severance",
+            "tmdb",
+            "95396",
+            None,
+            1.0,
+        )
+        .unwrap();
         lib.upsert_cache(&cache_for("95396", "RELEASING", 1_000))
             .unwrap();
 
@@ -777,7 +881,10 @@ mod tests {
         lib.drop_canonical(&id("middle")).unwrap();
 
         let resolved = lib.load_resolved().unwrap();
-        let order: Vec<&str> = resolved.iter().map(|r| r.canonical.display_title.as_str()).collect();
+        let order: Vec<&str> = resolved
+            .iter()
+            .map(|r| r.canonical.display_title.as_str())
+            .collect();
         assert_eq!(order, ["newest", "oldest"]);
     }
 

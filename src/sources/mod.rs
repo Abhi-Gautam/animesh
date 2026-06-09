@@ -8,3 +8,8 @@
 //! Layering rule: `reqwest::` only appears in adapter modules below.
 
 pub mod anilist;
+pub mod itunes;
+pub mod jikan;
+pub mod kitsu;
+pub mod musicbrainz;
+pub mod tvmaze;

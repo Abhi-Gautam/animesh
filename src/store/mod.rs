@@ -11,6 +11,10 @@ pub mod engagement;
 pub mod kv;
 pub mod metadata_cache;
 pub mod path;
+pub mod raw_source_payload;
+pub mod source_candidate;
+pub mod source_observation;
+pub mod source_parse_error;
 pub mod source_ref;
 
 pub use canonical_release::{CanonicalFollowOutcome, CanonicalRelease};
@@ -18,4 +22,5 @@ pub use db::Db;
 pub use engagement::{Engagement, EngagementEvent, EngagementMeta, EngagementSource};
 pub use metadata_cache::{CacheEntry, TtlConfig};
 pub use path::resolve_db_path;
+pub use source_parse_error::SourceParseError;
 pub use source_ref::SourceRef;

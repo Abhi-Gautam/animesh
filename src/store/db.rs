@@ -16,7 +16,7 @@ mod embedded {
 
 /// Highest migration version this binary knows about. Bump alongside
 /// each `Vxxxx__*.sql` file added under `migrations/`.
-pub const MAX_KNOWN_VERSION: u32 = 5;
+pub const MAX_KNOWN_VERSION: u32 = 6;
 
 /// Owning wrapper around a rusqlite Connection. The only struct in the
 /// codebase that holds a `Connection`.
@@ -415,7 +415,10 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM engagement", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(count, 0, "orphan watch_progress must not produce engagement rows");
+        assert_eq!(
+            count, 0,
+            "orphan watch_progress must not produce engagement rows"
+        );
     }
 
     #[test]
@@ -430,7 +433,10 @@ mod tests {
             )
             .expect_err("CHECK constraint on kind must reject unknown values");
         let msg = format!("{err}");
-        assert!(msg.contains("CHECK"), "expected CHECK violation, got: {msg}");
+        assert!(
+            msg.contains("CHECK"),
+            "expected CHECK violation, got: {msg}"
+        );
     }
 
     #[test]
@@ -496,8 +502,11 @@ mod tests {
         )
         .unwrap();
 
-        conn.execute("DELETE FROM canonical_release WHERE id = 'release:tv:foo'", [])
-            .unwrap();
+        conn.execute(
+            "DELETE FROM canonical_release WHERE id = 'release:tv:foo'",
+            [],
+        )
+        .unwrap();
 
         let source_refs: i64 = conn
             .query_row("SELECT COUNT(*) FROM source_ref", [], |r| r.get(0))
@@ -505,15 +514,26 @@ mod tests {
         let engagements: i64 = conn
             .query_row("SELECT COUNT(*) FROM engagement", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(source_refs, 0, "source_ref must cascade-delete with canonical_release");
-        assert_eq!(engagements, 0, "engagement must cascade-delete with canonical_release");
+        assert_eq!(
+            source_refs, 0,
+            "source_ref must cascade-delete with canonical_release"
+        );
+        assert_eq!(
+            engagements, 0,
+            "engagement must cascade-delete with canonical_release"
+        );
     }
 
     #[test]
     fn v0004_runs_cleanly_on_empty_v3_database() {
         let conn = build_v3_then_run_v4();
         apply_v4(&conn);
-        for table in ["canonical_release", "source_ref", "engagement", "canonicalization_cache"] {
+        for table in [
+            "canonical_release",
+            "source_ref",
+            "engagement",
+            "canonicalization_cache",
+        ] {
             let count: i64 = conn
                 .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
                 .unwrap();
