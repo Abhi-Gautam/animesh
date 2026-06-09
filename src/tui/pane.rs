@@ -22,9 +22,7 @@ pub struct BucketInputs {
     pub next_drop_at: Option<i64>,
     /// Most recent `EngagementEvent::Verified` timestamp.
     pub verified_playable_at: Option<i64>,
-    /// Streamer name from the verify event (preserved casing).
-    pub verified_streamer: Option<String>,
-    /// True iff `verified_streamer` matches the user's subs.
+    /// True iff the most recent verify event's streamer is in the user's subs.
     pub subscribed: bool,
     /// True iff the canonical is fully consumed (e.g. all episodes
     /// watched, album played). Hides from every pane.
@@ -91,7 +89,6 @@ mod tests {
         BucketInputs {
             next_drop_at: None,
             verified_playable_at: None,
-            verified_streamer: None,
             subscribed: false,
             fully_done: false,
         }
@@ -101,7 +98,6 @@ mod tests {
     fn verified_within_window_and_subscribed_is_playable() {
         let i = BucketInputs {
             verified_playable_at: Some(NOW - 5 * 60),
-            verified_streamer: Some("crunchyroll".into()),
             subscribed: true,
             ..empty()
         };
@@ -112,7 +108,6 @@ mod tests {
     fn verified_but_unsubscribed_is_following_not_playable() {
         let i = BucketInputs {
             verified_playable_at: Some(NOW - 5 * 60),
-            verified_streamer: Some("hbo".into()),
             subscribed: false,
             ..empty()
         };
@@ -159,7 +154,6 @@ mod tests {
         let i = BucketInputs {
             next_drop_at: Some(NOW + 3600),
             verified_playable_at: Some(NOW - 60),
-            verified_streamer: Some("netflix".into()),
             subscribed: true,
             ..empty()
         };

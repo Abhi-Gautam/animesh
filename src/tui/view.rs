@@ -62,24 +62,29 @@ pub fn render(f: &mut Frame, app: &App) {
 
 fn render_status_line(f: &mut Frame, app: &App, area: Rect) {
     let active = app.shelf.shows.len();
-    let playable = app
-        .items_in(crate::tui::app::PANE_PLAYABLE)
-        .len();
-    let dropping = app
-        .items_in(crate::tui::app::PANE_DROPPING)
-        .len();
+    let playable = app.items_in(crate::tui::app::PANE_PLAYABLE).len();
+    let dropping = app.items_in(crate::tui::app::PANE_DROPPING).len();
     let clock = Local
         .timestamp_opt(app.now, 0)
         .single()
         .map(|t| t.format("%H:%M").to_string())
         .unwrap_or_else(|| "--:--".into());
     let mut left = vec![
-        Span::styled("~", Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
-        Span::styled("animesh", Style::default().fg(INK).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            "~",
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            "animesh",
+            Style::default().fg(INK).add_modifier(Modifier::BOLD),
+        ),
         Span::raw("   "),
         Span::styled("panes", Style::default().fg(INK_2)),
         Span::raw(" › "),
-        Span::styled(PANE_LABELS[app.focused_index()].to_lowercase(), Style::default().fg(DIM)),
+        Span::styled(
+            PANE_LABELS[app.focused_index()].to_lowercase(),
+            Style::default().fg(DIM),
+        ),
     ];
     let subs_text = if app.subs.streamers().is_empty() {
         "(none — :subs add netflix)".to_string()
@@ -144,10 +149,12 @@ fn render_empty_state(f: &mut Frame, area: Rect) {
     let inner = block.inner(rect);
     f.render_widget(block, rect);
 
-    let key = |k: &str| Span::styled(
-        format!("  {k:<6}"),
-        Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-    );
+    let key = |k: &str| {
+        Span::styled(
+            format!("  {k:<6}"),
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+        )
+    };
     let lines = vec![
         Line::raw(""),
         Line::from(Span::styled(
@@ -157,11 +164,17 @@ fn render_empty_state(f: &mut Frame, area: Rect) {
         Line::raw(""),
         Line::from(vec![
             key("a"),
-            Span::styled("Search AniList and follow your first show", Style::default().fg(INK_2)),
+            Span::styled(
+                "Search AniList and follow your first show",
+                Style::default().fg(INK_2),
+            ),
         ]),
         Line::from(vec![
             key(":"),
-            Span::styled("Command mode — try :follow 21  (One Piece)", Style::default().fg(INK_2)),
+            Span::styled(
+                "Command mode — try :follow 21  (One Piece)",
+                Style::default().fg(INK_2),
+            ),
         ]),
         Line::from(vec![
             key("?"),
@@ -211,7 +224,9 @@ fn render_panel(f: &mut Frame, app: &App, pane_idx: usize, area: Rect) {
         .border_style(Style::default().fg(if focused { ACCENT } else { Color::Reset }))
         .title(Span::styled(
             title,
-            Style::default().fg(header_color).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(header_color)
+                .add_modifier(Modifier::BOLD),
         ));
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -234,16 +249,26 @@ fn render_row(
     now: i64,
 ) -> Line<'static> {
     let _ = pane_idx;
-    let mark_color = if selected && pane_focused { ACCENT } else { DIMMER };
+    let mark_color = if selected && pane_focused {
+        ACCENT
+    } else {
+        DIMMER
+    };
     let mark = Span::styled("▸ ", Style::default().fg(mark_color));
 
     // Dim rows where we have a verified link but on no subscribed
     // streamer — they're catalogued but the user can't watch.
     let unreachable = s.last_verified.is_some() && !s.subscribed_match;
     let base = if unreachable { DIM } else { INK_2 };
-    let title_color = if selected && pane_focused { Color::White } else { base };
+    let title_color = if selected && pane_focused {
+        Color::White
+    } else {
+        base
+    };
     let title_style = if selected && pane_focused {
-        Style::default().fg(title_color).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(title_color)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(title_color)
     };
@@ -332,12 +357,18 @@ pub fn relative_short(at: i64, now: i64) -> String {
 fn render_cmdline(f: &mut Frame, app: &App, area: Rect) {
     let line = match app.overlay {
         Overlay::Command => Line::from(vec![
-            Span::styled(":", Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                ":",
+                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            ),
             Span::styled(&app.palette.query, Style::default().fg(INK)),
             Span::styled("▏", Style::default().fg(INK)),
         ]),
         Overlay::Search => Line::from(vec![
-            Span::styled("/", Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "/",
+                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            ),
             Span::styled(&app.palette.query, Style::default().fg(INK)),
             Span::styled("▏", Style::default().fg(INK)),
         ]),
@@ -350,7 +381,10 @@ fn render_cmdline(f: &mut Frame, app: &App, area: Rect) {
             Span::styled("▏", Style::default().fg(INK)),
         ]),
         _ => Line::from(vec![
-            Span::styled(": ", Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                ": ",
+                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            ),
             Span::styled(
                 "press : for commands  ·  / to jump  ·  a to follow a new show",
                 Style::default().fg(DIMMER),
@@ -392,7 +426,11 @@ fn render_hint_bar(f: &mut Frame, app: &App, area: Rect) {
         ),
         Overlay::Follow => match app.palette.follow_stage {
             FollowStage::Picking => (
-                &[("Enter", "follow"), ("↑↓ / j k", "select"), ("Esc", "cancel")],
+                &[
+                    ("Enter", "follow"),
+                    ("↑↓ / j k", "select"),
+                    ("Esc", "cancel"),
+                ],
                 " FOLLOW ",
             ),
             _ => (
@@ -405,7 +443,10 @@ fn render_hint_bar(f: &mut Frame, app: &App, area: Rect) {
 
     let mut spans = Vec::with_capacity(pairs.len() * 4);
     for (key, label) in pairs {
-        spans.push(Span::styled(*key, Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)));
+        spans.push(Span::styled(
+            *key,
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+        ));
         spans.push(Span::raw(" "));
         spans.push(Span::styled(*label, Style::default().fg(DIM)));
         spans.push(Span::raw("  "));
@@ -452,7 +493,10 @@ fn render_command_palette(f: &mut Frame, app: &App, area: Rect) {
 
     let mut lines: Vec<Line> = vec![
         Line::from(vec![
-            Span::styled(":", Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                ":",
+                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            ),
             Span::styled(&app.palette.query, Style::default().fg(INK)),
             Span::styled("▏", Style::default().fg(INK)),
         ]),
@@ -475,7 +519,9 @@ fn render_suggestion(s: &Suggestion, selected: bool) -> Line<'static> {
         Style::default().fg(if selected { ACCENT } else { DIMMER }),
     );
     let name_style = if selected {
-        Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(INK)
     };
@@ -509,7 +555,10 @@ fn render_search_palette(f: &mut Frame, app: &App, area: Rect) {
 
     let mut lines: Vec<Line> = vec![
         Line::from(vec![
-            Span::styled("/", Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "/",
+                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            ),
             Span::styled(&app.palette.query, Style::default().fg(INK)),
             Span::styled("▏", Style::default().fg(INK)),
         ]),
@@ -529,7 +578,9 @@ fn render_search_palette(f: &mut Frame, app: &App, area: Rect) {
                 Style::default().fg(if selected { ACCENT } else { DIMMER }),
             );
             let style = if selected {
-                Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(INK)
             };
@@ -595,16 +646,14 @@ fn render_follow_palette(f: &mut Frame, app: &App, area: Rect) {
                     Style::default().fg(if selected { ACCENT } else { DIMMER }),
                 );
                 let style = if selected {
-                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD)
                 } else {
                     Style::default().fg(INK)
                 };
                 let badge = Span::styled(
-                    format!(
-                        "  #{}  {}",
-                        m.id,
-                        m.status.as_deref().unwrap_or("")
-                    ),
+                    format!("  #{}  {}", m.id, m.status.as_deref().unwrap_or("")),
                     Style::default().fg(DIM),
                 );
                 lines.push(Line::from(vec![

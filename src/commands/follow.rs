@@ -3,10 +3,6 @@
 //! Pure-ish execution path with all I/O dependencies injected. The
 //! TUI's `App::dispatch(Command::Follow(id))` calls this directly,
 //! as does the AniList picker flow from the follow palette.
-//!
-//! v0.5: writes through the [`Facade`] (canonical_release × source_ref
-//! × engagement) — no more legacy tracked_item. Cover ASCII renders
-//! into `canonical_release.cover_ascii`.
 
 use std::sync::Arc;
 
@@ -23,7 +19,6 @@ use crate::store::{CacheEntry, CanonicalFollowOutcome, TtlConfig};
 pub struct FollowReport {
     pub outcome: CanonicalFollowOutcome,
     pub media: Media,
-    pub canonical_id: CanonicalId,
 }
 
 /// Atomic follow path. Resolves the AniList show, upserts the canonical
@@ -67,122 +62,12 @@ pub async fn follow_inner(
         .upsert_cache(&CacheEntry::from_media(&media, &ttl, now))
         .context("upsert_cache after follow")?;
 
-    // Render the cover whenever the canonical's stored ASCII is missing
-    // or in an older format. Covers (a) fresh follows, (b) re-follow
-    // after drop, (c) backfilled rows that pre-date this feature, and
-    // (d) retry after an offline first follow. Failures are silently
-    // swallowed — a missing cover is a placeholder, not a hard error.
-    let needs_cover = facade
-        .find_canonical(&canonical_id)
-        .ok()
-        .flatten()
-        .map(|row| row.cover_ascii.is_none())
-        .unwrap_or(false);
-    if needs_cover {
-        if let Some(url) = media.cover_url() {
-            if let Ok(ascii) = fetch_and_render_cover(url).await {
-                let color = media
-                    .cover_image
-                    .as_ref()
-                    .and_then(|c| c.color.as_deref());
-                let _ = facade.set_canonical_cover(&canonical_id, &ascii, color);
-            }
-        }
-    }
-
-    Ok(FollowReport {
-        outcome,
-        media,
-        canonical_id,
-    })
-}
-
-/// Cover render target. Sized for the ~33%-wide detail pane on a
-/// standard 80-col terminal; scales gracefully on wider terminals via
-/// the Paragraph widget's natural left-alignment.
-const COVER_COLS: u32 = 14;
-const COVER_ROWS: u32 = 7;
-
-async fn fetch_and_render_cover(url: &str) -> Result<String> {
-    let bytes = crate::sources::fetch_bytes(url)
-        .await
-        .context("fetch cover image")?;
-    crate::tui::ascii_art::render_ascii(&bytes, COVER_COLS, COVER_ROWS)
-}
-
-/// Backfill cover art for every active follow whose stored ASCII is
-/// either missing or in a stale format (no `█` glyph = produced by an
-/// older renderer version). Run once at TUI startup so a code-side
-/// change to the renderer auto-refreshes existing rows without the
-/// user having to drop+re-follow.
-///
-/// Returns the count of rows refreshed. Per-row failures (offline,
-/// missing cover URL, non-AniList source) are silently skipped — the
-/// row stays as-is and will be retried on next launch.
-pub async fn refresh_stale_covers(facade: &Arc<Facade>, client: &AniListClient) -> usize {
-    let Ok(canonicals) = facade.followed() else {
-        return 0;
-    };
-    let mut refreshed = 0usize;
-    for canonical in canonicals {
-        let is_stale = match canonical.cover_ascii.as_deref() {
-            None => true,
-            Some(s) => !s.starts_with(crate::tui::ascii_art::FORMAT_TAG),
-        };
-        if !is_stale {
-            continue;
-        }
-        // Look at every attached source for a cover URL — prefer the
-        // cache (no network), fall back to a live AniList lookup.
-        let refs = match facade.source_refs_for(&canonical.id) {
-            Ok(refs) => refs,
-            Err(_) => continue,
-        };
-        let mut url_opt: Option<String> = None;
-        let mut color_opt: Option<String> = None;
-        for sref in &refs {
-            if let Ok(Some(cache)) = facade.get_cache(&sref.source, &sref.source_id) {
-                if let Some(u) = cache.cover_image_url {
-                    url_opt = Some(u);
-                    break;
-                }
-            }
-        }
-        if url_opt.is_none() {
-            // Live fallback: only AniList has a numeric id we can query.
-            for sref in &refs {
-                if sref.source != "anilist" {
-                    continue;
-                }
-                if let Ok(id) = sref.source_id.parse::<i64>() {
-                    if let Ok(Some(media)) = client.by_id(id).await {
-                        url_opt = media.cover_url().map(str::to_string);
-                        color_opt = media
-                            .cover_image
-                            .as_ref()
-                            .and_then(|c| c.color.clone());
-                        break;
-                    }
-                }
-            }
-        }
-        let Some(url) = url_opt else { continue };
-        if let Ok(ascii) = fetch_and_render_cover(&url).await {
-            if facade
-                .set_canonical_cover(&canonical.id, &ascii, color_opt.as_deref())
-                .is_ok()
-            {
-                refreshed += 1;
-            }
-        }
-    }
-    refreshed
+    Ok(FollowReport { outcome, media })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::CanonicalListFilter;
     use crate::time::FixedClock;
 
     fn one_piece_body() -> &'static str {
@@ -214,10 +99,10 @@ mod tests {
 
         let report = follow_inner(&facade, &client, 21, 1_000_000).await.unwrap();
         assert_eq!(report.outcome, CanonicalFollowOutcome::NewlyFollowed);
-        assert_eq!(report.canonical_id.as_str(), "release:anime:legacy-anilist-21");
 
         let list = facade.followed().unwrap();
         assert_eq!(list.len(), 1);
+        assert_eq!(list[0].id.as_str(), "release:anime:legacy-anilist-21");
         assert_eq!(list[0].display_title, "One Piece");
 
         let cached = facade.get_cache("anilist", "21").unwrap().unwrap();
@@ -258,12 +143,17 @@ mod tests {
         let facade = facade(100);
 
         let r1 = follow_inner(&facade, &client, 21, 100).await.unwrap();
-        facade.drop_canonical(&r1.canonical_id).unwrap();
+        let cid = CanonicalId::legacy_from_source(
+            ReleaseKind::Anime,
+            "anilist",
+            &r1.media.id.to_string(),
+        );
+        facade.drop_canonical(&cid).unwrap();
         let r2 = follow_inner(&facade, &client, 21, 300).await.unwrap();
         assert_eq!(r2.outcome, CanonicalFollowOutcome::RestoredFromDrop);
-        assert_eq!(r1.canonical_id, r2.canonical_id);
+        assert_eq!(r1.media.id, r2.media.id);
 
-        let row = facade.find_canonical(&r2.canonical_id).unwrap().unwrap();
+        let row = facade.find_canonical(&cid).unwrap().unwrap();
         assert!(row.dropped_at.is_none());
     }
 
@@ -283,16 +173,6 @@ mod tests {
         follow_inner(&facade, &client, 21, 100).await.unwrap();
         let report = follow_inner(&facade, &client, 21, 200).await.unwrap();
         assert_eq!(report.outcome, CanonicalFollowOutcome::AlreadyFollowing);
-        assert_eq!(
-            facade
-                .all_canonical()
-                .unwrap()
-                .iter()
-                .filter(|c| c.followed_at.is_some() && c.dropped_at.is_none())
-                .count(),
-            1
-        );
-        // Sanity: list_canonical(Active) returns one row.
-        let _ = CanonicalListFilter::Active;
+        assert_eq!(facade.count_followed().unwrap(), 1);
     }
 }

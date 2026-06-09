@@ -9,6 +9,7 @@
 //! leak `chrono::DateTime` through this trait; conversion happens at
 //! the call site that actually needs a human-readable form.
 
+#[cfg(test)]
 use std::sync::{Arc, Mutex};
 
 /// Anything that can report the current Unix-epoch second.
@@ -45,9 +46,11 @@ impl Clock for FixedClock {
 /// Test-only: a clock that can be advanced manually between operations.
 /// Used in tests that exercise sequencing (e.g. "follow then drop
 /// later").
+#[cfg(test)]
 #[derive(Debug, Clone)]
 pub struct AdvanceableClock(Arc<Mutex<i64>>);
 
+#[cfg(test)]
 impl AdvanceableClock {
     pub fn new(start: i64) -> Self {
         Self(Arc::new(Mutex::new(start)))
@@ -64,6 +67,7 @@ impl AdvanceableClock {
     }
 }
 
+#[cfg(test)]
 impl Clock for AdvanceableClock {
     fn now(&self) -> i64 {
         *self.0.lock().expect("clock lock poisoned")

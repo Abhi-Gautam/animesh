@@ -1,12 +1,7 @@
-//! Domain operations that mutate the durable library.
+//! Domain operations invoked by the TUI's `App::dispatch`.
 //!
-//! Originally the CLI command layer (each verb was its own
-//! `Command` trait impl wrapping an inner). After the TUI became
-//! the only surface, the wrappers were deleted; the inner functions
-//! remain because the TUI's `App::dispatch` calls them directly.
+//! Each verb here is the `_inner` function the TUI calls directly;
+//! tests live alongside.
 
-pub mod context;
 pub mod follow;
-pub mod probe;
-pub mod sub;
 pub mod sync;

@@ -7,12 +7,11 @@
 //! row maps to (via `source_ref`); this module never invents one.
 //!
 //! Lifecycle of `followed_at` / `dropped_at`:
-//!   * NULL / NULL    — created by the canonicalizer; not yet followed.
+//!   * NULL / NULL — created by the canonicalizer; not yet followed.
 //!   * Some(t) / NULL — currently followed.
 //!   * Some(t) / Some(d) — soft-dropped at d, originally followed at t.
-//!                          A re-follow clears dropped_at and PRESERVES
-//!                          the original followed_at, so engagement
-//!                          history reads correctly.
+//!     A re-follow clears dropped_at and PRESERVES the original
+//!     followed_at, so engagement history reads correctly.
 
 use anyhow::{Context, Result};
 use rusqlite::{params, OptionalExtension, Row};
@@ -74,17 +73,6 @@ pub enum CanonicalFollowOutcome {
     NotFound,
 }
 
-/// Filter for [`Db::list_canonical`]. Mirrors [`super::ListFilter`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CanonicalListFilter {
-    /// Currently followed: followed_at IS NOT NULL AND dropped_at IS NULL.
-    Active,
-    /// Every row, including created-not-followed.
-    All,
-    /// Soft-dropped: dropped_at IS NOT NULL.
-    Dropped,
-}
-
 impl Db {
     /// Create a canonical_release row. The canonicalizer is the only
     /// expected call site; the row is "created but not followed" until
@@ -113,6 +101,7 @@ impl Db {
     }
 
     /// Lookup by canonical id. None if not found.
+    #[cfg(test)]
     pub fn find_canonical(&self, id: &CanonicalId) -> Result<Option<CanonicalRelease>> {
         self.conn()
             .query_row(
@@ -188,62 +177,21 @@ impl Db {
         Ok(updated > 0)
     }
 
-    /// Hard delete. Cascades to source_ref + engagement via FK.
-    /// Rare path (administrative). Returns whether a row was removed.
-    pub fn delete_canonical(&self, id: &CanonicalId) -> Result<bool> {
-        let removed = self
-            .conn()
-            .execute(
-                "DELETE FROM canonical_release WHERE id = ?1",
-                params![id],
-            )
-            .context("delete_canonical")?;
-        Ok(removed > 0)
-    }
-
-    /// Save the rendered ASCII cover + accent color for a canonical.
-    /// Idempotent overwrite. No-op if id does not exist.
-    pub fn set_canonical_cover(
-        &self,
-        id: &CanonicalId,
-        ascii: &str,
-        color: Option<&str>,
-    ) -> Result<()> {
-        self.conn()
-            .execute(
-                "UPDATE canonical_release \
-                 SET cover_ascii = ?2, cover_color = ?3 WHERE id = ?1",
-                params![id, ascii, color],
-            )
-            .context("set_canonical_cover")?;
-        Ok(())
-    }
-
-    /// List canonicals per filter. Active is the default for the TUI's
-    /// main pane. ORDER BY followed_at DESC for the active list; by
-    /// dropped_at DESC for the dropped list; by created_at DESC for All.
-    pub fn list_canonical(&self, filter: CanonicalListFilter) -> Result<Vec<CanonicalRelease>> {
-        let sql = match filter {
-            CanonicalListFilter::Active => {
+    /// Currently followed canonicals, newest-first by followed_at.
+    pub fn list_active_canonical(&self) -> Result<Vec<CanonicalRelease>> {
+        let conn = self.conn();
+        let mut stmt = conn
+            .prepare(
                 "SELECT * FROM canonical_release \
                  WHERE followed_at IS NOT NULL AND dropped_at IS NULL \
-                 ORDER BY followed_at DESC"
-            }
-            CanonicalListFilter::All => {
-                "SELECT * FROM canonical_release ORDER BY created_at DESC"
-            }
-            CanonicalListFilter::Dropped => {
-                "SELECT * FROM canonical_release \
-                 WHERE dropped_at IS NOT NULL ORDER BY dropped_at DESC"
-            }
-        };
-        let conn = self.conn();
-        let mut stmt = conn.prepare(sql).context("prepare list_canonical")?;
+                 ORDER BY followed_at DESC",
+            )
+            .context("prepare list_active_canonical")?;
         let rows = stmt
             .query_map([], CanonicalRelease::from_row)
-            .context("query list_canonical")?;
+            .context("query list_active_canonical")?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
-            .context("collect list_canonical rows")
+            .context("collect list_active_canonical rows")
     }
 
     /// Count of actively followed canonicals.
@@ -256,16 +204,6 @@ impl Db {
                 |row| row.get(0),
             )
             .context("count_followed_canonical")
-    }
-
-    pub fn count_dropped_canonical(&self) -> Result<i64> {
-        self.conn()
-            .query_row(
-                "SELECT COUNT(*) FROM canonical_release WHERE dropped_at IS NOT NULL",
-                [],
-                |row| row.get(0),
-            )
-            .context("count_dropped_canonical")
     }
 }
 
@@ -361,30 +299,7 @@ mod tests {
     }
 
     #[test]
-    fn delete_removes_row_and_returns_true_only_when_present() {
-        let db = fresh();
-        let id = id("foo");
-        db.upsert_canonical(&id, ReleaseKind::Tv, "Foo", 1).unwrap();
-        assert!(db.delete_canonical(&id).unwrap());
-        assert!(!db.delete_canonical(&id).unwrap());
-        assert!(db.find_canonical(&id).unwrap().is_none());
-    }
-
-    #[test]
-    fn set_cover_updates_only_when_id_exists() {
-        let db = fresh();
-        let id = id("foo");
-        db.set_canonical_cover(&id, "ascii", Some("#fff")).unwrap();
-        assert!(db.find_canonical(&id).unwrap().is_none(), "no-op on missing id");
-        db.upsert_canonical(&id, ReleaseKind::Tv, "Foo", 1).unwrap();
-        db.set_canonical_cover(&id, "ascii", Some("#fff")).unwrap();
-        let row = db.find_canonical(&id).unwrap().unwrap();
-        assert_eq!(row.cover_ascii.as_deref(), Some("ascii"));
-        assert_eq!(row.cover_color.as_deref(), Some("#fff"));
-    }
-
-    #[test]
-    fn list_filter_partitions_active_and_dropped_correctly() {
+    fn list_active_excludes_dropped_rows() {
         let mut db = fresh();
         let a = id("a");
         let b = id("b");
@@ -395,13 +310,9 @@ mod tests {
         }
         db.drop_canonical(&b, 10).unwrap();
 
-        let active = db.list_canonical(CanonicalListFilter::Active).unwrap();
-        let dropped = db.list_canonical(CanonicalListFilter::Dropped).unwrap();
-        let all = db.list_canonical(CanonicalListFilter::All).unwrap();
+        let active = db.list_active_canonical().unwrap();
         assert_eq!(active.len(), 2);
-        assert_eq!(dropped.len(), 1);
-        assert_eq!(all.len(), 3);
-        assert_eq!(dropped[0].id, b);
+        assert!(active.iter().all(|r| r.id != b));
     }
 
     #[test]
@@ -412,24 +323,9 @@ mod tests {
             db.upsert_canonical(&i, ReleaseKind::Tv, slug, t).unwrap();
             db.follow_canonical(&i, t).unwrap();
         }
-        let active = db.list_canonical(CanonicalListFilter::Active).unwrap();
+        let active = db.list_active_canonical().unwrap();
         let order: Vec<&str> = active.iter().map(|r| r.id.slug()).collect();
         assert_eq!(order, ["newest", "middle", "oldest"]);
-    }
-
-    #[test]
-    fn list_all_excludes_nothing_and_orders_by_created_at_desc() {
-        let mut db = fresh();
-        let a = id("a");
-        let b = id("b");
-        db.upsert_canonical(&a, ReleaseKind::Tv, "A", 100).unwrap();
-        db.upsert_canonical(&b, ReleaseKind::Tv, "B", 200).unwrap();
-        // a is followed, b is created-not-followed.
-        db.follow_canonical(&a, 110).unwrap();
-        let all = db.list_canonical(CanonicalListFilter::All).unwrap();
-        assert_eq!(all.len(), 2);
-        // Most recently created first.
-        assert_eq!(all[0].id, b);
     }
 
     // ------------------------------------------------------------------
@@ -457,7 +353,6 @@ mod tests {
         Upsert(u8),
         Follow(u8),
         Drop(u8),
-        Delete(u8),
     }
 
     fn arb_op() -> impl Strategy<Value = Op> {
@@ -465,7 +360,6 @@ mod tests {
             (0u8..8).prop_map(Op::Upsert),
             (0u8..8).prop_map(Op::Follow),
             (0u8..8).prop_map(Op::Drop),
-            (0u8..8).prop_map(Op::Delete),
         ]
     }
 
@@ -522,21 +416,11 @@ mod tests {
                             }
                         }
                     }
-                    Op::Delete(n) => {
-                        let id = id(&slug_for(n));
-                        let removed = db.delete_canonical(&id).unwrap();
-                        match model.remove(&n) {
-                            None => prop_assert!(!removed),
-                            Some(_) => prop_assert!(removed),
-                        }
-                    }
                 }
             }
             // Invariants.
             let expected_active = model.values().filter(|s| **s == State::Active).count() as i64;
-            let expected_dropped = model.values().filter(|s| **s == State::Dropped).count() as i64;
             prop_assert_eq!(db.count_followed_canonical().unwrap(), expected_active);
-            prop_assert_eq!(db.count_dropped_canonical().unwrap(), expected_dropped);
             // No duplicates.
             let unique: i64 = db.conn().query_row(
                 "SELECT COUNT(*) FROM (SELECT DISTINCT id FROM canonical_release)",

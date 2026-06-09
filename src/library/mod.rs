@@ -35,8 +35,8 @@ use anyhow::{Context, Result};
 
 use crate::ids::{CanonicalId, ReleaseKind};
 use crate::store::{
-    CacheEntry, CanonicalFollowOutcome, CanonicalListFilter, CanonicalRelease, Db, Engagement,
-    EngagementEvent, SourceRef,
+    CacheEntry, CanonicalFollowOutcome, CanonicalRelease, Db, Engagement, EngagementEvent,
+    SourceRef,
 };
 use crate::time::Clock;
 
@@ -59,6 +59,7 @@ impl Library {
     }
 
     /// In-memory Library for tests. Migrations always run.
+    #[cfg(test)]
     pub fn open_in_memory(clock: Arc<dyn Clock>) -> Result<Self> {
         let db = Db::open_in_memory().context("open in-memory Library DB")?;
         Ok(Self {
@@ -83,6 +84,7 @@ impl Library {
     /// `confidence` is the canonicalizer's stated likelihood that this
     /// source row maps to the given canonical. Legacy / user-confirmed
     /// rows use 1.0.
+    #[allow(clippy::too_many_arguments)]
     pub fn follow_with_source(
         &self,
         canonical_id: &CanonicalId,
@@ -114,34 +116,13 @@ impl Library {
     /// Active follows, newest-first by followed_at.
     pub fn followed(&self) -> Result<Vec<CanonicalRelease>> {
         let db = self.lock_db()?;
-        db.list_canonical(CanonicalListFilter::Active)
+        db.list_active_canonical()
     }
 
-    /// Soft-dropped canonicals, newest-first by dropped_at.
-    pub fn dropped(&self) -> Result<Vec<CanonicalRelease>> {
-        let db = self.lock_db()?;
-        db.list_canonical(CanonicalListFilter::Dropped)
-    }
-
-    /// Every canonical including created-not-followed, newest-first
-    /// by created_at.
-    pub fn all_canonical(&self) -> Result<Vec<CanonicalRelease>> {
-        let db = self.lock_db()?;
-        db.list_canonical(CanonicalListFilter::All)
-    }
-
+    #[cfg(test)]
     pub fn find_canonical(&self, id: &CanonicalId) -> Result<Option<CanonicalRelease>> {
         let db = self.lock_db()?;
         db.find_canonical(id)
-    }
-
-    pub fn find_canonical_by_source(
-        &self,
-        source: &str,
-        source_id: &str,
-    ) -> Result<Option<CanonicalId>> {
-        let db = self.lock_db()?;
-        db.find_canonical_by_source(source, source_id)
     }
 
     pub fn count_followed(&self) -> Result<i64> {
@@ -181,13 +162,6 @@ impl Library {
         db.engagement_for_canonical(canonical_id)
     }
 
-    /// Global engagement, newest-first. `since` is unix seconds.
-    /// `limit` = 0 means no cap.
-    pub fn recent_engagement(&self, since: i64, limit: u32) -> Result<Vec<Engagement>> {
-        let db = self.lock_db()?;
-        db.recent_engagement(since, limit)
-    }
-
     // ------------------------------------------------------------------
     // Source refs and metadata cache (used by the sync engine).
     // ------------------------------------------------------------------
@@ -205,19 +179,6 @@ impl Library {
     pub fn upsert_cache(&self, entry: &CacheEntry) -> Result<()> {
         let db = self.lock_db()?;
         db.upsert_cache(entry)
-    }
-
-    /// Persist the rendered ASCII cover for a canonical. Wraps the
-    /// existing store-level setter so the TUI's follow path doesn't
-    /// have to reach into `store::canonical_release` directly.
-    pub fn set_canonical_cover(
-        &self,
-        id: &CanonicalId,
-        ascii: &str,
-        color: Option<&str>,
-    ) -> Result<()> {
-        let db = self.lock_db()?;
-        db.set_canonical_cover(id, ascii, color)
     }
 
     // ------------------------------------------------------------------
@@ -258,32 +219,6 @@ impl Library {
         }
         let json = serde_json::to_string(streamers).context("encode subs")?;
         self.kv_set("subs.streaming", &json)
-    }
-
-    // ------------------------------------------------------------------
-    // Canonicalization cache (used by the canonical service)
-    // ------------------------------------------------------------------
-
-    pub fn cached_canonical_for(
-        &self,
-        source: &str,
-        source_id: &str,
-    ) -> Result<Option<CanonicalId>> {
-        let db = self.lock_db()?;
-        db.cached_canonical_for(source, source_id)
-    }
-
-    /// Record a canonicalization decision. `decided_by` is a free-form
-    /// provenance tag — "llm:claude-opus-4-7", "alias-match", "manual".
-    pub fn cache_canonicalization(
-        &self,
-        source: &str,
-        source_id: &str,
-        canonical_id: &CanonicalId,
-        decided_by: &str,
-    ) -> Result<()> {
-        let db = self.lock_db()?;
-        db.cache_canonicalization(source, source_id, canonical_id, decided_by, self.now())
     }
 
     // ------------------------------------------------------------------
@@ -332,8 +267,8 @@ mod tests {
         assert_eq!(row.followed_at, Some(1_000));
         assert_eq!(row.created_at, 1_000);
 
-        let mapped = lib.find_canonical_by_source("tmdb", "95396").unwrap().unwrap();
-        assert_eq!(mapped, cid);
+        let refs = lib.source_refs_for(&cid).unwrap();
+        assert!(refs.iter().any(|r| r.source == "tmdb" && r.source_id == "95396"));
     }
 
     #[test]
@@ -357,14 +292,9 @@ mod tests {
         // The canonical was already followed; re-following is a no-op
         // outcome, even when adding a second source ref.
         assert_eq!(out, CanonicalFollowOutcome::AlreadyFollowing);
-        assert_eq!(
-            lib.find_canonical_by_source("tmdb", "95396").unwrap().unwrap(),
-            cid
-        );
-        assert_eq!(
-            lib.find_canonical_by_source("tvmaze", "44060").unwrap().unwrap(),
-            cid
-        );
+        let refs = lib.source_refs_for(&cid).unwrap();
+        assert!(refs.iter().any(|r| r.source == "tmdb" && r.source_id == "95396"));
+        assert!(refs.iter().any(|r| r.source == "tvmaze" && r.source_id == "44060"));
     }
 
     #[test]
@@ -376,7 +306,6 @@ mod tests {
             .unwrap();
         clock.advance(100);
         assert!(lib.drop_canonical(&cid).unwrap());
-        assert_eq!(lib.dropped().unwrap().len(), 1);
         assert_eq!(lib.followed().unwrap().len(), 0);
         clock.advance(100);
         let out = lib
@@ -450,38 +379,6 @@ mod tests {
             .last_engagement(&cid, EngagementEvent::Rated)
             .unwrap()
             .is_none());
-    }
-
-    #[test]
-    fn recent_engagement_respects_since_and_limit() {
-        let clock = AdvanceableClock::new(1_000);
-        let lib = Library::open_in_memory(Arc::new(clock.clone())).unwrap();
-        let cid = id("x");
-        lib.follow_with_source(&cid, ReleaseKind::Tv, "X", "tmdb", "1", None, 1.0).unwrap();
-        for t in [1_500, 2_000, 2_500, 3_000] {
-            clock.set(t);
-            lib.engage(&cid, EngagementEvent::Opened, None).unwrap();
-        }
-        let recent = lib.recent_engagement(2_000, 0).unwrap();
-        assert_eq!(recent.len(), 3); // 2_000, 2_500, 3_000
-        assert_eq!(recent[0].occurred_at, 3_000);
-        let limited = lib.recent_engagement(0, 2).unwrap();
-        assert_eq!(limited.len(), 2);
-    }
-
-    #[test]
-    fn canonicalization_cache_round_trip_through_library() {
-        let lib = lib_at(1_000);
-        let cid = id("severance");
-        lib.follow_with_source(&cid, ReleaseKind::Tv, "Severance", "tmdb", "1", None, 1.0)
-            .unwrap();
-        assert!(lib.cached_canonical_for("tmdb", "1").unwrap().is_none());
-        lib.cache_canonicalization("tmdb", "1", &cid, "llm:claude-opus-4-7")
-            .unwrap();
-        assert_eq!(
-            lib.cached_canonical_for("tmdb", "1").unwrap().unwrap(),
-            cid
-        );
     }
 
     #[test]

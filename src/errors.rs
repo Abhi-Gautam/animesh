@@ -15,7 +15,6 @@ use anyhow::Error as AnyError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExitKind {
-    Success = 0,
     User = 1,
     Durable = 2,
     Network = 3,
@@ -65,7 +64,11 @@ pub fn user_error<E: Into<AnyError>>(e: E) -> AnyError {
     AnyError::new(UserError(e.into()))
 }
 
-/// Build a network error.
+/// Build a network error. Test-only today — production code wraps
+/// network failures via `reqwest::Error`, which `classify` detects
+/// directly. The helper exists so tests can synthesize a sentinel
+/// without depending on a real HTTP failure.
+#[cfg(test)]
 pub fn network_error<E: Into<AnyError>>(e: E) -> AnyError {
     AnyError::new(NetworkError(e.into()))
 }
@@ -119,7 +122,6 @@ mod tests {
 
     #[test]
     fn exit_codes_match_spec() {
-        assert_eq!(ExitKind::Success.code(), 0);
         assert_eq!(ExitKind::User.code(), 1);
         assert_eq!(ExitKind::Durable.code(), 2);
         assert_eq!(ExitKind::Network.code(), 3);

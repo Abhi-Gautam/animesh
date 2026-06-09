@@ -41,21 +41,15 @@ pub struct Show {
     pub streaming: Vec<StreamingLink>,
 }
 
-/// Tolerant streaming-link shape. The cache JSON might come from one of
-/// two writers — the legacy v0.4 `MediaExternalLink` (with `color` and
-/// `type` fields) or the v0.5 [`crate::sources::StreamingLink`]
-/// (just `site` and `url`). Both deserialize cleanly into this shape
-/// because every field is optional with serde default.
+/// Tolerant streaming-link shape. Serde silently ignores extra fields,
+/// so legacy `MediaExternalLink` JSON (which carried `color` and `type`)
+/// still deserializes against this lean shape.
 #[derive(Debug, Clone, Deserialize)]
 pub struct StreamingLink {
     #[serde(default)]
     pub site: Option<String>,
     #[serde(default)]
     pub url: Option<String>,
-    #[serde(default)]
-    pub color: Option<String>,
-    #[serde(default, rename = "type")]
-    pub link_type: Option<String>,
 }
 
 impl Show {
@@ -93,16 +87,8 @@ impl Show {
         &self.canonical.id
     }
 
-    pub fn source(&self) -> &str {
-        &self.primary_source.source
-    }
-
     pub fn source_id(&self) -> &str {
         &self.primary_source.source_id
-    }
-
-    pub fn user_note(&self) -> Option<&str> {
-        self.canonical.user_note.as_deref()
     }
 
     pub fn romaji(&self) -> Option<&str> {
@@ -129,16 +115,6 @@ impl Show {
 
     pub fn format(&self) -> Option<&str> {
         self.cache.as_ref().and_then(|c| c.format.as_deref())
-    }
-
-    pub fn cover_url(&self) -> Option<&str> {
-        self.cache
-            .as_ref()
-            .and_then(|c| c.cover_image_url.as_deref())
-    }
-
-    pub fn cover_ascii(&self) -> Option<&str> {
-        self.canonical.cover_ascii.as_deref()
     }
 
     pub fn verified_streamer(&self) -> Option<String> {
@@ -272,7 +248,6 @@ fn show_inputs(s: &Show) -> BucketInputs {
     BucketInputs {
         next_drop_at: s.next_drop_at(),
         verified_playable_at: s.verified_at(),
-        verified_streamer: s.verified_streamer(),
         subscribed: s.subscribed_match,
         fully_done: s.fully_done(),
     }

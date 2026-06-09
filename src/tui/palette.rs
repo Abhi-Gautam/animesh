@@ -89,11 +89,13 @@ mod tests {
 
     #[test]
     fn open_resets_all_fields() {
-        let mut p = PaletteState::default();
-        p.query = "stale".into();
-        p.selected = 5;
-        p.search_hits = vec![1, 2, 3];
-        p.follow_error = Some("boom".into());
+        let mut p = PaletteState {
+            query: "stale".into(),
+            selected: 5,
+            search_hits: vec![1, 2, 3],
+            follow_error: Some("boom".into()),
+            ..PaletteState::default()
+        };
         p.open(PaletteMode::Search);
         assert_eq!(p.mode, PaletteMode::Search);
         assert!(p.query.is_empty());
@@ -115,8 +117,10 @@ mod tests {
 
     #[test]
     fn move_selection_with_zero_candidates_is_safe() {
-        let mut p = PaletteState::default();
-        p.selected = 4;
+        let mut p = PaletteState {
+            selected: 4,
+            ..PaletteState::default()
+        };
         p.move_selection(1, 0);
         assert_eq!(p.selected, 0);
     }

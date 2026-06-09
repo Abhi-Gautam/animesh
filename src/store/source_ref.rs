@@ -8,13 +8,10 @@
 //!   * (source, source_id) present and points at the same canonical
 //!     → update raw_title + confidence (idempotent re-canonicalize).
 //!   * (source, source_id) present and points at a DIFFERENT canonical
-//!     → refuse. The caller must use [`Db::remap_source_ref`] to make
-//!     the intent explicit.
+//!     → refuse. The caller must explicitly drop + re-follow to remap.
 //!
 //! This is the marvel-correctness bar: silent overwrites are the
-//! easiest way to corrupt a canonicalization graph, and the call sites
-//! we have (legacy backfill, LLM canonicalizer with idempotency cache,
-//! manual remap) always know which mode they want.
+//! easiest way to corrupt a canonicalization graph.
 
 use anyhow::{anyhow, Context, Result};
 use rusqlite::{params, OptionalExtension, Row};
@@ -112,65 +109,12 @@ impl Db {
             Some(other) => {
                 return Err(anyhow!(
                     "source_ref collision: ({source}, {source_id}) is already mapped to {other}, \
-                     refusing silent remap to {canonical_id}; use remap_source_ref"
+                     refusing silent remap to {canonical_id}; drop the old follow first"
                 ));
             }
         };
         tx.commit().context("attach_source_ref commit")?;
         Ok(outcome)
-    }
-
-    /// Explicit remap. Updates the canonical_id for an existing
-    /// (source, source_id) pair, no questions asked. Returns whether
-    /// a row was touched.
-    pub fn remap_source_ref(
-        &self,
-        source: &str,
-        source_id: &str,
-        new_canonical_id: &CanonicalId,
-    ) -> Result<bool> {
-        let updated = self
-            .conn()
-            .execute(
-                "UPDATE source_ref SET canonical_id = ?3 \
-                 WHERE source = ?1 AND source_id = ?2",
-                params![source, source_id, new_canonical_id],
-            )
-            .context("remap_source_ref")?;
-        Ok(updated > 0)
-    }
-
-    /// Lookup canonical id by (source, source_id). None if not mapped.
-    pub fn find_canonical_by_source(
-        &self,
-        source: &str,
-        source_id: &str,
-    ) -> Result<Option<CanonicalId>> {
-        self.conn()
-            .query_row(
-                "SELECT canonical_id FROM source_ref \
-                 WHERE source = ?1 AND source_id = ?2",
-                params![source, source_id],
-                |r| r.get(0),
-            )
-            .optional()
-            .context("find_canonical_by_source")
-    }
-
-    /// Read one source_ref. None if missing.
-    pub fn find_source_ref(
-        &self,
-        source: &str,
-        source_id: &str,
-    ) -> Result<Option<SourceRef>> {
-        self.conn()
-            .query_row(
-                "SELECT * FROM source_ref WHERE source = ?1 AND source_id = ?2",
-                params![source, source_id],
-                SourceRef::from_row,
-            )
-            .optional()
-            .context("find_source_ref")
     }
 
     /// List every (source, source_id) attached to a canonical. Useful
@@ -211,6 +155,14 @@ mod tests {
         db.upsert_canonical(id, ReleaseKind::Tv, "X", 1).unwrap();
     }
 
+    fn first_ref_for(db: &Db, cid: &CanonicalId) -> SourceRef {
+        db.source_refs_for_canonical(cid)
+            .unwrap()
+            .into_iter()
+            .next()
+            .expect("expected at least one source_ref")
+    }
+
     #[test]
     fn attach_inserts_when_pair_is_new() {
         let mut db = fresh();
@@ -220,8 +172,9 @@ mod tests {
             .attach_source_ref(&cid, "anilist", "21", Some("Foo"), 0.9)
             .unwrap();
         assert_eq!(out, AttachSourceRefOutcome::Inserted);
-        let sr = db.find_source_ref("anilist", "21").unwrap().unwrap();
-        assert_eq!(sr.canonical_id, cid);
+        let sr = first_ref_for(&db, &cid);
+        assert_eq!(sr.source, "anilist");
+        assert_eq!(sr.source_id, "21");
         assert_eq!(sr.raw_title.as_deref(), Some("Foo"));
         assert!((sr.confidence - 0.9).abs() < f64::EPSILON);
     }
@@ -236,7 +189,7 @@ mod tests {
             .attach_source_ref(&cid, "anilist", "21", Some("Foo (updated)"), 0.95)
             .unwrap();
         assert_eq!(out, AttachSourceRefOutcome::RefreshedSameCanonical);
-        let sr = db.find_source_ref("anilist", "21").unwrap().unwrap();
+        let sr = first_ref_for(&db, &cid);
         assert_eq!(sr.raw_title.as_deref(), Some("Foo (updated)"));
         assert!((sr.confidence - 0.95).abs() < f64::EPSILON);
     }
@@ -254,10 +207,10 @@ mod tests {
             .unwrap_err();
         let msg = format!("{err}");
         assert!(msg.contains("collision"), "got: {msg}");
-        assert!(msg.contains("remap_source_ref"), "remediation hint: {msg}");
         // The original mapping is untouched.
-        let sr = db.find_source_ref("anilist", "21").unwrap().unwrap();
+        let sr = first_ref_for(&db, &a);
         assert_eq!(sr.canonical_id, a);
+        assert!(db.source_refs_for_canonical(&b).unwrap().is_empty());
     }
 
     #[test]
@@ -276,36 +229,6 @@ mod tests {
     }
 
     #[test]
-    fn remap_changes_canonical_id_for_existing_pair() {
-        let mut db = fresh();
-        let a = id("foo");
-        let b = id("bar");
-        with_canonical(&db, &a);
-        with_canonical(&db, &b);
-        db.attach_source_ref(&a, "anilist", "21", None, 0.9).unwrap();
-        assert!(db.remap_source_ref("anilist", "21", &b).unwrap());
-        let mapped = db.find_canonical_by_source("anilist", "21").unwrap().unwrap();
-        assert_eq!(mapped, b);
-    }
-
-    #[test]
-    fn remap_returns_false_when_pair_missing() {
-        let db = fresh();
-        let cid = id("foo");
-        // remap on a missing pair touches nothing (the row would fail
-        // FK on insert; remap is UPDATE-only).
-        assert!(!db.remap_source_ref("anilist", "999", &cid).unwrap());
-    }
-
-    #[test]
-    fn find_canonical_by_source_returns_none_when_unset() {
-        let db = fresh();
-        assert!(
-            db.find_canonical_by_source("anilist", "21").unwrap().is_none()
-        );
-    }
-
-    #[test]
     fn source_refs_for_canonical_returns_all_attached() {
         let mut db = fresh();
         let cid = id("foo");
@@ -317,22 +240,6 @@ mod tests {
         // ORDER BY confidence DESC — AniList (0.95) before TMDB (0.85).
         assert_eq!(refs[0].source, "anilist");
         assert_eq!(refs[1].source, "tmdb");
-    }
-
-    #[test]
-    fn cascade_delete_removes_source_refs_when_canonical_deleted() {
-        let mut db = fresh();
-        let cid = id("foo");
-        with_canonical(&db, &cid);
-        db.attach_source_ref(&cid, "anilist", "21", None, 0.9).unwrap();
-        db.attach_source_ref(&cid, "tmdb", "33", None, 0.8).unwrap();
-        assert!(db.delete_canonical(&cid).unwrap());
-        // Both source_refs were cascade-deleted by the FK ON DELETE CASCADE.
-        let leftover: i64 = db
-            .conn()
-            .query_row("SELECT COUNT(*) FROM source_ref", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(leftover, 0);
     }
 
     #[test]

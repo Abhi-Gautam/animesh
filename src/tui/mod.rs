@@ -14,7 +14,6 @@
 //! request — see `docs/QA.md` for the manual verification protocol.
 
 pub mod app;
-pub mod ascii_art;
 pub mod command;
 pub mod help;
 pub mod llm_context;
@@ -32,7 +31,9 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use chrono::Utc;
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyModifiers},
+    event::{
+        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyModifiers,
+    },
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -60,15 +61,6 @@ pub fn run() -> Result<()> {
     let client = AniListClient::new();
     let facade = Arc::new(Facade::open(&path, Arc::new(SystemClock))?);
 
-    // Backfill cover art for any follow with a missing or stale render.
-    // Blocks startup briefly (≈300ms × N stale rows) but only fires on
-    // the first launch after a renderer change.
-    tokio::task::block_in_place(|| {
-        tokio::runtime::Handle::current().block_on(
-            crate::commands::follow::refresh_stale_covers(&facade, &client),
-        )
-    });
-
     let windows = Windows::from_env();
     let now = Utc::now().timestamp();
     let subs = crate::tui::subs::Subs::load_arc(&facade)?;
@@ -84,10 +76,7 @@ pub fn run() -> Result<()> {
     result
 }
 
-fn event_loop(
-    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
-    mut app: App,
-) -> Result<()> {
+fn event_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) -> Result<()> {
     let mut last_tick = Instant::now();
     loop {
         terminal.draw(|f| view::render(f, &app))?;
@@ -270,7 +259,10 @@ fn handle_key_follow(app: &mut App, key: KeyEvent) {
 }
 
 fn handle_key_help(app: &mut App, key: KeyEvent) {
-    if matches!(key.code, KeyCode::Esc | KeyCode::Char('?') | KeyCode::Enter | KeyCode::Char('q')) {
+    if matches!(
+        key.code,
+        KeyCode::Esc | KeyCode::Char('?') | KeyCode::Enter | KeyCode::Char('q')
+    ) {
         app.close_overlay();
     }
 }

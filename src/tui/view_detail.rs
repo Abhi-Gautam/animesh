@@ -75,68 +75,20 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
     render_synopsis(f, s, chunks[6]);
 }
 
-/// Paint the title gradient-colored across the show's palette. Each
-/// character gets a smoothly-interpolated RGB along the palette so the
-/// title itself encodes the cover's identity. Plain ASCII glyphs —
-/// the colored underline strip below carries the heavy chromatic load.
-fn palette_painted_title(title: &str, palette: Option<&[(u8, u8, u8)]>) -> Vec<Span<'static>> {
-    let chars: Vec<char> = title.chars().collect();
-    let n = chars.len().max(1);
-    let Some(pal) = palette else {
-        return vec![Span::styled(
-            title.to_string(),
-            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
-        )];
-    };
-    chars
-        .iter()
-        .enumerate()
-        .map(|(i, ch)| {
-            let t = if n == 1 { 0.0 } else { i as f32 / (n - 1) as f32 };
-            let (r, g, b) = crate::tui::ascii_art::lerp(pal, t);
-            Span::styled(
-                ch.to_string(),
-                Style::default()
-                    .fg(Color::Rgb(r, g, b))
-                    .add_modifier(Modifier::BOLD),
-            )
-        })
-        .collect()
-}
-
-/// A `cells`-wide colored strip of `━` painted along the same palette
-/// gradient as the title — shows the palette as a pure color band,
-/// which is more legible than the per-character title tinting alone.
-fn palette_painted_strip(cells: usize, palette: Option<&[(u8, u8, u8)]>) -> Vec<Span<'static>> {
-    let Some(pal) = palette else {
-        return vec![Span::styled(
-            "━".repeat(cells),
-            Style::default().fg(DIMMER),
-        )];
-    };
-    let n = cells.max(1);
-    (0..cells)
-        .map(|i| {
-            let t = if n == 1 { 0.0 } else { i as f32 / (n - 1) as f32 };
-            let (r, g, b) = crate::tui::ascii_art::lerp(pal, t);
-            Span::styled("━", Style::default().fg(Color::Rgb(r, g, b)))
-        })
-        .collect()
-}
-
 fn render_hero(f: &mut Frame, s: &crate::tui::model::Show, now: i64, area: Rect) {
     let title = s.display_title();
-    let palette = s.cover_ascii().and_then(crate::tui::ascii_art::decode);
     let title_line = Line::from(Span::styled(
         title.to_string(),
         Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
     ));
 
-    // Underline strip — same visual width as the fullwidth title
-    // (each source char → 2 cells). Clip to the pane width so we
-    // never overflow on narrow terminals.
+    // Plain dimmed underline. Clip to pane width so we never overflow
+    // on narrow terminals.
     let title_cells = title.chars().count().min(area.width as usize);
-    let underline_line = Line::from(palette_painted_strip(title_cells, palette.as_deref()));
+    let underline_line = Line::from(Span::styled(
+        "━".repeat(title_cells),
+        Style::default().fg(DIMMER),
+    ));
 
     // Metadata sub-line (romaji removed — was a duplicate of the title
     // for shows whose english + romaji match).
@@ -358,7 +310,7 @@ fn render_episodes(f: &mut Frame, s: &crate::tui::model::Show, area: Rect) {
             Style::default().fg(TIME_GREEN).add_modifier(Modifier::BOLD)
         } else if e == next {
             Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
-        } else if Some(e) == s.next_episode() && s.airs_at().map_or(false, |a| a < chrono::Utc::now().timestamp()) {
+        } else if Some(e) == s.next_episode() && s.airs_at().is_some_and(|a| a < chrono::Utc::now().timestamp()) {
             Style::default().fg(LATE)
         } else {
             Style::default().fg(DIM)
@@ -380,7 +332,7 @@ fn render_episodes(f: &mut Frame, s: &crate::tui::model::Show, area: Rect) {
 fn render_synopsis(f: &mut Frame, s: &crate::tui::model::Show, area: Rect) {
     let body = s
         .description()
-        .map(|d| strip_html(d))
+        .map(strip_html)
         .unwrap_or_else(|| "— (no synopsis cached — run `animesh sync` to fetch)".into());
     let lines = vec![
         Line::from(Span::styled(

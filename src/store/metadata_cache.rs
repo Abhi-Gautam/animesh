@@ -172,52 +172,6 @@ impl CacheEntry {
         })
     }
 
-    /// Generic constructor from a [`crate::sources::SourceRecord`].
-    /// Used by the sync engine to cache any adapter's refreshed
-    /// metadata. AniList-specific fields (`format`, `total_episodes`,
-    /// `next_episode_number`) are left None for non-AniList sources —
-    /// they're best-effort optimization fields, not required.
-    pub fn from_source_record(
-        record: &crate::sources::SourceRecord,
-        ttl: &TtlConfig,
-        fetched_at: i64,
-    ) -> Self {
-        let status_enum = CacheStatus::parse(record.status.as_deref());
-        let streaming_json = if record.streaming_links.is_empty() {
-            None
-        } else {
-            serde_json::to_string(&record.streaming_links).ok()
-        };
-        Self {
-            source: record.source.to_string(),
-            source_id: record.source_id.clone(),
-            display_title: Some(record.display_title.clone()),
-            title_english: None,
-            title_native: None,
-            status: record.status.clone(),
-            total_episodes: None,
-            format: None,
-            next_episode_number: None,
-            next_episode_airs_at: record.next_episode_at,
-            fetched_at,
-            expires_at: ttl.expires_at(status_enum, fetched_at),
-            cover_image_url: record.cover_url.clone(),
-            description: record.description.clone(),
-            score: None,
-            studios: None,
-            streaming_links_json: streaming_json,
-        }
-    }
-}
-
-/// Summary used by `doctor` and tests.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CacheStats {
-    pub total: i64,
-    pub fresh: i64,
-    pub expired: i64,
-    pub oldest_fetched_at: Option<i64>,
-    pub newest_fetched_at: Option<i64>,
 }
 
 impl Db {
@@ -285,72 +239,6 @@ impl Db {
             .context("get_cache")
     }
 
-    /// Get a row only if `expires_at > now`. None if missing or stale.
-    pub fn get_cache_if_fresh(
-        &self,
-        source: &str,
-        source_id: &str,
-        now: i64,
-    ) -> Result<Option<CacheEntry>> {
-        self.conn()
-            .query_row(
-                "SELECT * FROM metadata_cache \
-                 WHERE source = ?1 AND source_id = ?2 AND expires_at > ?3",
-                params![source, source_id, now],
-                CacheEntry::from_row,
-            )
-            .optional()
-            .context("get_cache_if_fresh")
-    }
-
-    /// Sweep expired rows. Returns the count removed. Triggers will
-    /// cascade the delete into search_fts.
-    pub fn delete_expired_cache(&self, now: i64) -> Result<usize> {
-        let n = self
-            .conn()
-            .execute(
-                "DELETE FROM metadata_cache WHERE expires_at <= ?1",
-                params![now],
-            )
-            .context("delete_expired_cache")?;
-        Ok(n)
-    }
-
-    /// Aggregate stats for `doctor`.
-    pub fn cache_stats(&self, now: i64) -> Result<CacheStats> {
-        let conn = self.conn();
-        let total: i64 = conn
-            .query_row("SELECT COUNT(*) FROM metadata_cache", [], |r| r.get(0))
-            .context("cache_stats total")?;
-        let fresh: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM metadata_cache WHERE expires_at > ?1",
-                params![now],
-                |r| r.get(0),
-            )
-            .context("cache_stats fresh")?;
-        let oldest: Option<i64> = conn
-            .query_row(
-                "SELECT MIN(fetched_at) FROM metadata_cache",
-                [],
-                |r| r.get(0),
-            )
-            .ok();
-        let newest: Option<i64> = conn
-            .query_row(
-                "SELECT MAX(fetched_at) FROM metadata_cache",
-                [],
-                |r| r.get(0),
-            )
-            .ok();
-        Ok(CacheStats {
-            total,
-            fresh,
-            expired: total - fresh,
-            oldest_fetched_at: oldest,
-            newest_fetched_at: newest,
-        })
-    }
 }
 
 #[cfg(test)]
@@ -436,59 +324,4 @@ mod tests {
         assert_eq!(got.expires_at, 1000);
     }
 
-    #[test]
-    fn get_cache_if_fresh_filters_by_expiry() {
-        let db = fresh();
-        db.upsert_cache(&entry("21", "RELEASING", 0, 100)).unwrap();
-        assert!(db.get_cache_if_fresh("anilist", "21", 50).unwrap().is_some());
-        assert!(db.get_cache_if_fresh("anilist", "21", 100).unwrap().is_none());
-        assert!(db.get_cache_if_fresh("anilist", "21", 200).unwrap().is_none());
-        // Stale row is still visible via get_cache.
-        assert!(db.get_cache("anilist", "21").unwrap().is_some());
-    }
-
-    #[test]
-    fn delete_expired_removes_only_expired() {
-        let db = fresh();
-        db.upsert_cache(&entry("1", "RELEASING", 0, 50)).unwrap();
-        db.upsert_cache(&entry("2", "RELEASING", 0, 100)).unwrap();
-        db.upsert_cache(&entry("3", "RELEASING", 0, 200)).unwrap();
-        let removed = db.delete_expired_cache(100).unwrap();
-        assert_eq!(removed, 2, "rows with expires_at <= 100 should be removed");
-        assert!(db.get_cache("anilist", "1").unwrap().is_none());
-        assert!(db.get_cache("anilist", "2").unwrap().is_none());
-        assert!(db.get_cache("anilist", "3").unwrap().is_some());
-    }
-
-    #[test]
-    fn delete_expired_cascades_into_search_fts() {
-        let db = fresh();
-        db.upsert_cache(&entry("1", "RELEASING", 0, 50)).unwrap();
-        db.upsert_cache(&entry("2", "RELEASING", 0, 200)).unwrap();
-        db.delete_expired_cache(100).unwrap();
-        // search_fts trigger should have removed row 1.
-        let n: i64 = db
-            .conn()
-            .query_row(
-                "SELECT COUNT(*) FROM search_fts WHERE source_id = '1'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(n, 0);
-    }
-
-    #[test]
-    fn cache_stats_reports_fresh_expired_oldest_newest() {
-        let db = fresh();
-        db.upsert_cache(&entry("1", "RELEASING", 10, 100)).unwrap();
-        db.upsert_cache(&entry("2", "RELEASING", 200, 500)).unwrap();
-        db.upsert_cache(&entry("3", "RELEASING", 50, 50)).unwrap();
-        let stats = db.cache_stats(150).unwrap();
-        assert_eq!(stats.total, 3);
-        assert_eq!(stats.fresh, 1, "only row 2 has expires_at > 150");
-        assert_eq!(stats.expired, 2);
-        assert_eq!(stats.oldest_fetched_at, Some(10));
-        assert_eq!(stats.newest_fetched_at, Some(200));
-    }
 }

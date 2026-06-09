@@ -7,7 +7,6 @@
 //! decoded by whichever call site cares.
 //!
 //! Query patterns the rest of the codebase needs:
-//!   * recent_engagement(since) — feed the LLM context export.
 //!   * last_engagement(canonical, event) — dedupe for the notifier and
 //!     the upcoming-drop computer.
 //!   * engagement_for_canonical(canonical) — detail pane.
@@ -129,30 +128,6 @@ impl Db {
         Ok(conn.last_insert_rowid())
     }
 
-    /// Most recent engagement event globally, since the given
-    /// occurred_at threshold (inclusive). Used by the context export
-    /// to give an LLM the user's recent taste signal.
-    ///
-    /// `limit` caps the number of rows returned; 0 means "no limit"
-    /// because SQLite treats LIMIT -1 as no cap and we want a typed
-    /// "no cap" without exposing that.
-    pub fn recent_engagement(&self, since: i64, limit: u32) -> Result<Vec<Engagement>> {
-        let sql = if limit == 0 {
-            "SELECT * FROM engagement WHERE occurred_at >= ?1 ORDER BY occurred_at DESC".to_string()
-        } else {
-            format!(
-                "SELECT * FROM engagement WHERE occurred_at >= ?1 ORDER BY occurred_at DESC LIMIT {limit}"
-            )
-        };
-        let conn = self.conn();
-        let mut stmt = conn.prepare(&sql).context("prepare recent_engagement")?;
-        let rows = stmt
-            .query_map(params![since], Engagement::from_row)
-            .context("query recent_engagement")?;
-        rows.collect::<rusqlite::Result<Vec<_>>>()
-            .context("collect recent_engagement")
-    }
-
     /// Last engagement of the given kind for a canonical. The notifier
     /// uses this to dedupe (don't re-notify if we've already verified
     /// the same drop window) and the upcoming-drop computer uses it to
@@ -264,27 +239,6 @@ mod tests {
     }
 
     #[test]
-    fn recent_engagement_respects_threshold_and_limit() {
-        let db = fresh();
-        let cid = id("foo");
-        with_canonical(&db, &cid);
-        for t in [100, 200, 300, 400, 500] {
-            db.append_engagement(&cid, EngagementEvent::Opened, t, None)
-                .unwrap();
-        }
-        // since=300 → 300, 400, 500
-        let rows = db.recent_engagement(300, 0).unwrap();
-        assert_eq!(rows.len(), 3);
-        assert_eq!(rows[0].occurred_at, 500);
-        assert_eq!(rows[2].occurred_at, 300);
-        // limit=2 → 500, 400
-        let rows = db.recent_engagement(0, 2).unwrap();
-        assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0].occurred_at, 500);
-        assert_eq!(rows[1].occurred_at, 400);
-    }
-
-    #[test]
     fn last_engagement_returns_only_matching_event() {
         let db = fresh();
         let cid = id("foo");
@@ -340,35 +294,4 @@ mod tests {
         assert_eq!(rows[0].meta.as_deref(), Some(meta));
     }
 
-    #[test]
-    fn cascade_delete_removes_engagement_rows_when_canonical_deleted() {
-        let db = fresh();
-        let cid = id("foo");
-        with_canonical(&db, &cid);
-        for ev in [EngagementEvent::Opened, EngagementEvent::Completed] {
-            db.append_engagement(&cid, ev, 100, None).unwrap();
-        }
-        assert!(db.delete_canonical(&cid).unwrap());
-        let leftover: i64 = db
-            .conn()
-            .query_row("SELECT COUNT(*) FROM engagement", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(leftover, 0);
-    }
-
-    #[test]
-    fn recent_engagement_is_global_across_canonicals() {
-        let db = fresh();
-        let a = id("a");
-        let b = id("b");
-        with_canonical(&db, &a);
-        with_canonical(&db, &b);
-        db.append_engagement(&a, EngagementEvent::Opened, 100, None).unwrap();
-        db.append_engagement(&b, EngagementEvent::Verified, 200, None).unwrap();
-        let rows = db.recent_engagement(0, 0).unwrap();
-        assert_eq!(rows.len(), 2);
-        // Newest first.
-        assert_eq!(rows[0].canonical_id, b);
-        assert_eq!(rows[1].canonical_id, a);
-    }
 }

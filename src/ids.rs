@@ -126,11 +126,12 @@ impl CanonicalId {
     pub fn kind(&self) -> ReleaseKind {
         // Safe by construction: every CanonicalId went through new()
         // or parse(), both of which validate kind.
-        let mid = self.0.splitn(3, ':').nth(1).expect("validated at construction");
+        let mid = self.0.split(':').nth(1).expect("validated at construction");
         ReleaseKind::from_str(mid).expect("validated at construction")
     }
 
-    /// Extract the slug segment.
+    /// Extract the slug segment. Test-only inspection helper.
+    #[cfg(test)]
     pub fn slug(&self) -> &str {
         // Safe by construction (see `kind`).
         self.0.splitn(3, ':').nth(2).expect("validated at construction")

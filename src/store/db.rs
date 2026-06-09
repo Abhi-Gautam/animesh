@@ -52,6 +52,7 @@ impl Db {
     }
 
     /// In-memory DB for tests. Always runs migrations.
+    #[cfg(test)]
     pub fn open_in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory().context("opening in-memory SQLite database")?;
         // WAL is meaningless in-memory; skip those pragmas but keep
@@ -281,7 +282,7 @@ mod tests {
         assert_eq!(canonical_count, 2);
 
         // Active follow preserves all fields, including cover.
-        let (id, kind, title, cover_ascii, cover_color, followed_at, dropped_at, user_note): (
+        type CanonicalRow = (
             String,
             String,
             String,
@@ -290,7 +291,8 @@ mod tests {
             Option<i64>,
             Option<i64>,
             Option<String>,
-        ) = conn
+        );
+        let (id, kind, title, cover_ascii, cover_color, followed_at, dropped_at, user_note): CanonicalRow = conn
             .query_row(
                 "SELECT id, kind, display_title, cover_ascii, cover_color, \
                         followed_at, dropped_at, user_note \
