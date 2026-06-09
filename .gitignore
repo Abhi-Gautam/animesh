@@ -15,3 +15,6 @@ Cargo.lock
 
 # Insta snapshot pending files (review before committing as .snap)
 **/*.snap.new
+
+# Local scratch / harvested sample data (source-lake outputs etc.)
+/scratchpad/
