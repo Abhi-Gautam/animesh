@@ -15,7 +15,7 @@ pub mod source_ref;
 
 pub use canonical_release::{CanonicalFollowOutcome, CanonicalRelease};
 pub use db::Db;
-pub use engagement::{Engagement, EngagementEvent};
+pub use engagement::{Engagement, EngagementEvent, EngagementMeta, EngagementSource};
 pub use metadata_cache::{CacheEntry, TtlConfig};
 pub use path::resolve_db_path;
 pub use source_ref::SourceRef;

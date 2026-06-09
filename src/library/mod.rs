@@ -36,7 +36,7 @@ use anyhow::{Context, Result};
 use crate::ids::{CanonicalId, ReleaseKind};
 use crate::store::{
     CacheEntry, CanonicalFollowOutcome, CanonicalRelease, Db, Engagement, EngagementEvent,
-    SourceRef,
+    EngagementMeta, SourceRef,
 };
 use crate::time::Clock;
 
@@ -134,15 +134,16 @@ impl Library {
     // Engagement
     // ------------------------------------------------------------------
 
-    /// Append an engagement event. `meta` must be JSON if provided.
+    /// Append an engagement event. The payload (if any) is typed by
+    /// [`EngagementMeta`]; the store encodes it to JSON for the column.
     pub fn engage(
         &self,
         canonical_id: &CanonicalId,
         event: EngagementEvent,
-        meta: Option<&str>,
+        meta: Option<EngagementMeta>,
     ) -> Result<()> {
         let db = self.lock_db()?;
-        db.append_engagement(canonical_id, event, self.now(), meta)?;
+        db.append_engagement(canonical_id, event, self.now(), meta.as_ref())?;
         Ok(())
     }
 
@@ -348,8 +349,12 @@ mod tests {
         clock.advance(500);
         lib.engage(&cid, EngagementEvent::Opened, None).unwrap();
         clock.advance(500);
-        lib.engage(&cid, EngagementEvent::Completed, Some(r#"{"seen":1}"#))
-            .unwrap();
+        lib.engage(
+            &cid,
+            EngagementEvent::Completed,
+            Some(EngagementMeta::Completed { seen: 1 }),
+        )
+        .unwrap();
         let events = lib.engagement_for(&cid).unwrap();
         assert_eq!(events.len(), 2);
         // Newest first.

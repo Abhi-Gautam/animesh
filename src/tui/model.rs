@@ -14,7 +14,8 @@ use serde::Deserialize;
 use crate::ids::CanonicalId;
 use crate::library::Library as Facade;
 use crate::store::{
-    CacheEntry, CanonicalRelease, Engagement, EngagementEvent, SourceRef,
+    CacheEntry, CanonicalRelease, Engagement, EngagementEvent, EngagementMeta, EngagementSource,
+    SourceRef,
 };
 use crate::tui::pane::{bucket, BucketInputs, Pane, Windows};
 
@@ -54,29 +55,22 @@ pub struct StreamingLink {
 
 impl Show {
     pub fn seen(&self) -> i64 {
-        let Some(ev) = &self.last_completed else {
-            return 0;
-        };
-        let Some(meta) = &ev.meta else {
-            return 0;
-        };
-        // meta is JSON `{"seen": N}`. Anything else → 0.
-        serde_json::from_str::<serde_json::Value>(meta)
-            .ok()
-            .and_then(|v| v.get("seen").and_then(|s| s.as_i64()))
+        self.last_completed
+            .as_ref()
+            .and_then(|e| e.seen())
             .unwrap_or(0)
     }
 
     pub fn total(&self) -> Option<i64> {
-        self.cache.as_ref().and_then(|c| c.total_episodes)
+        self.cache.as_ref().and_then(|c| c.total_episodes())
     }
 
     pub fn next_episode(&self) -> Option<i64> {
-        self.cache.as_ref().and_then(|c| c.next_episode_number)
+        self.cache.as_ref().and_then(|c| c.next_episode())
     }
 
     pub fn airs_at(&self) -> Option<i64> {
-        self.cache.as_ref().and_then(|c| c.next_episode_airs_at)
+        self.cache.as_ref().and_then(|c| c.next_episode_airs_at())
     }
 
     pub fn display_title(&self) -> &str {
@@ -92,43 +86,35 @@ impl Show {
     }
 
     pub fn romaji(&self) -> Option<&str> {
-        self.cache
-            .as_ref()
-            .and_then(|c| c.title_english.as_deref().or(c.title_native.as_deref()))
+        self.cache.as_ref().and_then(|c| c.title_priority())
     }
 
     pub fn studios(&self) -> Option<&str> {
-        self.cache.as_ref().and_then(|c| c.studios.as_deref())
+        self.cache.as_ref().and_then(|c| c.studios())
     }
 
     pub fn score(&self) -> Option<f64> {
-        self.cache.as_ref().and_then(|c| c.score)
+        self.cache.as_ref().and_then(|c| c.score())
     }
 
     pub fn status(&self) -> Option<&str> {
-        self.cache.as_ref().and_then(|c| c.status.as_deref())
+        self.cache.as_ref().and_then(|c| c.status())
     }
 
     pub fn description(&self) -> Option<&str> {
-        self.cache.as_ref().and_then(|c| c.description.as_deref())
+        self.cache.as_ref().and_then(|c| c.description())
     }
 
     pub fn format(&self) -> Option<&str> {
-        self.cache.as_ref().and_then(|c| c.format.as_deref())
+        self.cache.as_ref().and_then(|c| c.format())
     }
 
-    pub fn verified_streamer(&self) -> Option<String> {
-        let meta = self.last_verified.as_ref()?.meta.as_deref()?;
-        serde_json::from_str::<serde_json::Value>(meta)
-            .ok()
-            .and_then(|v| v.get("streamer")?.as_str().map(str::to_string))
+    pub fn verified_streamer(&self) -> Option<&str> {
+        self.last_verified.as_ref()?.streamer()
     }
 
-    pub fn verified_url(&self) -> Option<String> {
-        let meta = self.last_verified.as_ref()?.meta.as_deref()?;
-        serde_json::from_str::<serde_json::Value>(meta)
-            .ok()
-            .and_then(|v| v.get("url")?.as_str().map(str::to_string))
+    pub fn verified_url(&self) -> Option<&str> {
+        self.last_verified.as_ref()?.verified_url()
     }
 
     pub fn verified_at(&self) -> Option<i64> {
@@ -140,7 +126,7 @@ impl Show {
     /// and film release-date fields will plug in later without changing
     /// callers.
     pub fn next_drop_at(&self) -> Option<i64> {
-        self.cache.as_ref().and_then(|c| c.next_episode_airs_at)
+        self.cache.as_ref().and_then(|c| c.next_episode_airs_at())
     }
 
     pub fn fully_done(&self) -> bool {
@@ -195,7 +181,6 @@ impl Shelf {
             };
             show.subscribed_match = show
                 .verified_streamer()
-                .as_deref()
                 .map(|s| subs.matches(s))
                 .unwrap_or(false);
             show.pane = bucket(show_inputs(&show), now, windows);
@@ -215,7 +200,6 @@ impl Shelf {
         for s in &mut self.shows {
             s.subscribed_match = s
                 .verified_streamer()
-                .as_deref()
                 .map(|n| subs.matches(n))
                 .unwrap_or(false);
             s.pane = bucket(show_inputs(s), now, windows);
@@ -229,15 +213,11 @@ impl Shelf {
         for s in &mut self.shows {
             if &s.canonical.id == canonical_id {
                 s.last_completed = Some(Engagement {
-                    // id=0 is the sentinel for "in-memory, never
-                    // persisted with this id" — only set_progress
-                    // creates these. A reload via Shelf::load
-                    // overwrites with the real row.
-                    id: 0,
+                    source: EngagementSource::InMemory,
                     canonical_id: canonical_id.clone(),
                     event: EngagementEvent::Completed,
                     occurred_at: now,
-                    meta: Some(format!("{{\"seen\":{seen}}}")),
+                    meta: Some(EngagementMeta::Completed { seen }),
                 });
             }
         }

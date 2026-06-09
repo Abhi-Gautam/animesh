@@ -20,7 +20,7 @@ use crate::commands::follow::follow_inner;
 use crate::commands::sync::sync_inner;
 use crate::library::Library as Facade;
 use crate::sources::anilist::AniListClient;
-use crate::store::{CanonicalFollowOutcome, EngagementEvent};
+use crate::store::{CanonicalFollowOutcome, EngagementEvent, EngagementMeta};
 use crate::tui::command::Command;
 use crate::tui::model::Shelf;
 use crate::tui::palette::{FollowStage, PaletteMode, PaletteState};
@@ -194,11 +194,11 @@ impl App {
             Some(t) if prev_seen + 1 > t => t,
             _ => prev_seen + 1,
         };
-        let meta = format!("{{\"seen\":{new_seen}}}");
-        match self
-            .facade
-            .engage(&canonical_id, EngagementEvent::Completed, Some(&meta))
-        {
+        match self.facade.engage(
+            &canonical_id,
+            EngagementEvent::Completed,
+            Some(EngagementMeta::Completed { seen: new_seen }),
+        ) {
             Ok(()) => {
                 self.shelf.set_progress(&canonical_id, new_seen, now);
                 self.now = now;
@@ -233,20 +233,29 @@ impl App {
     }
 
     fn do_stream(&mut self) {
-        let Some(s) = self.current() else {
-            self.toasts.push("nothing selected");
-            return;
+        // Extract owned data so the &Show borrow ends before we call
+        // open_url (which needs &mut self).
+        let (title, verified_url, verified_streamer, streaming) = {
+            let Some(s) = self.current() else {
+                self.toasts.push("nothing selected");
+                return;
+            };
+            (
+                s.display_title().to_string(),
+                s.verified_url().map(str::to_string),
+                s.verified_streamer().map(str::to_string),
+                s.streaming.clone(),
+            )
         };
-        let title = s.display_title().to_string();
 
         // Prefer verified URL on a subscribed streamer.
-        if let (Some(url), Some(streamer)) = (s.verified_url(), s.verified_streamer()) {
+        if let (Some(url), Some(streamer)) = (verified_url, verified_streamer) {
             if self.subs.matches(&streamer) {
                 return self.open_url(&title, &url, None);
             }
         }
         // Fall back: any cached streaming link whose site is subscribed.
-        let preferred = s.streaming.iter().find_map(|l| {
+        let preferred = streaming.iter().find_map(|l| {
             let site = l.site.as_deref()?;
             let url = l.url.as_deref()?;
             if self.subs.matches(site) {
@@ -259,7 +268,7 @@ impl App {
             return self.open_url(&title, &url, None);
         }
         // Last resort: first link with a URL, but warn it isn't subscribed.
-        if let Some((url, site)) = s.streaming.iter().find_map(|l| {
+        if let Some((url, site)) = streaming.iter().find_map(|l| {
             let url = l.url.clone()?;
             Some((url, l.site.clone().unwrap_or_else(|| "unknown".into())))
         }) {

@@ -150,6 +150,48 @@ impl CacheEntry {
         }
     }
 
+    /// Picks the best alternate title — English first, then native. The
+    /// canonical's own `display_title` is what users see by default;
+    /// this is the "second language" pass for hero subheaders and the
+    /// LLM context export.
+    pub fn title_priority(&self) -> Option<&str> {
+        self.title_english
+            .as_deref()
+            .or(self.title_native.as_deref())
+    }
+
+    pub fn status(&self) -> Option<&str> {
+        self.status.as_deref()
+    }
+
+    pub fn format(&self) -> Option<&str> {
+        self.format.as_deref()
+    }
+
+    pub fn description(&self) -> Option<&str> {
+        self.description.as_deref()
+    }
+
+    pub fn studios(&self) -> Option<&str> {
+        self.studios.as_deref()
+    }
+
+    pub fn score(&self) -> Option<f64> {
+        self.score
+    }
+
+    pub fn total_episodes(&self) -> Option<i64> {
+        self.total_episodes
+    }
+
+    pub fn next_episode(&self) -> Option<i64> {
+        self.next_episode_number
+    }
+
+    pub fn next_episode_airs_at(&self) -> Option<i64> {
+        self.next_episode_airs_at
+    }
+
     fn from_row(row: &Row<'_>) -> rusqlite::Result<Self> {
         Ok(Self {
             source: row.get("source")?,

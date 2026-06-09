@@ -21,7 +21,7 @@ pub fn build(lib: &Library, show: &Show) -> Result<serde_json::Value> {
             json!({
                 "event": e.event.as_str(),
                 "at": e.occurred_at,
-                "meta": e.meta,
+                "meta": e.meta.as_ref().map(|m| m.to_json_value()),
             })
         })
         .collect();
@@ -42,14 +42,14 @@ pub fn build(lib: &Library, show: &Show) -> Result<serde_json::Value> {
             "site": l.site,
             "url": l.url,
         })).collect::<Vec<_>>(),
-        "verified": show.last_verified.as_ref().map(|_| json!({
+        "verified": show.last_verified.as_ref().map(|e| json!({
             "streamer": show.verified_streamer(),
             "url": show.verified_url(),
-            "at": show.verified_at(),
+            "at": e.occurred_at,
         })),
         "last_completed": show.last_completed.as_ref().map(|e| json!({
             "at": e.occurred_at,
-            "meta": e.meta,
+            "meta": e.meta.as_ref().map(|m| m.to_json_value()),
         })),
         "recent_engagement": recent,
         "subscribed_match": show.subscribed_match,

@@ -13,7 +13,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use crate::ids::{CanonicalId, ReleaseKind};
 use crate::library::Library as Facade;
 use crate::sources::anilist::AniListClient;
-use crate::store::{CacheEntry, EngagementEvent};
+use crate::store::{CacheEntry, EngagementEvent, EngagementMeta};
 use crate::time::FixedClock;
 use crate::tui::app::{App, Overlay};
 use crate::tui::model::Shelf;
@@ -79,7 +79,10 @@ fn app_with_one_show(now: i64) -> App {
         .engage(
             &cid,
             EngagementEvent::Verified,
-            Some(r#"{"streamer":"Netflix","url":"https://netflix.com/x"}"#),
+            Some(EngagementMeta::Verified {
+                streamer: "Netflix".into(),
+                url: "https://netflix.com/x".into(),
+            }),
         )
         .unwrap();
     let mut subs = Subs::default();
@@ -140,8 +143,7 @@ fn colon_watched_enter_increments_progress_and_pushes_toast() {
         )
         .unwrap()
         .expect("engagement was persisted");
-    let meta = last.meta.expect("seen meta JSON");
-    assert!(meta.contains("\"seen\":1"), "meta was: {meta}");
+    assert_eq!(last.seen(), Some(1), "expected seen=1, meta was: {:?}", last.meta);
 }
 
 #[test]
@@ -347,7 +349,10 @@ fn verified_subscribed_show_lands_in_playable() {
         .engage(
             &cid,
             EngagementEvent::Verified,
-            Some(r#"{"streamer":"Crunchyroll","url":"https://crunchyroll.com/x"}"#),
+            Some(EngagementMeta::Verified {
+                streamer: "Crunchyroll".into(),
+                url: "https://crunchyroll.com/x".into(),
+            }),
         )
         .unwrap();
     let mut subs = Subs::default();
@@ -372,7 +377,10 @@ fn verified_unsubscribed_show_is_following_not_playable() {
         .engage(
             &cid,
             EngagementEvent::Verified,
-            Some(r#"{"streamer":"Apple TV","url":"https://tv.apple.com/x"}"#),
+            Some(EngagementMeta::Verified {
+                streamer: "Apple TV".into(),
+                url: "https://tv.apple.com/x".into(),
+            }),
         )
         .unwrap();
     let subs = Subs::default(); // none subscribed
