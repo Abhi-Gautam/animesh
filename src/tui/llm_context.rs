@@ -10,7 +10,7 @@ use crate::tui::model::Show;
 /// Build a JSON object summarising a canonical for paste into an LLM.
 /// Pulls every source_ref + the last 10 engagements so the agent sees
 /// the substrate, not just the row.
-pub fn build(lib: &Library, show: &Show) -> Result<serde_json::Value> {
+pub(crate) fn build(lib: &Library, show: &Show) -> Result<serde_json::Value> {
     let refs = lib.source_refs_for(show.canonical_id())?;
     let engagements = lib.engagement_for(show.canonical_id())?;
     let recent: Vec<_> = engagements

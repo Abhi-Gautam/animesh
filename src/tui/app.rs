@@ -33,7 +33,7 @@ use crate::tui::toast::ToastQueue;
 
 /// Which overlay (if any) is intercepting input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Overlay {
+pub(crate) enum Overlay {
     None,
     /// `:` — verb palette.
     Command,
@@ -49,13 +49,13 @@ pub enum Overlay {
 
 /// Which pane is focused. `0/1/2` map to Playable / Dropping / Following
 /// so number keys (`1` `2` `3`) trivially map to indices.
-pub const PANE_PLAYABLE: usize = 0;
-pub const PANE_DROPPING: usize = 1;
-pub const PANE_FOLLOWING: usize = 2;
-pub const PANE_LABELS: [&str; 3] = ["PLAYABLE", "DROPPING", "FOLLOWING"];
-pub const PANE_KINDS: [Pane; 3] = [Pane::Playable, Pane::Dropping, Pane::Following];
+pub(crate) const PANE_PLAYABLE: usize = 0;
+pub(crate) const PANE_DROPPING: usize = 1;
+pub(crate) const PANE_FOLLOWING: usize = 2;
+pub(crate) const PANE_LABELS: [&str; 3] = ["PLAYABLE", "DROPPING", "FOLLOWING"];
+pub(crate) const PANE_KINDS: [Pane; 3] = [Pane::Playable, Pane::Dropping, Pane::Following];
 
-pub struct App {
+pub(crate) struct App {
     pub facade: Arc<Facade>,
     pub sources: SourceRegistry,
     pub shelf: Shelf,
@@ -76,7 +76,7 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(
+    pub(crate) fn new(
         facade: Arc<Facade>,
         sources: SourceRegistry,
         shelf: Shelf,
@@ -114,11 +114,11 @@ impl App {
         }
     }
 
-    pub fn focused_index(&self) -> usize {
+    pub(crate) fn focused_index(&self) -> usize {
         self.focused_pane
     }
 
-    pub fn items_in(&self, pane: usize) -> Vec<&crate::tui::model::Show> {
+    pub(crate) fn items_in(&self, pane: usize) -> Vec<&crate::tui::model::Show> {
         let pane_kind = PANE_KINDS[pane];
         self.shelf
             .shows
@@ -134,14 +134,14 @@ impl App {
             .collect()
     }
 
-    pub fn current(&self) -> Option<&crate::tui::model::Show> {
+    pub(crate) fn current(&self) -> Option<&crate::tui::model::Show> {
         let pane = self.focused_pane;
         let items = self.items_in(pane);
         let idx = self.selection[pane].min(items.len().saturating_sub(1));
         items.get(idx).copied()
     }
 
-    pub fn move_selection(&mut self, delta: i32) {
+    pub(crate) fn move_selection(&mut self, delta: i32) {
         let n = self.items_in(self.focused_pane).len() as i32;
         if n == 0 {
             return;
@@ -151,19 +151,19 @@ impl App {
         self.selection[self.focused_pane] = next as usize;
     }
 
-    pub fn switch_pane(&mut self, delta: i32) {
+    pub(crate) fn switch_pane(&mut self, delta: i32) {
         let next = (self.focused_pane as i32 + delta).rem_euclid(3) as usize;
         self.focused_pane = next;
     }
 
-    pub fn set_pane(&mut self, index: usize) {
+    pub(crate) fn set_pane(&mut self, index: usize) {
         if index < 3 {
             self.focused_pane = index;
         }
     }
 
     /// Called on the 30s tick (and after any state-changing action).
-    pub fn refresh_buckets(&mut self) {
+    pub(crate) fn refresh_buckets(&mut self) {
         self.shelf
             .recompute_panes(self.now, self.windows, &self.subs);
         for i in 0..3 {
@@ -175,7 +175,7 @@ impl App {
     }
 
     /// Shelf is empty → render the onboarding empty state.
-    pub fn is_first_run(&self) -> bool {
+    pub(crate) fn is_first_run(&self) -> bool {
         self.shelf.shows.is_empty()
     }
 
@@ -183,7 +183,7 @@ impl App {
     /// `dispatch(Command::Watched)`; typing `:watched` and pressing
     /// Enter calls the same. Tests drive `dispatch` directly without
     /// touching the terminal.
-    pub fn dispatch(&mut self, cmd: Command) {
+    pub(crate) fn dispatch(&mut self, cmd: Command) {
         match cmd {
             Command::Watched => self.do_watched(),
             Command::Drop => self.do_drop(),
@@ -435,7 +435,7 @@ impl App {
     // ---------- Palette helpers ----------
 
     /// Open a palette overlay in the given mode.
-    pub fn open_palette(&mut self, mode: PaletteMode) {
+    pub(crate) fn open_palette(&mut self, mode: PaletteMode) {
         self.palette.open(mode);
         self.overlay = match mode {
             PaletteMode::Command => Overlay::Command,
@@ -444,13 +444,13 @@ impl App {
         };
     }
 
-    pub fn theme(&self) -> &Theme {
+    pub(crate) fn theme(&self) -> &Theme {
         self.theme_registry
             .get(&self.active_theme_id)
             .unwrap_or_else(|| self.theme_registry.default_theme())
     }
 
-    pub fn visible_theme(&self) -> &Theme {
+    pub(crate) fn visible_theme(&self) -> &Theme {
         if self.overlay == Overlay::Theme {
             if let Some(id) = &self.theme_picker.preview_theme_id {
                 if let Some(theme) = self.theme_registry.get(id) {
@@ -461,20 +461,20 @@ impl App {
         self.theme()
     }
 
-    pub fn open_theme_picker(&mut self) {
+    pub(crate) fn open_theme_picker(&mut self) {
         let selected = self.theme_registry.index_of(&self.active_theme_id);
         self.theme_picker.open(&self.active_theme_id, selected);
         self.sync_theme_preview();
         self.overlay = Overlay::Theme;
     }
 
-    pub fn move_theme_selection(&mut self, delta: i32) {
+    pub(crate) fn move_theme_selection(&mut self, delta: i32) {
         let len = self.theme_registry.all().len();
         self.theme_picker.move_selection(delta, len);
         self.sync_theme_preview();
     }
 
-    pub fn confirm_theme_picker(&mut self) {
+    pub(crate) fn confirm_theme_picker(&mut self) {
         let Some(id) = self.theme_picker.preview_theme_id.clone() else {
             self.close_overlay();
             return;
@@ -484,7 +484,7 @@ impl App {
         self.overlay = Overlay::None;
     }
 
-    pub fn cancel_theme_picker(&mut self) {
+    pub(crate) fn cancel_theme_picker(&mut self) {
         self.active_theme_id = self.theme_picker.original_theme_id.clone();
         self.theme_picker.close();
         self.overlay = Overlay::None;
@@ -518,13 +518,13 @@ impl App {
         }
     }
 
-    pub fn close_overlay(&mut self) {
+    pub(crate) fn close_overlay(&mut self) {
         self.overlay = Overlay::None;
     }
 
     /// Recompute `palette.search_hits` from the current query. Called
     /// on every keystroke in Search mode.
-    pub fn recompute_search_hits(&mut self) {
+    pub(crate) fn recompute_search_hits(&mut self) {
         use nucleo::{
             pattern::{CaseMatching, Normalization, Pattern},
             Config, Matcher,
@@ -559,7 +559,7 @@ impl App {
 
     /// Jump the focused pane's cursor to the show at `shelf_idx`.
     /// Switches to whichever pane the show lives in.
-    pub fn jump_to(&mut self, shelf_idx: usize) -> Result<()> {
+    pub(crate) fn jump_to(&mut self, shelf_idx: usize) -> Result<()> {
         let show = self
             .shelf
             .shows
@@ -582,7 +582,7 @@ impl App {
 
     /// Recompute follow candidates from local `source_candidate_fts` only.
     /// Called on every keystroke in Follow mode; no network happens here.
-    pub fn recompute_follow_hits(&mut self) {
+    pub(crate) fn recompute_follow_hits(&mut self) {
         let q = self.palette.query.trim();
         self.palette.follow_hits.clear();
         if q.is_empty() {
@@ -609,7 +609,7 @@ impl App {
 
     /// Go online for the current Follow-mode query, ingest fresh source
     /// candidates, then show local candidate search results.
-    pub fn run_follow_search(&mut self) {
+    pub(crate) fn run_follow_search(&mut self) {
         let q = self.palette.query.trim().to_string();
         if q.is_empty() {
             self.palette.follow_error = Some("type a query first".into());
@@ -641,7 +641,7 @@ impl App {
     }
 
     /// Follow the currently selected source candidate.
-    pub fn confirm_follow(&mut self) {
+    pub(crate) fn confirm_follow(&mut self) {
         let Some(candidate) = self.palette.follow_hits.get(self.palette.selected).cloned() else {
             return;
         };

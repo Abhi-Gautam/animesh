@@ -16,11 +16,11 @@ mod embedded {
 
 /// Highest migration version this binary knows about. Bump alongside
 /// each `Vxxxx__*.sql` file added under `migrations/`.
-pub const MAX_KNOWN_VERSION: u32 = 7;
+pub(crate) const MAX_KNOWN_VERSION: u32 = 7;
 
 /// Owning wrapper around a rusqlite Connection. The only struct in the
 /// codebase that holds a `Connection`.
-pub struct Db {
+pub(crate) struct Db {
     conn: Connection,
 }
 
@@ -37,7 +37,7 @@ impl Db {
     /// Open the on-disk DB. Creates parent dirs if needed. On a fresh
     /// file, runs migrations. On an existing file, refuses if the
     /// schema_version is greater than this binary supports.
-    pub fn open(path: &Path) -> Result<Self> {
+    pub(crate) fn open(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("creating data directory {parent:?}"))?;
@@ -53,7 +53,7 @@ impl Db {
 
     /// In-memory DB for tests. Always runs migrations.
     #[cfg(test)]
-    pub fn open_in_memory() -> Result<Self> {
+    pub(crate) fn open_in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory().context("opening in-memory SQLite database")?;
         // WAL is meaningless in-memory; skip those pragmas but keep
         // foreign_keys for parity with on-disk behavior.
@@ -74,7 +74,7 @@ impl Db {
 
     /// Apply any pending migrations. Idempotent; safe to call multiple
     /// times.
-    pub fn run_migrations(&mut self) -> Result<()> {
+    pub(crate) fn run_migrations(&mut self) -> Result<()> {
         embedded::migrations::runner()
             .run(&mut self.conn)
             .map(|_report| ())
@@ -83,7 +83,7 @@ impl Db {
 
     /// Highest applied migration version. `0` means a fresh DB (no
     /// refinery tracking table yet).
-    pub fn schema_version(&self) -> Result<u32> {
+    pub(crate) fn schema_version(&self) -> Result<u32> {
         let table_exists: bool = self.conn.query_row(
             "SELECT EXISTS(\
                 SELECT 1 FROM sqlite_master \

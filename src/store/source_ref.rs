@@ -23,7 +23,7 @@ use super::Db;
 /// One row of `source_ref`. Used by the export layer and by the
 /// canonicalization cache for lookups.
 #[derive(Debug, Clone, PartialEq)]
-pub struct SourceRef {
+pub(crate) struct SourceRef {
     pub canonical_id: CanonicalId,
     pub source: String,
     pub source_id: String,
@@ -45,7 +45,7 @@ impl SourceRef {
 
 /// Outcome of [`Db::attach_source_ref`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AttachSourceRefOutcome {
+pub(crate) enum AttachSourceRefOutcome {
     /// First time we've seen this (source, source_id) pair.
     Inserted,
     /// (source, source_id) already mapped to the SAME canonical_id;
@@ -63,7 +63,7 @@ impl Db {
     ///     CHECK-constraint trace.
     ///   * (source, source_id) already mapped to a different canonical
     ///     → returns `Err`. Use [`Db::remap_source_ref`] to override.
-    pub fn attach_source_ref(
+    pub(crate) fn attach_source_ref(
         &mut self,
         canonical_id: &CanonicalId,
         source: &str,
@@ -120,7 +120,7 @@ impl Db {
         Ok(outcome)
     }
 
-    pub fn find_source_ref(&self, source: &str, source_id: &str) -> Result<Option<SourceRef>> {
+    pub(crate) fn find_source_ref(&self, source: &str, source_id: &str) -> Result<Option<SourceRef>> {
         self.conn()
             .query_row(
                 "SELECT * FROM source_ref WHERE source = ?1 AND source_id = ?2",
@@ -133,7 +133,7 @@ impl Db {
 
     /// List every (source, source_id) attached to a canonical. Useful
     /// for the LLM context export and for the canonical detail pane.
-    pub fn source_refs_for_canonical(&self, canonical_id: &CanonicalId) -> Result<Vec<SourceRef>> {
+    pub(crate) fn source_refs_for_canonical(&self, canonical_id: &CanonicalId) -> Result<Vec<SourceRef>> {
         let conn = self.conn();
         let mut stmt = conn
             .prepare_cached(

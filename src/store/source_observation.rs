@@ -7,7 +7,7 @@ use crate::store::source_candidate::SourceCandidate;
 use super::Db;
 
 impl Db {
-    pub fn upsert_source_observation(&mut self, obs: &SourceObservation) -> Result<()> {
+    pub(crate) fn upsert_source_observation(&mut self, obs: &SourceObservation) -> Result<()> {
         let tx = self
             .conn_mut()
             .transaction()

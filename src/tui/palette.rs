@@ -11,14 +11,14 @@
 use crate::search::source_candidate::SourceCandidateResult;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PaletteMode {
+pub(crate) enum PaletteMode {
     Command,
     Search,
     Follow,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum FollowStage {
+pub(crate) enum FollowStage {
     /// User types a query; Enter triggers a network search.
     AwaitingQuery,
     /// Network search returned at least one result.
@@ -29,7 +29,7 @@ pub enum FollowStage {
 }
 
 #[derive(Debug, Clone)]
-pub struct PaletteState {
+pub(crate) struct PaletteState {
     pub mode: PaletteMode,
     pub query: String,
     pub selected: usize,
@@ -60,7 +60,7 @@ impl Default for PaletteState {
 
 impl PaletteState {
     /// Reset to a fresh overlay in the given mode.
-    pub fn open(&mut self, mode: PaletteMode) {
+    pub(crate) fn open(&mut self, mode: PaletteMode) {
         self.mode = mode;
         self.query.clear();
         self.selected = 0;
@@ -71,7 +71,7 @@ impl PaletteState {
     }
 
     /// Move selection by delta within `len` candidates, wrapping.
-    pub fn move_selection(&mut self, delta: i32, len: usize) {
+    pub(crate) fn move_selection(&mut self, delta: i32, len: usize) {
         if len == 0 {
             self.selected = 0;
             return;

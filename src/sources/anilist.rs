@@ -19,17 +19,17 @@ const DEFAULT_BASE_URL: &str = "https://graphql.anilist.co";
 const ANIME_SEARCH_SCOPES: &[SearchScope] = &[SearchScope::Anime];
 const NO_ENRICHMENT_SCOPES: &[SearchScope] = &[];
 
-pub struct AniListClient {
+pub(crate) struct AniListClient {
     client: Client,
     base_url: String,
 }
 
 impl AniListClient {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::with_base_url(DEFAULT_BASE_URL.into())
     }
 
-    pub fn with_base_url(base_url: String) -> Self {
+    pub(crate) fn with_base_url(base_url: String) -> Self {
         Self {
             client: Client::new(),
             base_url,
@@ -39,7 +39,7 @@ impl AniListClient {
     /// Execute a GraphQL query and return both serialized request and raw
     /// response JSON. The ingestion pipeline uses this so raw payload storage
     /// remains the first durable step.
-    pub async fn raw_query<V: Serialize>(
+    pub(crate) async fn raw_query<V: Serialize>(
         &self,
         query: &str,
         variables: V,
@@ -64,7 +64,7 @@ impl AniListClient {
     /// Search for anime by free-form query. Ordered by AniList's
     /// SEARCH_MATCH relevance.
     #[allow(dead_code)]
-    pub async fn search(&self, query: &str, per_page: u32) -> Result<Vec<Media>> {
+    pub(crate) async fn search(&self, query: &str, per_page: u32) -> Result<Vec<Media>> {
         let resp: GraphQlResponse<PageMedia> =
             serde_json::from_str(&self.search_raw_json(query, per_page).await?.1)
                 .context("deserialize AniList search response")?;
@@ -72,7 +72,7 @@ impl AniListClient {
     }
 
     /// Raw search used by ingestion. Returns `(request_json, response_json)`.
-    pub async fn search_raw_json(&self, query: &str, per_page: u32) -> Result<(String, String)> {
+    pub(crate) async fn search_raw_json(&self, query: &str, per_page: u32) -> Result<(String, String)> {
         let body = r#"
             query ($search: String, $perPage: Int) {
               Page(perPage: $perPage) {
@@ -95,7 +95,7 @@ impl AniListClient {
     /// AniList responds with `data.Media: null`. Pulls the full
     /// TUI-detail-pane payload (cover, description, score, studios,
     /// streaming external links).
-    pub async fn by_id(&self, id: i64) -> Result<Option<Media>> {
+    pub(crate) async fn by_id(&self, id: i64) -> Result<Option<Media>> {
         let resp: GraphQlResponse<MediaData> =
             serde_json::from_str(&self.by_id_raw_json(id).await?.1)
                 .context("deserialize AniList by_id response")?;
@@ -103,7 +103,7 @@ impl AniListClient {
     }
 
     /// Raw fetch used by ingestion. Returns `(request_json, response_json)`.
-    pub async fn by_id_raw_json(&self, id: i64) -> Result<(String, String)> {
+    pub(crate) async fn by_id_raw_json(&self, id: i64) -> Result<(String, String)> {
         let body = r#"
             query ($id: Int) {
               Media(id: $id, type: ANIME) {
@@ -132,13 +132,13 @@ impl Default for AniListClient {
     }
 }
 
-pub struct AniListSource {
+pub(crate) struct AniListSource {
     client: AniListClient,
     parser: AniListParser,
 }
 
 impl AniListSource {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             client: AniListClient::new(),
             parser: AniListParser,
@@ -146,7 +146,7 @@ impl AniListSource {
     }
 
     #[allow(dead_code)]
-    pub fn with_client(client: AniListClient) -> Self {
+    pub(crate) fn with_client(client: AniListClient) -> Self {
         Self {
             client,
             parser: AniListParser,
@@ -270,7 +270,7 @@ struct MediaData {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct Media {
+pub(crate) struct Media {
     pub id: i64,
     pub title: MediaTitle,
     pub status: Option<String>,
@@ -289,7 +289,7 @@ pub struct Media {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct MediaCoverImage {
+pub(crate) struct MediaCoverImage {
     #[serde(default)]
     pub large: Option<String>,
     #[serde(default)]
@@ -297,20 +297,20 @@ pub struct MediaCoverImage {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct MediaStudios {
+pub(crate) struct MediaStudios {
     #[serde(default)]
     pub nodes: Vec<MediaStudioNode>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct MediaStudioNode {
+pub(crate) struct MediaStudioNode {
     pub name: String,
     #[serde(rename = "isAnimationStudio", default)]
     pub is_animation_studio: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, serde::Serialize)]
-pub struct MediaExternalLink {
+pub(crate) struct MediaExternalLink {
     #[serde(default)]
     pub site: Option<String>,
     #[serde(default)]
@@ -322,20 +322,20 @@ pub struct MediaExternalLink {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct MediaTitle {
+pub(crate) struct MediaTitle {
     pub romaji: Option<String>,
     pub english: Option<String>,
     pub native: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
-pub struct NextAiringEpisode {
+pub(crate) struct NextAiringEpisode {
     pub episode: i64,
     #[serde(rename = "airingAt")]
     pub airing_at: i64,
 }
 
-pub struct AniListParser;
+pub(crate) struct AniListParser;
 
 impl SourceParser for AniListParser {
     fn source(&self) -> &'static str {
@@ -505,7 +505,7 @@ fn image_obs(kind: &str, url: &str) -> ImageObservation {
 impl Media {
     /// Pick a sensible display title: English if present, else romaji,
     /// else native, else a placeholder.
-    pub fn display_title(&self) -> &str {
+    pub(crate) fn display_title(&self) -> &str {
         self.title
             .english
             .as_deref()

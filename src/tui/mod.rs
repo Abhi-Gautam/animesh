@@ -13,18 +13,18 @@
 //! the original substrate; the SP-1.6 onboarding work is doc-less by
 //! request — see `docs/QA.md` for the manual verification protocol.
 
-pub mod app;
-pub mod command;
-pub mod help;
-pub mod llm_context;
-pub mod model;
-pub mod palette;
-pub mod pane;
-pub mod subs;
-pub mod theme;
-pub mod toast;
-pub mod view;
-pub mod view_detail;
+pub(crate) mod app;
+pub(crate) mod command;
+pub(crate) mod help;
+pub(crate) mod llm_context;
+pub(crate) mod model;
+pub(crate) mod palette;
+pub(crate) mod pane;
+pub(crate) mod subs;
+pub(crate) mod theme;
+pub(crate) mod toast;
+pub(crate) mod view;
+pub(crate) mod view_detail;
 
 use std::io::{self, Stdout};
 use std::time::{Duration, Instant};
@@ -57,7 +57,7 @@ const TICK_INTERVAL: Duration = Duration::from_secs(30);
 
 /// Entry point invoked from `main()` when the user runs `animesh`
 /// with no subcommand.
-pub fn run() -> Result<()> {
+pub(crate) fn run() -> Result<()> {
     let path = resolve_db_path()?;
     let sources = SourceRegistry::production();
     let facade = Arc::new(Facade::open(&path, Arc::new(SystemClock))?);
@@ -99,7 +99,7 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) -
 }
 
 /// Pure key-dispatch — exposed for integration tests.
-pub fn handle_key(app: &mut App, key: KeyEvent) {
+pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
     // Ctrl-C exits no matter what.
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
         app.quit = true;

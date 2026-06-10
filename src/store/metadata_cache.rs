@@ -19,7 +19,7 @@ const DAY: i64 = 86_400;
 /// Parsed view of the `status` column. Unknown strings (or NULL) fall
 /// into [`CacheStatus::Unknown`] so the policy still has a defined TTL.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CacheStatus {
+pub(crate) enum CacheStatus {
     Releasing,
     NotYetReleased,
     Finished,
@@ -30,7 +30,7 @@ impl CacheStatus {
     /// Accepts AniList's canonical `RELEASING`, `NOT_YET_RELEASED`,
     /// `FINISHED` plus a few common spellings. Anything else maps to
     /// `Unknown`.
-    pub fn parse(s: Option<&str>) -> Self {
+    pub(crate) fn parse(s: Option<&str>) -> Self {
         match s.unwrap_or("").to_ascii_uppercase().as_str() {
             "RELEASING" | "CURRENTLY_AIRING" => Self::Releasing,
             "NOT_YET_RELEASED" => Self::NotYetReleased,
@@ -43,7 +43,7 @@ impl CacheStatus {
 /// Per-status TTLs in seconds. Defaults come from spec §5.5; env vars
 /// override (testing + power users).
 #[derive(Debug, Clone, Copy)]
-pub struct TtlConfig {
+pub(crate) struct TtlConfig {
     pub releasing: i64,
     pub not_yet_released: i64,
     pub finished: i64,
@@ -51,14 +51,14 @@ pub struct TtlConfig {
 }
 
 impl TtlConfig {
-    pub const DEFAULT: Self = Self {
+    pub(crate) const DEFAULT: Self = Self {
         releasing: 6 * HOUR,
         not_yet_released: 48 * HOUR,
         finished: 30 * DAY,
         unknown: 24 * HOUR,
     };
 
-    pub fn ttl_for(&self, status: CacheStatus) -> i64 {
+    pub(crate) fn ttl_for(&self, status: CacheStatus) -> i64 {
         match status {
             CacheStatus::Releasing => self.releasing,
             CacheStatus::NotYetReleased => self.not_yet_released,
@@ -68,14 +68,14 @@ impl TtlConfig {
     }
 
     /// `expires_at` for a row fetched now with the given status.
-    pub fn expires_at(&self, status: CacheStatus, fetched_at: i64) -> i64 {
+    pub(crate) fn expires_at(&self, status: CacheStatus, fetched_at: i64) -> i64 {
         fetched_at + self.ttl_for(status)
     }
 }
 
 /// One row of metadata_cache. Mirrors V0001 + V0002 columns.
 #[derive(Debug, Clone, PartialEq)]
-pub struct CacheEntry {
+pub(crate) struct CacheEntry {
     pub source: String,
     pub source_id: String,
     pub display_title: Option<String>,
@@ -101,41 +101,41 @@ impl CacheEntry {
     /// canonical's own `display_title` is what users see by default;
     /// this is the "second language" pass for hero subheaders and the
     /// LLM context export.
-    pub fn title_priority(&self) -> Option<&str> {
+    pub(crate) fn title_priority(&self) -> Option<&str> {
         self.title_english
             .as_deref()
             .or(self.title_native.as_deref())
     }
 
-    pub fn status(&self) -> Option<&str> {
+    pub(crate) fn status(&self) -> Option<&str> {
         self.status.as_deref()
     }
 
-    pub fn format(&self) -> Option<&str> {
+    pub(crate) fn format(&self) -> Option<&str> {
         self.format.as_deref()
     }
 
-    pub fn description(&self) -> Option<&str> {
+    pub(crate) fn description(&self) -> Option<&str> {
         self.description.as_deref()
     }
 
-    pub fn studios(&self) -> Option<&str> {
+    pub(crate) fn studios(&self) -> Option<&str> {
         self.studios.as_deref()
     }
 
-    pub fn score(&self) -> Option<f64> {
+    pub(crate) fn score(&self) -> Option<f64> {
         self.score
     }
 
-    pub fn total_episodes(&self) -> Option<i64> {
+    pub(crate) fn total_episodes(&self) -> Option<i64> {
         self.total_episodes
     }
 
-    pub fn next_episode(&self) -> Option<i64> {
+    pub(crate) fn next_episode(&self) -> Option<i64> {
         self.next_episode_number
     }
 
-    pub fn next_episode_airs_at(&self) -> Option<i64> {
+    pub(crate) fn next_episode_airs_at(&self) -> Option<i64> {
         self.next_episode_airs_at
     }
 
@@ -166,7 +166,7 @@ impl CacheEntry {
 impl Db {
     /// INSERT OR REPLACE the row. The caller is responsible for
     /// having computed `expires_at` per the TTL policy.
-    pub fn upsert_cache(&self, entry: &CacheEntry) -> Result<()> {
+    pub(crate) fn upsert_cache(&self, entry: &CacheEntry) -> Result<()> {
         self.conn()
             .execute(
                 "INSERT INTO metadata_cache (\
@@ -220,7 +220,7 @@ impl Db {
     /// through [`crate::library::Library::load_resolved`]; this stays
     /// for tests.
     #[cfg(test)]
-    pub fn get_cache(&self, source: &str, source_id: &str) -> Result<Option<CacheEntry>> {
+    pub(crate) fn get_cache(&self, source: &str, source_id: &str) -> Result<Option<CacheEntry>> {
         self.conn()
             .query_row(
                 "SELECT * FROM metadata_cache WHERE source = ?1 AND source_id = ?2",

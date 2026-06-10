@@ -3,4 +3,4 @@
 //! Each verb here is the `_inner` function the TUI calls directly;
 //! tests live alongside.
 
-pub mod sync;
+pub(crate) mod sync;

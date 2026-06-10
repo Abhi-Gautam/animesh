@@ -1,7 +1,7 @@
 use crate::ids::ReleaseKind;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RequestBudget {
+pub(crate) struct RequestBudget {
     pub max_enter_search_requests: usize,
     pub max_follow_ingest_requests: usize,
     pub max_startup_background_requests: usize,
@@ -21,15 +21,15 @@ impl Default for RequestBudget {
     }
 }
 
-pub const SEARCH_CACHE_TTL_SECS: i64 = 24 * 3600;
-pub const ACTIVE_REFRESH_TTL_SECS: i64 = 6 * 3600;
-pub const NEAR_EVENT_REFRESH_TTL_SECS: i64 = 3600;
-pub const FINISHED_REFRESH_TTL_SECS: i64 = 30 * 24 * 3600;
-pub const MUSIC_ARTIST_REFRESH_TTL_SECS: i64 = 7 * 24 * 3600;
-pub const FAILURE_BACKOFF_CAP_SECS: i64 = 24 * 3600;
+pub(crate) const SEARCH_CACHE_TTL_SECS: i64 = 24 * 3600;
+pub(crate) const ACTIVE_REFRESH_TTL_SECS: i64 = 6 * 3600;
+pub(crate) const NEAR_EVENT_REFRESH_TTL_SECS: i64 = 3600;
+pub(crate) const FINISHED_REFRESH_TTL_SECS: i64 = 30 * 24 * 3600;
+pub(crate) const MUSIC_ARTIST_REFRESH_TTL_SECS: i64 = 7 * 24 * 3600;
+pub(crate) const FAILURE_BACKOFF_CAP_SECS: i64 = 24 * 3600;
 const NEAR_EVENT_WINDOW_SECS: i64 = 48 * 3600;
 
-pub fn next_refresh_due_at(
+pub(crate) fn next_refresh_due_at(
     kind: ReleaseKind,
     status: Option<&str>,
     next_event_at: Option<i64>,
@@ -53,7 +53,7 @@ pub fn next_refresh_due_at(
     }
 }
 
-pub fn failure_backoff(failure_count: i64) -> i64 {
+pub(crate) fn failure_backoff(failure_count: i64) -> i64 {
     let count = failure_count.max(1).min(10) as u32;
     let secs = 15 * 60 * 2_i64.pow(count - 1);
     secs.min(FAILURE_BACKOFF_CAP_SECS)

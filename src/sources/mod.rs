@@ -14,19 +14,19 @@ use anyhow::Result;
 use crate::ingest::{RawSourcePayload, SourceParser};
 use crate::search::SearchScope;
 
-pub mod anilist;
-pub mod itunes;
-pub mod jikan;
-pub mod kitsu;
-pub mod musicbrainz;
-pub mod tvmaze;
+pub(crate) mod anilist;
+pub(crate) mod itunes;
+pub(crate) mod jikan;
+pub(crate) mod kitsu;
+pub(crate) mod musicbrainz;
+pub(crate) mod tvmaze;
 
-pub type SourceFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T>> + Send + 'a>>;
+pub(crate) type SourceFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T>> + Send + 'a>>;
 
 /// Source port used by ingestion/search orchestration. A source exposes only:
 /// 1. search: query remote source when the user explicitly asks online search
 /// 2. ingest: fetch source-owned information for a selected/followed source id
-pub trait SourceAdapter: Send + Sync {
+pub(crate) trait SourceAdapter: Send + Sync {
     fn source(&self) -> &'static str;
 
     fn parser(&self) -> &dyn SourceParser;
@@ -51,23 +51,23 @@ pub trait SourceAdapter: Send + Sync {
     ) -> SourceFuture<'a, Option<RawSourcePayload>>;
 }
 
-pub struct SourceRegistry {
+pub(crate) struct SourceRegistry {
     adapters: Vec<Box<dyn SourceAdapter>>,
 }
 
 impl SourceRegistry {
-    pub fn new(adapters: Vec<Box<dyn SourceAdapter>>) -> Self {
+    pub(crate) fn new(adapters: Vec<Box<dyn SourceAdapter>>) -> Self {
         Self { adapters }
     }
 
     #[allow(dead_code)]
-    pub fn empty() -> Self {
+    pub(crate) fn empty() -> Self {
         Self {
             adapters: Vec::new(),
         }
     }
 
-    pub fn production() -> Self {
+    pub(crate) fn production() -> Self {
         Self::new(vec![
             Box::new(anilist::AniListSource::new()),
             Box::new(jikan::JikanSource::new()),
@@ -79,18 +79,18 @@ impl SourceRegistry {
     }
 
     #[allow(dead_code)]
-    pub fn adapters(&self) -> &[Box<dyn SourceAdapter>] {
+    pub(crate) fn adapters(&self) -> &[Box<dyn SourceAdapter>] {
         &self.adapters
     }
 
-    pub fn adapter(&self, source: &str) -> Option<&dyn SourceAdapter> {
+    pub(crate) fn adapter(&self, source: &str) -> Option<&dyn SourceAdapter> {
         self.adapters
             .iter()
             .map(|adapter| adapter.as_ref())
             .find(|adapter| adapter.source() == source)
     }
 
-    pub fn search_adapters(&self, scope: SearchScope) -> Vec<&dyn SourceAdapter> {
+    pub(crate) fn search_adapters(&self, scope: SearchScope) -> Vec<&dyn SourceAdapter> {
         self.adapters
             .iter()
             .map(|adapter| adapter.as_ref())

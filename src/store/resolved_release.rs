@@ -12,7 +12,7 @@ use super::Db;
 /// `Library::load_resolved` in a single store query — no per-row joins from
 /// callers above the store boundary.
 #[derive(Debug, Clone)]
-pub struct ResolvedRelease {
+pub(crate) struct ResolvedRelease {
     pub canonical: CanonicalRelease,
     /// Highest-confidence attached source_ref. Invariant: a followed canonical
     /// has at least one attached ref, enforced by Library follow primitives.
@@ -72,7 +72,7 @@ WHERE cr.followed_at IS NOT NULL AND cr.dropped_at IS NULL \
 ORDER BY cr.followed_at DESC";
 
 impl Db {
-    pub fn load_resolved(&self) -> Result<Vec<ResolvedRelease>> {
+    pub(crate) fn load_resolved(&self) -> Result<Vec<ResolvedRelease>> {
         let conn = self.conn();
         let mut stmt = conn
             .prepare_cached(LOAD_RESOLVED_SQL)

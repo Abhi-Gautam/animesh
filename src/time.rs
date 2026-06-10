@@ -13,13 +13,13 @@
 use std::sync::{Arc, Mutex};
 
 /// Anything that can report the current Unix-epoch second.
-pub trait Clock: Send + Sync {
+pub(crate) trait Clock: Send + Sync {
     fn now(&self) -> i64;
 }
 
 /// Real wall-clock. The only impl that calls `SystemTime::now()`.
 #[derive(Debug, Clone, Copy, Default)]
-pub struct SystemClock;
+pub(crate) struct SystemClock;
 
 impl Clock for SystemClock {
     fn now(&self) -> i64 {
@@ -35,7 +35,7 @@ impl Clock for SystemClock {
 /// Test-only: a clock fixed at a single instant. Useful when an
 /// assertion expects a specific `occurred_at` value.
 #[derive(Debug, Clone, Copy)]
-pub struct FixedClock(pub i64);
+pub(crate) struct FixedClock(pub i64);
 
 impl Clock for FixedClock {
     fn now(&self) -> i64 {
@@ -48,21 +48,21 @@ impl Clock for FixedClock {
 /// later").
 #[cfg(test)]
 #[derive(Debug, Clone)]
-pub struct AdvanceableClock(Arc<Mutex<i64>>);
+pub(crate) struct AdvanceableClock(Arc<Mutex<i64>>);
 
 #[cfg(test)]
 impl AdvanceableClock {
-    pub fn new(start: i64) -> Self {
+    pub(crate) fn new(start: i64) -> Self {
         Self(Arc::new(Mutex::new(start)))
     }
 
     /// Move the clock forward by `delta` seconds.
-    pub fn advance(&self, delta: i64) {
+    pub(crate) fn advance(&self, delta: i64) {
         *self.0.lock().expect("clock lock poisoned") += delta;
     }
 
     /// Jump the clock to an absolute value.
-    pub fn set(&self, t: i64) {
+    pub(crate) fn set(&self, t: i64) {
         *self.0.lock().expect("clock lock poisoned") = t;
     }
 }

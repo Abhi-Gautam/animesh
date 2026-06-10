@@ -4,7 +4,7 @@ use rusqlite::{params, OptionalExtension};
 use super::Db;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SourceSearchCacheEntry {
+pub(crate) struct SourceSearchCacheEntry {
     pub source: String,
     pub query_key: String,
     pub last_success_at: Option<i64>,
@@ -12,7 +12,7 @@ pub struct SourceSearchCacheEntry {
 }
 
 impl Db {
-    pub fn upsert_source_search_cache(&self, entry: &SourceSearchCacheEntry) -> Result<()> {
+    pub(crate) fn upsert_source_search_cache(&self, entry: &SourceSearchCacheEntry) -> Result<()> {
         self.conn()
             .execute(
                 "INSERT INTO source_search_cache
@@ -32,7 +32,7 @@ impl Db {
         Ok(())
     }
 
-    pub fn get_source_search_cache(
+    pub(crate) fn get_source_search_cache(
         &self,
         source: &str,
         query_key: &str,

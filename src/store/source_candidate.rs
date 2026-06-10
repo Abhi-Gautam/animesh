@@ -7,7 +7,7 @@ use crate::search::source_candidate::SourceCandidateResult;
 use super::Db;
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct SourceCandidate {
+pub(crate) struct SourceCandidate {
     pub source: String,
     pub source_id: String,
     pub kind: ReleaseKind,
@@ -21,7 +21,7 @@ pub struct SourceCandidate {
 
 impl Db {
     #[allow(dead_code)]
-    pub fn upsert_source_candidate(&self, c: &SourceCandidate) -> Result<()> {
+    pub(crate) fn upsert_source_candidate(&self, c: &SourceCandidate) -> Result<()> {
         self.conn()
             .execute(
                 "INSERT INTO source_candidate (
@@ -51,7 +51,7 @@ impl Db {
         Ok(())
     }
 
-    pub fn search_source_candidates(
+    pub(crate) fn search_source_candidates(
         &self,
         query: &str,
         limit: u32,

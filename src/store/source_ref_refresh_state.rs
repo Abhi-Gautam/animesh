@@ -4,7 +4,7 @@ use rusqlite::{params, OptionalExtension};
 use super::Db;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SourceRefRefreshState {
+pub(crate) struct SourceRefRefreshState {
     pub source: String,
     pub source_id: String,
     pub last_attempt_at: Option<i64>,
@@ -15,7 +15,7 @@ pub struct SourceRefRefreshState {
 }
 
 impl Db {
-    pub fn upsert_source_ref_refresh_state(&self, state: &SourceRefRefreshState) -> Result<()> {
+    pub(crate) fn upsert_source_ref_refresh_state(&self, state: &SourceRefRefreshState) -> Result<()> {
         self.conn()
             .execute(
                 "INSERT INTO source_ref_refresh_state
@@ -41,7 +41,7 @@ impl Db {
         Ok(())
     }
 
-    pub fn get_source_ref_refresh_state(
+    pub(crate) fn get_source_ref_refresh_state(
         &self,
         source: &str,
         source_id: &str,
@@ -52,13 +52,13 @@ impl Db {
                  FROM source_ref_refresh_state
                  WHERE source = ?1 AND source_id = ?2",
                 params![source, source_id],
-                |row| state_from_row(row),
+                state_from_row,
             )
             .optional()
             .context("get source_ref_refresh_state")
     }
 
-    pub fn due_source_ref_refresh_states(
+    pub(crate) fn due_source_ref_refresh_states(
         &self,
         now: i64,
         limit: u32,
@@ -74,7 +74,7 @@ impl Db {
             )
             .context("prepare due source_ref_refresh_state query")?;
         let rows = stmt
-            .query_map(params![now, limit], |row| state_from_row(row))
+            .query_map(params![now, limit], state_from_row)
             .context("query due source_ref_refresh_state")?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
             .context("collect due source_ref_refresh_state")

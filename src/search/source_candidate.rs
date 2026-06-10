@@ -1,7 +1,7 @@
 use crate::ids::ReleaseKind;
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct SourceCandidateResult {
+pub(crate) struct SourceCandidateResult {
     pub source: String,
     pub source_id: String,
     pub kind: ReleaseKind,

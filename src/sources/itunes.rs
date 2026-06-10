@@ -16,19 +16,19 @@ const DEFAULT_BASE_URL: &str = "https://itunes.apple.com";
 const SEARCH_SCOPES: &[SearchScope] = &[SearchScope::Music, SearchScope::Film];
 const ENRICHMENT_SCOPES: &[SearchScope] = &[SearchScope::Music, SearchScope::Film];
 
-pub struct ItunesSource {
+pub(crate) struct ItunesSource {
     client: Client,
     parser: ItunesParser,
     base_url: String,
 }
 
 impl ItunesSource {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::with_base_url(DEFAULT_BASE_URL)
     }
 
     #[allow(dead_code)]
-    pub fn with_base_url(base_url: impl Into<String>) -> Self {
+    pub(crate) fn with_base_url(base_url: impl Into<String>) -> Self {
         Self {
             client: Client::new(),
             parser: ItunesParser,
@@ -104,7 +104,7 @@ impl SourceAdapter for ItunesSource {
     }
 }
 
-pub struct ItunesParser;
+pub(crate) struct ItunesParser;
 
 impl SourceParser for ItunesParser {
     fn source(&self) -> &'static str {

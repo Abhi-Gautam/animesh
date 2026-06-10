@@ -4,7 +4,7 @@ use rusqlite::params;
 use super::Db;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SourceParseError {
+pub(crate) struct SourceParseError {
     pub raw_payload_id: String,
     pub source: String,
     pub endpoint: String,
@@ -14,7 +14,7 @@ pub struct SourceParseError {
 
 impl Db {
     #[allow(dead_code)]
-    pub fn insert_source_parse_error(&self, err: &SourceParseError) -> Result<()> {
+    pub(crate) fn insert_source_parse_error(&self, err: &SourceParseError) -> Result<()> {
         self.conn()
             .execute(
                 "INSERT INTO source_parse_error

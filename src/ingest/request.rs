@@ -1,12 +1,12 @@
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HttpMethod {
+pub(crate) enum HttpMethod {
     Get,
     Post,
 }
 
 impl HttpMethod {
-    pub fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Get => "GET",
             Self::Post => "POST",
@@ -16,7 +16,7 @@ impl HttpMethod {
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
-pub struct SourceRequest {
+pub(crate) struct SourceRequest {
     pub source: String,
     pub endpoint: String,
     pub method: HttpMethod,
@@ -27,7 +27,7 @@ pub struct SourceRequest {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct RawSourcePayload {
+pub(crate) struct RawSourcePayload {
     pub id: String,
     pub source: String,
     pub endpoint: String,

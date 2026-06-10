@@ -1,7 +1,7 @@
 use crate::ids::ReleaseKind;
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct SourceObservation {
+pub(crate) struct SourceObservation {
     pub source: String,
     pub source_id: String,
     pub raw_payload_id: String,
@@ -20,7 +20,7 @@ pub struct SourceObservation {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct AliasObservation {
+pub(crate) struct AliasObservation {
     pub alias: String,
     pub locale: Option<String>,
     pub alias_kind: Option<String>,
@@ -28,7 +28,7 @@ pub struct AliasObservation {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct ExternalIdObservation {
+pub(crate) struct ExternalIdObservation {
     pub id_kind: String,
     pub id_value: String,
     pub confidence: f64,
@@ -36,7 +36,7 @@ pub struct ExternalIdObservation {
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TimePrecision {
+pub(crate) enum TimePrecision {
     Instant,
     Date,
     Month,
@@ -45,7 +45,7 @@ pub enum TimePrecision {
 }
 
 impl TimePrecision {
-    pub fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Instant => "instant",
             Self::Date => "date",
@@ -57,7 +57,7 @@ impl TimePrecision {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct ReleaseEventObservation {
+pub(crate) struct ReleaseEventObservation {
     pub id: String,
     pub event_kind: String,
     pub title: Option<String>,
@@ -73,14 +73,14 @@ pub struct ReleaseEventObservation {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct LinkObservation {
+pub(crate) struct LinkObservation {
     pub site: String,
     pub url: String,
     pub link_kind: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct ImageObservation {
+pub(crate) struct ImageObservation {
     pub image_kind: String,
     pub url: String,
     pub width: Option<i64>,

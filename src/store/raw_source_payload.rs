@@ -8,7 +8,7 @@ use crate::ingest::RawSourcePayload;
 use super::Db;
 
 impl Db {
-    pub fn upsert_raw_source_payload(&self, payload: &RawSourcePayload) -> Result<()> {
+    pub(crate) fn upsert_raw_source_payload(&self, payload: &RawSourcePayload) -> Result<()> {
         self.conn()
             .execute(
                 "INSERT INTO raw_source_payload (
@@ -38,7 +38,7 @@ impl Db {
 
     #[allow(dead_code)]
     #[cfg(test)]
-    pub fn get_raw_source_payload(&self, id: &str) -> Result<Option<RawSourcePayload>> {
+    pub(crate) fn get_raw_source_payload(&self, id: &str) -> Result<Option<RawSourcePayload>> {
         use rusqlite::OptionalExtension;
         self.conn()
             .query_row(

@@ -20,19 +20,19 @@ const DEFAULT_BASE_URL: &str = "https://api.tvmaze.com";
 const ANIME_SEARCH_SCOPES: &[SearchScope] = &[SearchScope::Anime, SearchScope::Tv];
 const NO_ENRICHMENT_SCOPES: &[SearchScope] = &[];
 
-pub struct TvMazeSource {
+pub(crate) struct TvMazeSource {
     client: Client,
     parser: TvMazeParser,
     base_url: String,
 }
 
 impl TvMazeSource {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::with_base_url(DEFAULT_BASE_URL)
     }
 
     #[allow(dead_code)]
-    pub fn with_base_url(base_url: impl Into<String>) -> Self {
+    pub(crate) fn with_base_url(base_url: impl Into<String>) -> Self {
         Self {
             client: Client::new(),
             parser: TvMazeParser,
@@ -104,7 +104,7 @@ impl SourceAdapter for TvMazeSource {
     }
 }
 
-pub struct TvMazeParser;
+pub(crate) struct TvMazeParser;
 
 impl SourceParser for TvMazeParser {
     fn source(&self) -> &'static str {

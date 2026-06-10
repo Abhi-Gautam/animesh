@@ -16,7 +16,7 @@ use crate::tui::help::HELP_PAIRS;
 use crate::tui::palette::FollowStage;
 use crate::tui::theme::Theme;
 
-pub fn render(f: &mut Frame, app: &App) {
+pub(crate) fn render(f: &mut Frame, app: &App) {
     let theme = app.visible_theme();
     let area = f.area();
     f.render_widget(Block::default().style(theme.styles.normal), area);
@@ -329,7 +329,7 @@ fn badge_for(
     ("·", String::new(), scheme.roles.fg_dim)
 }
 
-pub fn relative_short(at: i64, now: i64) -> String {
+pub(crate) fn relative_short(at: i64, now: i64) -> String {
     let diff = at - now;
     let a = diff.abs();
     let mins = (a / 60).max(1);

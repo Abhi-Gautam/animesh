@@ -25,7 +25,7 @@ use super::Db;
 /// Engagement event kind. Mirrors the V0004 CHECK constraint on
 /// `engagement.event`. Keep these in sync.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum EngagementEvent {
+pub(crate) enum EngagementEvent {
     /// User followed a deep link to play the title.
     Opened,
     /// User completed (or "seen up to") a title.
@@ -41,7 +41,7 @@ pub enum EngagementEvent {
 }
 
 impl EngagementEvent {
-    pub fn as_str(&self) -> &'static str {
+    pub(crate) fn as_str(&self) -> &'static str {
         match self {
             Self::Opened => "opened",
             Self::Completed => "completed",
@@ -81,7 +81,7 @@ impl FromStr for EngagementEvent {
 /// column already encodes the discriminator, and a tag-free shape is
 /// what existing rows already have.
 #[derive(Debug, Clone, PartialEq)]
-pub enum EngagementMeta {
+pub(crate) enum EngagementMeta {
     /// User watched up to episode `seen`.
     Completed { seen: i64 },
     /// Streamer link confirmed playable on a subscribed streamer.
@@ -98,7 +98,7 @@ impl EngagementMeta {
     /// - the event kind has no associated payload variant, or
     /// - the JSON fails to decode (corrupt row — surfaced silently so
     ///   one bad row does not crash the read path).
-    pub fn decode(event: EngagementEvent, raw: Option<&str>) -> Option<Self> {
+    pub(crate) fn decode(event: EngagementEvent, raw: Option<&str>) -> Option<Self> {
         let raw = raw?;
         match event {
             EngagementEvent::Completed => serde_json::from_str::<CompletedJson>(raw)
@@ -125,7 +125,7 @@ impl EngagementMeta {
     }
 
     /// Serialize to a JSON string for DB storage.
-    pub fn encode(&self) -> Result<String> {
+    pub(crate) fn encode(&self) -> Result<String> {
         match self {
             Self::Completed { seen } => serde_json::to_string(&CompletedJson { seen: *seen }),
             Self::Verified { streamer, url } => serde_json::to_string(&VerifiedJson {
@@ -142,7 +142,7 @@ impl EngagementMeta {
 
     /// Render back to a `serde_json::Value` for export layers (the LLM
     /// context builder) that want a generic JSON tree.
-    pub fn to_json_value(&self) -> serde_json::Value {
+    pub(crate) fn to_json_value(&self) -> serde_json::Value {
         match self {
             Self::Completed { seen } => serde_json::json!({ "seen": seen }),
             Self::Verified { streamer, url } => {
@@ -176,7 +176,7 @@ struct RatedJson {
 /// the durable write returns. Distinguishing the two prevents callers
 /// from treating the synthesized row as authoritative.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EngagementSource {
+pub(crate) enum EngagementSource {
     /// Row read from the DB; carries its rowid.
     Persisted(i64),
     /// Synthesized in-memory; not yet (or never) persisted.
@@ -185,7 +185,7 @@ pub enum EngagementSource {
 
 /// One engagement row, typed end-to-end.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Engagement {
+pub(crate) struct Engagement {
     pub source: EngagementSource,
     pub canonical_id: CanonicalId,
     pub event: EngagementEvent,
@@ -195,7 +195,7 @@ pub struct Engagement {
 
 impl Engagement {
     /// `seen` count if this is a `Completed` event with payload.
-    pub fn seen(&self) -> Option<i64> {
+    pub(crate) fn seen(&self) -> Option<i64> {
         match &self.meta {
             Some(EngagementMeta::Completed { seen }) => Some(*seen),
             _ => None,
@@ -203,7 +203,7 @@ impl Engagement {
     }
 
     /// Verified-streamer name if this is a `Verified` event.
-    pub fn streamer(&self) -> Option<&str> {
+    pub(crate) fn streamer(&self) -> Option<&str> {
         match &self.meta {
             Some(EngagementMeta::Verified { streamer, .. }) => Some(streamer),
             _ => None,
@@ -211,7 +211,7 @@ impl Engagement {
     }
 
     /// Verified-link URL if this is a `Verified` event.
-    pub fn verified_url(&self) -> Option<&str> {
+    pub(crate) fn verified_url(&self) -> Option<&str> {
         match &self.meta {
             Some(EngagementMeta::Verified { url, .. }) => Some(url),
             _ => None,
@@ -245,7 +245,7 @@ impl Engagement {
 
 impl Db {
     /// Append an engagement event. Returns the new row's primary key.
-    pub fn append_engagement(
+    pub(crate) fn append_engagement(
         &self,
         canonical_id: &CanonicalId,
         event: EngagementEvent,
@@ -267,7 +267,7 @@ impl Db {
     /// reads pull this through the [`crate::library::Library::load_resolved`]
     /// join; the standalone form survives for tests.
     #[cfg(test)]
-    pub fn last_engagement(
+    pub(crate) fn last_engagement(
         &self,
         canonical_id: &CanonicalId,
         event: EngagementEvent,
@@ -286,7 +286,7 @@ impl Db {
 
     /// Every engagement event for one canonical, newest-first. Used by
     /// the detail pane and the LLM export.
-    pub fn engagement_for_canonical(&self, canonical_id: &CanonicalId) -> Result<Vec<Engagement>> {
+    pub(crate) fn engagement_for_canonical(&self, canonical_id: &CanonicalId) -> Result<Vec<Engagement>> {
         let conn = self.conn();
         let mut stmt = conn
             .prepare_cached(

@@ -36,7 +36,7 @@ use anyhow::{anyhow, Context, Result};
 use crate::ids::{CanonicalId, ReleaseKind};
 use crate::ingest::{RawSourcePayload, SourceObservation};
 use crate::search::source_candidate::SourceCandidateResult;
-pub use crate::store::ResolvedRelease;
+pub(crate) use crate::store::ResolvedRelease;
 use crate::store::{
     CacheEntry, CanonicalFollowOutcome, CanonicalRelease, CanonicalScheduleEvent, Db, Engagement,
     EngagementEvent, EngagementMeta, SourceParseError, SourceRef, SourceRefRefreshState,
@@ -45,13 +45,13 @@ use crate::store::{
 use crate::time::Clock;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SourceIngestSuccess {
+pub(crate) struct SourceIngestSuccess {
     pub projected_events: usize,
 }
 
 /// The domain facade. Hold one of these per process; share via
 /// `Arc<Library>` to async tasks and the TUI.
-pub struct Library {
+pub(crate) struct Library {
     db: Mutex<Db>,
     clock: Arc<dyn Clock>,
 }
@@ -59,7 +59,7 @@ pub struct Library {
 impl Library {
     /// Open a Library backed by the on-disk DB at `path`. Creates the
     /// file (and parent dirs) and runs migrations on first open.
-    pub fn open(path: &Path, clock: Arc<dyn Clock>) -> Result<Self> {
+    pub(crate) fn open(path: &Path, clock: Arc<dyn Clock>) -> Result<Self> {
         let db = Db::open(path).context("open Library DB")?;
         Ok(Self {
             db: Mutex::new(db),
@@ -69,7 +69,7 @@ impl Library {
 
     /// In-memory Library for tests. Migrations always run.
     #[cfg(test)]
-    pub fn open_in_memory(clock: Arc<dyn Clock>) -> Result<Self> {
+    pub(crate) fn open_in_memory(clock: Arc<dyn Clock>) -> Result<Self> {
         let db = Db::open_in_memory().context("open in-memory Library DB")?;
         Ok(Self {
             db: Mutex::new(db),
@@ -94,7 +94,7 @@ impl Library {
     /// source row maps to the given canonical. Legacy / user-confirmed
     /// rows use 1.0.
     #[allow(clippy::too_many_arguments)]
-    pub fn follow_with_source(
+    pub(crate) fn follow_with_source(
         &self,
         canonical_id: &CanonicalId,
         kind: ReleaseKind,
@@ -113,16 +113,16 @@ impl Library {
 
     /// Soft-drop a canonical. Idempotent. Returns whether a row was
     /// touched (false = canonical not present or never followed).
-    pub fn drop_canonical(&self, canonical_id: &CanonicalId) -> Result<bool> {
+    pub(crate) fn drop_canonical(&self, canonical_id: &CanonicalId) -> Result<bool> {
         let db = self.lock_db()?;
         db.drop_canonical(canonical_id, self.now())
     }
 
-    pub fn canonical_id_for_source_candidate(candidate: &SourceCandidateResult) -> CanonicalId {
+    pub(crate) fn canonical_id_for_source_candidate(candidate: &SourceCandidateResult) -> CanonicalId {
         CanonicalId::legacy_from_source(candidate.kind, &candidate.source, &candidate.source_id)
     }
 
-    pub fn canonical_id_for_source_ref(
+    pub(crate) fn canonical_id_for_source_ref(
         &self,
         source: &str,
         source_id: &str,
@@ -136,7 +136,7 @@ impl Library {
     /// Follow an indexed source candidate. This is intentionally source-agnostic:
     /// callers provide the selected candidate, and Library owns the canonical
     /// row + source_ref + followed_at mutation.
-    pub fn follow_source_candidate(
+    pub(crate) fn follow_source_candidate(
         &self,
         candidate: &SourceCandidateResult,
     ) -> Result<CanonicalFollowOutcome> {
@@ -157,7 +157,7 @@ impl Library {
     // ------------------------------------------------------------------
 
     /// Active follows, newest-first by followed_at.
-    pub fn followed(&self) -> Result<Vec<CanonicalRelease>> {
+    pub(crate) fn followed(&self) -> Result<Vec<CanonicalRelease>> {
         let db = self.lock_db()?;
         db.list_active_canonical()
     }
@@ -166,18 +166,18 @@ impl Library {
     /// last `Completed` + `Verified` engagement events — all in one
     /// prepared, cached query. Replaces the N+1 the TUI's `Shelf::load`
     /// used to do.
-    pub fn load_resolved(&self) -> Result<Vec<ResolvedRelease>> {
+    pub(crate) fn load_resolved(&self) -> Result<Vec<ResolvedRelease>> {
         let db = self.lock_db()?;
         db.load_resolved()
     }
 
     #[cfg(test)]
-    pub fn find_canonical(&self, id: &CanonicalId) -> Result<Option<CanonicalRelease>> {
+    pub(crate) fn find_canonical(&self, id: &CanonicalId) -> Result<Option<CanonicalRelease>> {
         let db = self.lock_db()?;
         db.find_canonical(id)
     }
 
-    pub fn count_followed(&self) -> Result<i64> {
+    pub(crate) fn count_followed(&self) -> Result<i64> {
         let db = self.lock_db()?;
         db.count_followed_canonical()
     }
@@ -188,7 +188,7 @@ impl Library {
 
     /// Append an engagement event. The payload (if any) is typed by
     /// [`EngagementMeta`]; the store encodes it to JSON for the column.
-    pub fn engage(
+    pub(crate) fn engage(
         &self,
         canonical_id: &CanonicalId,
         event: EngagementEvent,
@@ -204,7 +204,7 @@ impl Library {
     /// [`Library::load_resolved`] which folds the same lookup into a
     /// single join.
     #[cfg(test)]
-    pub fn last_engagement(
+    pub(crate) fn last_engagement(
         &self,
         canonical_id: &CanonicalId,
         event: EngagementEvent,
@@ -214,7 +214,7 @@ impl Library {
     }
 
     /// Engagement events for one canonical, newest-first.
-    pub fn engagement_for(&self, canonical_id: &CanonicalId) -> Result<Vec<Engagement>> {
+    pub(crate) fn engagement_for(&self, canonical_id: &CanonicalId) -> Result<Vec<Engagement>> {
         let db = self.lock_db()?;
         db.engagement_for_canonical(canonical_id)
     }
@@ -223,12 +223,12 @@ impl Library {
     // Source refs and metadata cache (used by the sync engine).
     // ------------------------------------------------------------------
 
-    pub fn source_refs_for(&self, canonical_id: &CanonicalId) -> Result<Vec<SourceRef>> {
+    pub(crate) fn source_refs_for(&self, canonical_id: &CanonicalId) -> Result<Vec<SourceRef>> {
         let db = self.lock_db()?;
         db.source_refs_for_canonical(canonical_id)
     }
 
-    pub fn upsert_cache(&self, entry: &CacheEntry) -> Result<()> {
+    pub(crate) fn upsert_cache(&self, entry: &CacheEntry) -> Result<()> {
         let db = self.lock_db()?;
         db.upsert_cache(entry)
     }
@@ -237,17 +237,17 @@ impl Library {
     // Source ingestion: raw payloads -> observations -> candidates.
     // ------------------------------------------------------------------
 
-    pub fn store_raw_source_payload(&self, payload: &RawSourcePayload) -> Result<()> {
+    pub(crate) fn store_raw_source_payload(&self, payload: &RawSourcePayload) -> Result<()> {
         let db = self.lock_db()?;
         db.upsert_raw_source_payload(payload)
     }
 
-    pub fn store_source_observation(&self, observation: &SourceObservation) -> Result<()> {
+    pub(crate) fn store_source_observation(&self, observation: &SourceObservation) -> Result<()> {
         let mut db = self.lock_db()?;
         db.upsert_source_observation(observation)
     }
 
-    pub fn record_source_ingest_success(
+    pub(crate) fn record_source_ingest_success(
         &self,
         canonical_id: &CanonicalId,
         raw_payload: &RawSourcePayload,
@@ -291,7 +291,7 @@ impl Library {
         Ok(SourceIngestSuccess { projected_events })
     }
 
-    pub fn record_source_ingest_failure(
+    pub(crate) fn record_source_ingest_failure(
         &self,
         source: &str,
         source_id: &str,
@@ -317,12 +317,12 @@ impl Library {
     }
 
     #[allow(dead_code)]
-    pub fn record_source_parse_error(&self, err: &SourceParseError) -> Result<()> {
+    pub(crate) fn record_source_parse_error(&self, err: &SourceParseError) -> Result<()> {
         let db = self.lock_db()?;
         db.insert_source_parse_error(err)
     }
 
-    pub fn search_source_candidates(
+    pub(crate) fn search_source_candidates(
         &self,
         query: &str,
         limit: u32,
@@ -331,12 +331,12 @@ impl Library {
         db.search_source_candidates(query, limit)
     }
 
-    pub fn upsert_source_search_cache(&self, entry: &SourceSearchCacheEntry) -> Result<()> {
+    pub(crate) fn upsert_source_search_cache(&self, entry: &SourceSearchCacheEntry) -> Result<()> {
         let db = self.lock_db()?;
         db.upsert_source_search_cache(entry)
     }
 
-    pub fn get_source_search_cache(
+    pub(crate) fn get_source_search_cache(
         &self,
         source: &str,
         query_key: &str,
@@ -346,12 +346,12 @@ impl Library {
     }
 
     #[allow(dead_code)]
-    pub fn upsert_source_ref_refresh_state(&self, state: &SourceRefRefreshState) -> Result<()> {
+    pub(crate) fn upsert_source_ref_refresh_state(&self, state: &SourceRefRefreshState) -> Result<()> {
         let db = self.lock_db()?;
         db.upsert_source_ref_refresh_state(state)
     }
 
-    pub fn get_source_ref_refresh_state(
+    pub(crate) fn get_source_ref_refresh_state(
         &self,
         source: &str,
         source_id: &str,
@@ -360,13 +360,13 @@ impl Library {
         db.get_source_ref_refresh_state(source, source_id)
     }
 
-    pub fn due_source_ref_refresh_states(&self, limit: u32) -> Result<Vec<SourceRefRefreshState>> {
+    pub(crate) fn due_source_ref_refresh_states(&self, limit: u32) -> Result<Vec<SourceRefRefreshState>> {
         let db = self.lock_db()?;
         db.due_source_ref_refresh_states(self.now(), limit)
     }
 
     #[allow(dead_code)]
-    pub fn project_canonical_schedule_events(
+    pub(crate) fn project_canonical_schedule_events(
         &self,
         canonical_id: &CanonicalId,
         source: &str,
@@ -377,7 +377,7 @@ impl Library {
     }
 
     #[allow(dead_code)]
-    pub fn schedule_events_for_canonical(
+    pub(crate) fn schedule_events_for_canonical(
         &self,
         canonical_id: &CanonicalId,
     ) -> Result<Vec<CanonicalScheduleEvent>> {
@@ -390,25 +390,25 @@ impl Library {
     // by sync for last-tick state).
     // ------------------------------------------------------------------
 
-    pub fn kv_get(&self, key: &str) -> Result<Option<String>> {
+    pub(crate) fn kv_get(&self, key: &str) -> Result<Option<String>> {
         let db = self.lock_db()?;
         Ok(db.kv_get(key)?.map(|(value, _)| value))
     }
 
-    pub fn kv_set(&self, key: &str, value: &str) -> Result<()> {
+    pub(crate) fn kv_set(&self, key: &str, value: &str) -> Result<()> {
         let db = self.lock_db()?;
         db.kv_set(key, value, self.now())
     }
 
     /// Remove a key. No-op if missing.
-    pub fn kv_delete(&self, key: &str) -> Result<()> {
+    pub(crate) fn kv_delete(&self, key: &str) -> Result<()> {
         let db = self.lock_db()?;
         db.kv_delete(key)
     }
 
     /// Persisted streamer subscriptions (canonical-lowercase strings).
     /// Backed by kv key `subs.streaming` (JSON array). Empty when unset.
-    pub fn subscribed_streamers(&self) -> Result<Vec<String>> {
+    pub(crate) fn subscribed_streamers(&self) -> Result<Vec<String>> {
         let Some(raw) = self.kv_get("subs.streaming")? else {
             return Ok(Vec::new());
         };
@@ -416,7 +416,7 @@ impl Library {
     }
 
     /// Overwrite the streamer subscription list. Empty input clears the key.
-    pub fn set_subscribed_streamers(&self, streamers: &[String]) -> Result<()> {
+    pub(crate) fn set_subscribed_streamers(&self, streamers: &[String]) -> Result<()> {
         if streamers.is_empty() {
             return self.kv_delete("subs.streaming");
         }

@@ -22,7 +22,7 @@ use super::Db;
 
 /// One row of `canonical_release`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CanonicalRelease {
+pub(crate) struct CanonicalRelease {
     pub id: CanonicalId,
     pub kind: ReleaseKind,
     pub display_title: String,
@@ -64,7 +64,7 @@ impl CanonicalRelease {
 /// Outcome of [`Db::follow_canonical`]. Identical shape to the legacy
 /// [`super::FollowOutcome`] so callers can swap one for the other.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CanonicalFollowOutcome {
+pub(crate) enum CanonicalFollowOutcome {
     /// First time this canonical has been followed (was created-not-followed).
     NewlyFollowed,
     /// Was previously dropped; dropped_at cleared.
@@ -84,7 +84,7 @@ impl Db {
     /// Returns `true` if a row was inserted, `false` if a row with the
     /// same id already existed (idempotent). On duplicate, the existing
     /// row is left untouched.
-    pub fn upsert_canonical(
+    pub(crate) fn upsert_canonical(
         &self,
         id: &CanonicalId,
         kind: ReleaseKind,
@@ -105,7 +105,7 @@ impl Db {
 
     /// Lookup by canonical id. None if not found.
     #[cfg(test)]
-    pub fn find_canonical(&self, id: &CanonicalId) -> Result<Option<CanonicalRelease>> {
+    pub(crate) fn find_canonical(&self, id: &CanonicalId) -> Result<Option<CanonicalRelease>> {
         self.conn()
             .query_row(
                 "SELECT * FROM canonical_release WHERE id = ?1",
@@ -123,7 +123,7 @@ impl Db {
     /// `followed_at` is the wall-clock seconds at which the act of
     /// following happened. On restoration, the row's original
     /// followed_at is preserved — engagement history reads correctly.
-    pub fn follow_canonical(
+    pub(crate) fn follow_canonical(
         &mut self,
         id: &CanonicalId,
         followed_at: i64,
@@ -170,7 +170,7 @@ impl Db {
 
     /// Soft-drop. Idempotent: dropping an already-dropped canonical is
     /// a no-op; dropping a non-existent id returns `false`.
-    pub fn drop_canonical(&self, id: &CanonicalId, dropped_at: i64) -> Result<bool> {
+    pub(crate) fn drop_canonical(&self, id: &CanonicalId, dropped_at: i64) -> Result<bool> {
         let updated = self
             .conn()
             .execute(
@@ -184,7 +184,7 @@ impl Db {
     }
 
     /// Currently followed canonicals, newest-first by followed_at.
-    pub fn list_active_canonical(&self) -> Result<Vec<CanonicalRelease>> {
+    pub(crate) fn list_active_canonical(&self) -> Result<Vec<CanonicalRelease>> {
         let conn = self.conn();
         let mut stmt = conn
             .prepare_cached(
@@ -201,7 +201,7 @@ impl Db {
     }
 
     /// Count of actively followed canonicals.
-    pub fn count_followed_canonical(&self) -> Result<i64> {
+    pub(crate) fn count_followed_canonical(&self) -> Result<i64> {
         self.conn()
             .query_row(
                 "SELECT COUNT(*) FROM canonical_release \

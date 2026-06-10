@@ -3,7 +3,7 @@
 ///
 /// This is intentionally conservative: lowercase Unicode, trim edges, and
 /// collapse whitespace. Source-specific tokenization belongs inside adapters.
-pub fn normalize_query_key(query: &str) -> String {
+pub(crate) fn normalize_query_key(query: &str) -> String {
     query
         .split_whitespace()
         .map(str::to_lowercase)

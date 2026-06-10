@@ -12,7 +12,7 @@ use nucleo::{
 /// Every user-invocable verb. New verbs land here and gain a keymap
 /// + palette entry in one place.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Command {
+pub(crate) enum Command {
     Watched,
     Drop,
     Stream,
@@ -38,7 +38,7 @@ pub enum Command {
 /// the user types; `aliases` are alternatives. `arg_hint` shows after
 /// the name in the palette when the verb takes an argument.
 #[derive(Debug, Clone, Copy)]
-pub struct CommandSpec {
+pub(crate) struct CommandSpec {
     pub name: &'static str,
     pub aliases: &'static [&'static str],
     pub description: &'static str,
@@ -47,7 +47,7 @@ pub struct CommandSpec {
 
 /// The catalogue. Order matters: this is the default ranking when the
 /// query is empty.
-pub const SPECS: &[CommandSpec] = &[
+pub(crate) const SPECS: &[CommandSpec] = &[
     CommandSpec {
         name: "watched",
         aliases: &["w", "mark", "seen"],
@@ -118,7 +118,7 @@ pub const SPECS: &[CommandSpec] = &[
 
 /// Parse error from a palette query.
 #[derive(Debug, PartialEq, Eq)]
-pub enum ParseError {
+pub(crate) enum ParseError {
     /// Empty after trimming.
     Empty,
     /// First token doesn't match any verb name or alias.
@@ -152,7 +152,7 @@ impl std::fmt::Display for ParseError {
 /// - `"w"` → `Watched` (alias)
 /// - `"follow 21"` → `Follow(21)`
 /// - `"q"` → `Quit`
-pub fn parse(query: &str) -> Result<Command, ParseError> {
+pub(crate) fn parse(query: &str) -> Result<Command, ParseError> {
     let trimmed = query.trim();
     if trimmed.is_empty() {
         return Err(ParseError::Empty);
@@ -220,14 +220,14 @@ pub fn parse(query: &str) -> Result<Command, ParseError> {
 
 /// A scored match for the palette dropdown.
 #[derive(Debug, Clone)]
-pub struct Suggestion {
+pub(crate) struct Suggestion {
     pub spec: &'static CommandSpec,
     pub score: u32,
 }
 
 /// Rank specs by nucleo fuzzy score against `query`. Empty query
 /// returns the catalogue in its declared order (score = 0).
-pub fn suggest(query: &str) -> Vec<Suggestion> {
+pub(crate) fn suggest(query: &str) -> Vec<Suggestion> {
     let q = query.trim();
     if q.is_empty() {
         return SPECS

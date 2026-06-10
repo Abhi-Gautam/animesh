@@ -18,14 +18,14 @@ const KV_LAST_SUCCESS: &str = "sync.last_success_at";
 const KV_LAST_ERROR: &str = "sync.last_error";
 
 #[derive(Debug)]
-pub struct SyncReport {
+pub(crate) struct SyncReport {
     pub total: usize,
     pub succeeded: usize,
     /// (source_id, reason)
     pub failures: Vec<(String, String)>,
 }
 
-pub async fn sync_inner_default(facade: &Arc<Facade>, now: i64) -> Result<SyncReport> {
+pub(crate) async fn sync_inner_default(facade: &Arc<Facade>, now: i64) -> Result<SyncReport> {
     let sources = SourceRegistry::production();
     sync_inner_with_sources(
         facade,
@@ -36,7 +36,7 @@ pub async fn sync_inner_default(facade: &Arc<Facade>, now: i64) -> Result<SyncRe
     .await
 }
 
-pub async fn sync_inner_with_sources(
+pub(crate) async fn sync_inner_with_sources(
     facade: &Arc<Facade>,
     sources: &SourceRegistry,
     budget: usize,

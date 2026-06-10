@@ -14,21 +14,21 @@ use std::fmt;
 use anyhow::Error as AnyError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ExitKind {
+pub(crate) enum ExitKind {
     User = 1,
     Durable = 2,
     Network = 3,
 }
 
 impl ExitKind {
-    pub fn code(self) -> i32 {
+    pub(crate) fn code(self) -> i32 {
         self as i32
     }
 }
 
 /// Wraps a cause to mark it as a user error (bad input, no match).
 #[derive(Debug)]
-pub struct UserError(pub AnyError);
+pub(crate) struct UserError(pub AnyError);
 
 impl fmt::Display for UserError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -44,7 +44,7 @@ impl std::error::Error for UserError {
 
 /// Wraps a cause to mark it as a transient network error.
 #[derive(Debug)]
-pub struct NetworkError(pub AnyError);
+pub(crate) struct NetworkError(pub AnyError);
 
 impl fmt::Display for NetworkError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -60,20 +60,20 @@ impl std::error::Error for NetworkError {
 
 /// Build a user error from anything that flows into anyhow::Error
 /// (incl. `anyhow!`, `&str`, owned `String`, etc).
-pub fn user_error<E: Into<AnyError>>(e: E) -> AnyError {
+pub(crate) fn user_error<E: Into<AnyError>>(e: E) -> AnyError {
     AnyError::new(UserError(e.into()))
 }
 
 /// Build a network error. Source adapters should wrap intentional transient
 /// network failures with this sentinel before errors cross module boundaries.
 #[cfg(test)]
-pub fn network_error<E: Into<AnyError>>(e: E) -> AnyError {
+pub(crate) fn network_error<E: Into<AnyError>>(e: E) -> AnyError {
     AnyError::new(NetworkError(e.into()))
 }
 
 /// Walk the error chain and report the highest-priority kind we find.
 /// Priority: explicit sentinels > known downstream types > Durable.
-pub fn classify(err: &AnyError) -> ExitKind {
+pub(crate) fn classify(err: &AnyError) -> ExitKind {
     for cause in err.chain() {
         if cause.is::<UserError>() {
             return ExitKind::User;

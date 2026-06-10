@@ -4,17 +4,17 @@
 //! candidate ETL path. Parsers are pure functions that produce these
 //! structs; `Library` persists them through `store`.
 
-pub mod budget;
-pub mod follow;
-pub mod observation;
-pub mod parser;
-pub mod refresh;
-pub mod request;
-pub mod service;
+pub(crate) mod budget;
+pub(crate) mod follow;
+pub(crate) mod observation;
+pub(crate) mod parser;
+pub(crate) mod refresh;
+pub(crate) mod request;
+pub(crate) mod service;
 
-pub use observation::{
+pub(crate) use observation::{
     AliasObservation, ExternalIdObservation, ImageObservation, LinkObservation,
     ReleaseEventObservation, SourceObservation, TimePrecision,
 };
-pub use parser::SourceParser;
-pub use request::{HttpMethod, RawSourcePayload};
+pub(crate) use parser::SourceParser;
+pub(crate) use request::{HttpMethod, RawSourcePayload};

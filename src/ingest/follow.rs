@@ -7,7 +7,7 @@ use crate::sources::SourceRegistry;
 use crate::store::{CanonicalFollowOutcome, SourceParseError};
 
 #[derive(Debug, Clone)]
-pub struct FollowIngestReport {
+pub(crate) struct FollowIngestReport {
     pub outcome: CanonicalFollowOutcome,
     pub candidate: SourceCandidateResult,
     pub detail_ingested: bool,
@@ -17,17 +17,17 @@ pub struct FollowIngestReport {
     pub warning: Option<String>,
 }
 
-pub struct FollowIngestService<'a> {
+pub(crate) struct FollowIngestService<'a> {
     library: &'a Library,
     sources: &'a SourceRegistry,
 }
 
 impl<'a> FollowIngestService<'a> {
-    pub fn new(library: &'a Library, sources: &'a SourceRegistry) -> Self {
+    pub(crate) fn new(library: &'a Library, sources: &'a SourceRegistry) -> Self {
         Self { library, sources }
     }
 
-    pub async fn follow_and_ingest(
+    pub(crate) async fn follow_and_ingest(
         &self,
         candidate: &SourceCandidateResult,
         now: i64,

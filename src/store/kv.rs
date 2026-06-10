@@ -11,7 +11,7 @@ use super::Db;
 
 impl Db {
     /// UPSERT a key. `updated_at` is unix seconds.
-    pub fn kv_set(&self, key: &str, value: &str, updated_at: i64) -> Result<()> {
+    pub(crate) fn kv_set(&self, key: &str, value: &str, updated_at: i64) -> Result<()> {
         self.conn()
             .execute(
                 "INSERT INTO kv(key, value, updated_at) VALUES (?1, ?2, ?3) \
@@ -25,7 +25,7 @@ impl Db {
     }
 
     /// Get a value + its `updated_at`. `None` if the key was never set.
-    pub fn kv_get(&self, key: &str) -> Result<Option<(String, i64)>> {
+    pub(crate) fn kv_get(&self, key: &str) -> Result<Option<(String, i64)>> {
         self.conn()
             .query_row(
                 "SELECT value, updated_at FROM kv WHERE key = ?1",
@@ -37,7 +37,7 @@ impl Db {
     }
 
     /// Remove a key. No-op if missing.
-    pub fn kv_delete(&self, key: &str) -> Result<()> {
+    pub(crate) fn kv_delete(&self, key: &str) -> Result<()> {
         self.conn()
             .execute("DELETE FROM kv WHERE key = ?1", params![key])
             .with_context(|| format!("kv_delete {key}"))?;

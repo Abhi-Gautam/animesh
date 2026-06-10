@@ -12,7 +12,7 @@ use crate::tui::app::App;
 use crate::tui::pane::Pane;
 use crate::tui::theme::Theme;
 
-pub fn render(f: &mut Frame, app: &App, area: Rect) {
+pub(crate) fn render(f: &mut Frame, app: &App, area: Rect) {
     let theme = app.visible_theme();
     let block = Block::default()
         .borders(Borders::NONE)

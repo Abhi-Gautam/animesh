@@ -20,7 +20,7 @@ use anyhow::{anyhow, bail, Result};
 /// Mirrors the V0004 `CHECK (kind IN (...))` constraint on
 /// `canonical_release.kind`. Keep these in sync.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ReleaseKind {
+pub(crate) enum ReleaseKind {
     Tv,
     Anime,
     Film,
@@ -30,7 +30,7 @@ pub enum ReleaseKind {
 impl ReleaseKind {
     /// SQL-side spelling used in `canonical_release.kind` and embedded
     /// in `CanonicalId`. Lowercase + snake_case for multi-word kinds.
-    pub fn as_str(&self) -> &'static str {
+    pub(crate) fn as_str(&self) -> &'static str {
         match self {
             Self::Tv => "tv",
             Self::Anime => "anime",
@@ -66,13 +66,13 @@ impl FromStr for ReleaseKind {
 /// [`CanonicalId::legacy_from_source`] (V0004 backfill form). Round-trip
 /// via [`CanonicalId::parse`] / [`CanonicalId::as_str`].
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct CanonicalId(String);
+pub(crate) struct CanonicalId(String);
 
 impl CanonicalId {
     /// Build from a kind + slug. The slug is taken verbatim — callers
     /// (the LLM canonicalizer, the legacy backfill) own slug generation.
     /// Empty slugs are rejected because they'd produce ambiguous ids.
-    pub fn new(kind: ReleaseKind, slug: &str) -> Result<Self> {
+    pub(crate) fn new(kind: ReleaseKind, slug: &str) -> Result<Self> {
         if slug.is_empty() {
             bail!("CanonicalId slug must not be empty");
         }
@@ -87,7 +87,7 @@ impl CanonicalId {
     /// exactly: `release:{kind}:legacy-{source}-{source_id}`. Same
     /// inputs always produce the same id, so re-running the
     /// canonicalizer is idempotent.
-    pub fn legacy_from_source(kind: ReleaseKind, source: &str, source_id: &str) -> Self {
+    pub(crate) fn legacy_from_source(kind: ReleaseKind, source: &str, source_id: &str) -> Self {
         // Unwrap is safe: kind/source/source_id are non-empty by caller
         // contract, and we know the slug we build doesn't contain ':'.
         Self::new(kind, &format!("legacy-{source}-{source_id}"))
@@ -95,7 +95,7 @@ impl CanonicalId {
     }
 
     /// Parse a serialized id. Validates kind and prefix.
-    pub fn parse(s: &str) -> Result<Self> {
+    pub(crate) fn parse(s: &str) -> Result<Self> {
         let mut parts = s.splitn(3, ':');
         let prefix = parts.next().ok_or_else(|| anyhow!("empty CanonicalId"))?;
         if prefix != "release" {
@@ -115,12 +115,12 @@ impl CanonicalId {
     }
 
     /// Borrow the serialized form. Stable across versions.
-    pub fn as_str(&self) -> &str {
+    pub(crate) fn as_str(&self) -> &str {
         &self.0
     }
 
     /// Extract the kind segment.
-    pub fn kind(&self) -> ReleaseKind {
+    pub(crate) fn kind(&self) -> ReleaseKind {
         // Safe by construction: every CanonicalId went through new()
         // or parse(), both of which validate kind.
         let mid = self.0.split(':').nth(1).expect("validated at construction");
@@ -129,7 +129,7 @@ impl CanonicalId {
 
     /// Extract the slug segment. Test-only inspection helper.
     #[cfg(test)]
-    pub fn slug(&self) -> &str {
+    pub(crate) fn slug(&self) -> &str {
         // Safe by construction (see `kind`).
         self.0
             .splitn(3, ':')

@@ -1,5 +1,5 @@
-pub mod query;
-pub mod scope;
-pub mod source_candidate;
+pub(crate) mod query;
+pub(crate) mod scope;
+pub(crate) mod source_candidate;
 
-pub use scope::SearchScope;
+pub(crate) use scope::SearchScope;

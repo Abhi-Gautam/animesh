@@ -1,6 +1,6 @@
 //! Help overlay content — the keymap surfaced to the user via `?`.
 
-pub const HELP_PAIRS: &[(&str, &str)] = &[
+pub(crate) const HELP_PAIRS: &[(&str, &str)] = &[
     ("j / k / ↓ / ↑", "Move selection"),
     ("Tab / Shift-Tab", "Cycle focused panel"),
     ("1 / 2 / 3", "Jump to Playable / Dropping / Following"),

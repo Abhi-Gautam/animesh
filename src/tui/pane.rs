@@ -8,14 +8,14 @@
 //! Pure function. Kind-agnostic — drives anime, TV, film, music alike.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Pane {
+pub(crate) enum Pane {
     Playable,
     Dropping,
     Following,
 }
 
 #[derive(Debug, Clone)]
-pub struct BucketInputs {
+pub(crate) struct BucketInputs {
     /// Earliest known future drop time across all kinds (anime episode
     /// air time, music release date, film release date). None when
     /// the source has no scheduled drop.
@@ -30,7 +30,7 @@ pub struct BucketInputs {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct Windows {
+pub(crate) struct Windows {
     /// Inclusive horizon for `Dropping` — drops at-or-before
     /// `now + today_secs` show in Dropping.
     pub today_secs: i64,
@@ -40,12 +40,12 @@ pub struct Windows {
 }
 
 impl Windows {
-    pub const DEFAULT: Self = Self {
+    pub(crate) const DEFAULT: Self = Self {
         today_secs: 24 * 3600,
         playable_secs: 24 * 3600,
     };
 
-    pub fn from_env() -> Self {
+    pub(crate) fn from_env() -> Self {
         let d = Self::DEFAULT;
         let read = |key: &str, default: i64| -> i64 {
             std::env::var(key)
@@ -61,7 +61,7 @@ impl Windows {
     }
 }
 
-pub fn bucket(i: BucketInputs, now: i64, w: Windows) -> Option<Pane> {
+pub(crate) fn bucket(i: BucketInputs, now: i64, w: Windows) -> Option<Pane> {
     if i.fully_done {
         return None;
     }

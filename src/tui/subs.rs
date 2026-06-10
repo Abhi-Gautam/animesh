@@ -7,30 +7,30 @@ use anyhow::Result;
 use crate::library::Library;
 
 #[derive(Debug, Clone, Default)]
-pub struct Subs {
+pub(crate) struct Subs {
     streamers: Vec<String>,
 }
 
 impl Subs {
-    pub fn load(lib: &Library) -> Result<Self> {
+    pub(crate) fn load(lib: &Library) -> Result<Self> {
         Ok(Self {
             streamers: lib.subscribed_streamers()?,
         })
     }
 
-    pub fn streamers(&self) -> &[String] {
+    pub(crate) fn streamers(&self) -> &[String] {
         &self.streamers
     }
 
     /// Case-insensitive full-string match against the subscription list.
-    pub fn matches(&self, streamer: &str) -> bool {
+    pub(crate) fn matches(&self, streamer: &str) -> bool {
         let needle = streamer.to_ascii_lowercase();
         self.streamers
             .iter()
             .any(|s| s.to_ascii_lowercase() == needle)
     }
 
-    pub fn add(&mut self, lib: &Library, streamer: &str) -> Result<bool> {
+    pub(crate) fn add(&mut self, lib: &Library, streamer: &str) -> Result<bool> {
         let needle = streamer.trim();
         if needle.is_empty() || self.matches(needle) {
             return Ok(false);
@@ -40,7 +40,7 @@ impl Subs {
         Ok(true)
     }
 
-    pub fn remove(&mut self, lib: &Library, streamer: &str) -> Result<bool> {
+    pub(crate) fn remove(&mut self, lib: &Library, streamer: &str) -> Result<bool> {
         let needle = streamer.trim().to_ascii_lowercase();
         let before = self.streamers.len();
         self.streamers.retain(|s| s.to_ascii_lowercase() != needle);
@@ -51,7 +51,7 @@ impl Subs {
         Ok(true)
     }
 
-    pub fn load_arc(lib: &Arc<Library>) -> Result<Self> {
+    pub(crate) fn load_arc(lib: &Arc<Library>) -> Result<Self> {
         Self::load(lib.as_ref())
     }
 }

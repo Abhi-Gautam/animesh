@@ -2,7 +2,7 @@ use anyhow::Result;
 
 use super::{RawSourcePayload, SourceObservation};
 
-pub trait SourceParser: Send + Sync {
+pub(crate) trait SourceParser: Send + Sync {
     #[allow(dead_code)]
     fn source(&self) -> &'static str;
 

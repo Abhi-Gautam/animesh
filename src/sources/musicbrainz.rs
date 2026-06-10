@@ -16,19 +16,19 @@ const DEFAULT_BASE_URL: &str = "https://musicbrainz.org/ws/2";
 const MUSIC_SEARCH_SCOPES: &[SearchScope] = &[SearchScope::Music];
 const MUSIC_ENRICHMENT_SCOPES: &[SearchScope] = &[SearchScope::Music];
 
-pub struct MusicBrainzSource {
+pub(crate) struct MusicBrainzSource {
     client: Client,
     parser: MusicBrainzParser,
     base_url: String,
 }
 
 impl MusicBrainzSource {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::with_base_url(DEFAULT_BASE_URL)
     }
 
     #[allow(dead_code)]
-    pub fn with_base_url(base_url: impl Into<String>) -> Self {
+    pub(crate) fn with_base_url(base_url: impl Into<String>) -> Self {
         Self {
             client: Client::new(),
             parser: MusicBrainzParser,
@@ -111,7 +111,7 @@ impl SourceAdapter for MusicBrainzSource {
     }
 }
 
-pub struct MusicBrainzParser;
+pub(crate) struct MusicBrainzParser;
 
 impl SourceParser for MusicBrainzParser {
     fn source(&self) -> &'static str {

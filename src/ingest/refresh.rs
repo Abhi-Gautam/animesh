@@ -6,7 +6,7 @@ use crate::sources::SourceRegistry;
 use crate::store::SourceParseError;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RefreshReport {
+pub(crate) struct RefreshReport {
     pub attempted: usize,
     pub succeeded: usize,
     pub failed: usize,
@@ -14,17 +14,17 @@ pub struct RefreshReport {
     pub failures: Vec<(String, String, String)>,
 }
 
-pub struct RefreshService<'a> {
+pub(crate) struct RefreshService<'a> {
     library: &'a Library,
     sources: &'a SourceRegistry,
 }
 
 impl<'a> RefreshService<'a> {
-    pub fn new(library: &'a Library, sources: &'a SourceRegistry) -> Self {
+    pub(crate) fn new(library: &'a Library, sources: &'a SourceRegistry) -> Self {
         Self { library, sources }
     }
 
-    pub async fn refresh_due(&self, budget: usize, now: i64) -> Result<RefreshReport> {
+    pub(crate) async fn refresh_due(&self, budget: usize, now: i64) -> Result<RefreshReport> {
         let due = self
             .library
             .due_source_ref_refresh_states(budget as u32)

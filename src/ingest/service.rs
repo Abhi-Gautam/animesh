@@ -16,20 +16,20 @@ use crate::search::SearchScope;
 use crate::sources::SourceRegistry;
 use crate::store::{SourceParseError, SourceSearchCacheEntry};
 
-pub struct IngestSearchService<'a> {
+pub(crate) struct IngestSearchService<'a> {
     library: &'a Library,
     sources: &'a SourceRegistry,
 }
 
 impl<'a> IngestSearchService<'a> {
-    pub fn new(library: &'a Library, sources: &'a SourceRegistry) -> Self {
+    pub(crate) fn new(library: &'a Library, sources: &'a SourceRegistry) -> Self {
         Self { library, sources }
     }
 
     /// Query all plugged sources, ingest whatever succeeds, then return local
     /// FTS results for the same query. Source failures are isolated so one bad
     /// adapter does not prevent candidates from other adapters surfacing.
-    pub async fn refresh_candidates(
+    pub(crate) async fn refresh_candidates(
         &self,
         query: &str,
         limit: u32,
@@ -45,7 +45,7 @@ impl<'a> IngestSearchService<'a> {
         .await
     }
 
-    pub async fn refresh_candidates_in_scope(
+    pub(crate) async fn refresh_candidates_in_scope(
         &self,
         query: &str,
         scope: SearchScope,

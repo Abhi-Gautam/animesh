@@ -20,7 +20,7 @@ use crate::store::{
 use crate::tui::pane::{bucket, BucketInputs, Pane, Windows};
 
 #[derive(Debug, Clone)]
-pub struct Show {
+pub(crate) struct Show {
     /// Durable canonical row. Replaces the v0.4 `TrackedItem`.
     pub canonical: CanonicalRelease,
     /// First attached source_ref (highest confidence). Used for cache
@@ -46,7 +46,7 @@ pub struct Show {
 /// so legacy `MediaExternalLink` JSON (which carried `color` and `type`)
 /// still deserializes against this lean shape.
 #[derive(Debug, Clone, Deserialize)]
-pub struct StreamingLink {
+pub(crate) struct StreamingLink {
     #[serde(default)]
     pub site: Option<String>,
     #[serde(default)]
@@ -90,70 +90,70 @@ impl Show {
         show
     }
 
-    pub fn seen(&self) -> i64 {
+    pub(crate) fn seen(&self) -> i64 {
         self.last_completed
             .as_ref()
             .and_then(|e| e.seen())
             .unwrap_or(0)
     }
 
-    pub fn total(&self) -> Option<i64> {
+    pub(crate) fn total(&self) -> Option<i64> {
         self.cache.as_ref().and_then(|c| c.total_episodes())
     }
 
-    pub fn next_episode(&self) -> Option<i64> {
+    pub(crate) fn next_episode(&self) -> Option<i64> {
         self.cache.as_ref().and_then(|c| c.next_episode())
     }
 
-    pub fn airs_at(&self) -> Option<i64> {
+    pub(crate) fn airs_at(&self) -> Option<i64> {
         self.cache.as_ref().and_then(|c| c.next_episode_airs_at())
     }
 
-    pub fn display_title(&self) -> &str {
+    pub(crate) fn display_title(&self) -> &str {
         &self.canonical.display_title
     }
 
-    pub fn canonical_id(&self) -> &CanonicalId {
+    pub(crate) fn canonical_id(&self) -> &CanonicalId {
         &self.canonical.id
     }
 
-    pub fn source_id(&self) -> &str {
+    pub(crate) fn source_id(&self) -> &str {
         &self.primary_source.source_id
     }
 
-    pub fn romaji(&self) -> Option<&str> {
+    pub(crate) fn romaji(&self) -> Option<&str> {
         self.cache.as_ref().and_then(|c| c.title_priority())
     }
 
-    pub fn studios(&self) -> Option<&str> {
+    pub(crate) fn studios(&self) -> Option<&str> {
         self.cache.as_ref().and_then(|c| c.studios())
     }
 
-    pub fn score(&self) -> Option<f64> {
+    pub(crate) fn score(&self) -> Option<f64> {
         self.cache.as_ref().and_then(|c| c.score())
     }
 
-    pub fn status(&self) -> Option<&str> {
+    pub(crate) fn status(&self) -> Option<&str> {
         self.cache.as_ref().and_then(|c| c.status())
     }
 
-    pub fn description(&self) -> Option<&str> {
+    pub(crate) fn description(&self) -> Option<&str> {
         self.cache.as_ref().and_then(|c| c.description())
     }
 
-    pub fn format(&self) -> Option<&str> {
+    pub(crate) fn format(&self) -> Option<&str> {
         self.cache.as_ref().and_then(|c| c.format())
     }
 
-    pub fn verified_streamer(&self) -> Option<&str> {
+    pub(crate) fn verified_streamer(&self) -> Option<&str> {
         self.last_verified.as_ref()?.streamer()
     }
 
-    pub fn verified_url(&self) -> Option<&str> {
+    pub(crate) fn verified_url(&self) -> Option<&str> {
         self.last_verified.as_ref()?.verified_url()
     }
 
-    pub fn verified_at(&self) -> Option<i64> {
+    pub(crate) fn verified_at(&self) -> Option<i64> {
         Some(self.last_verified.as_ref()?.occurred_at)
     }
 
@@ -161,11 +161,11 @@ impl Show {
     /// `next_episode_airs_at` is populated; this is the seam where music
     /// and film release-date fields will plug in later without changing
     /// callers.
-    pub fn next_drop_at(&self) -> Option<i64> {
+    pub(crate) fn next_drop_at(&self) -> Option<i64> {
         self.cache.as_ref().and_then(|c| c.next_episode_airs_at())
     }
 
-    pub fn fully_done(&self) -> bool {
+    pub(crate) fn fully_done(&self) -> bool {
         match (self.total(), Some(self.seen())) {
             (Some(t), Some(s)) => s >= t,
             _ => false,
@@ -173,7 +173,7 @@ impl Show {
     }
 }
 
-pub struct Shelf {
+pub(crate) struct Shelf {
     pub shows: Vec<Show>,
 }
 
@@ -181,7 +181,7 @@ impl Shelf {
     /// Build the view-model from the durable state. One round trip to
     /// the DB regardless of follow count — see
     /// [`Facade::load_resolved`].
-    pub fn load(
+    pub(crate) fn load(
         facade: &Facade,
         now: i64,
         windows: Windows,
@@ -197,7 +197,7 @@ impl Shelf {
 
     /// Re-derive each show's `pane` from current state. Call after
     /// the user mutates progress (e.g. `w` key) or on tick.
-    pub fn recompute_panes(&mut self, now: i64, windows: Windows, subs: &crate::tui::subs::Subs) {
+    pub(crate) fn recompute_panes(&mut self, now: i64, windows: Windows, subs: &crate::tui::subs::Subs) {
         for s in &mut self.shows {
             s.subscribed_match = s
                 .verified_streamer()
@@ -210,7 +210,7 @@ impl Shelf {
     /// Replace progress for one show in-memory (mirror of a durable
     /// `engage(Completed, …)` write). Synthesizes an in-memory
     /// engagement so `seen()` reflects the new value without a reload.
-    pub fn set_progress(&mut self, canonical_id: &CanonicalId, seen: i64, now: i64) {
+    pub(crate) fn set_progress(&mut self, canonical_id: &CanonicalId, seen: i64, now: i64) {
         for s in &mut self.shows {
             if &s.canonical.id == canonical_id {
                 s.last_completed = Some(Engagement {

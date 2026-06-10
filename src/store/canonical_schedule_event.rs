@@ -7,7 +7,7 @@ use crate::ingest::{ReleaseEventObservation, TimePrecision};
 use super::Db;
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct CanonicalScheduleEvent {
+pub(crate) struct CanonicalScheduleEvent {
     pub id: String,
     pub canonical_id: CanonicalId,
     pub source: String,
@@ -27,7 +27,7 @@ pub struct CanonicalScheduleEvent {
 }
 
 impl Db {
-    pub fn upsert_canonical_schedule_events(
+    pub(crate) fn upsert_canonical_schedule_events(
         &self,
         canonical_id: &CanonicalId,
         source: &str,
@@ -79,7 +79,7 @@ impl Db {
         Ok(())
     }
 
-    pub fn schedule_events_for_canonical(
+    pub(crate) fn schedule_events_for_canonical(
         &self,
         canonical_id: &CanonicalId,
     ) -> Result<Vec<CanonicalScheduleEvent>> {
@@ -129,7 +129,7 @@ impl Db {
     }
 }
 
-pub fn canonical_schedule_event_id(canonical_id: &CanonicalId, source_event_id: &str) -> String {
+pub(crate) fn canonical_schedule_event_id(canonical_id: &CanonicalId, source_event_id: &str) -> String {
     format!(
         "canonical_schedule:{}:{}",
         canonical_id.as_str(),

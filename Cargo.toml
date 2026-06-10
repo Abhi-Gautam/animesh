@@ -43,10 +43,9 @@ codegen-units = 1
 # to escalate these to hard errors at the merge gate.
 [lints.rust]
 unused = "warn"
-# `unreachable_pub` is worth adopting (this binary's items should be `pub(crate)`),
-# but it currently fires ~400× across the all-`pub` tree. Adopt it via a one-shot
-# `cargo fix` cleanup in its own commit, then turn it on here — not as part of
-# the gate while work is in flight.
+# Items in this binary should be `pub(crate)` unless genuinely re-exported.
+# Adopted via a one-shot `cargo clippy --fix` cleanup pass.
+unreachable_pub = "warn"
 
 [lints.clippy]
 # High-signal, zero-false-positive guards against leftover debugging scaffolding.

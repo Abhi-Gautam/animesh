@@ -16,19 +16,19 @@ const DEFAULT_BASE_URL: &str = "https://api.jikan.moe/v4";
 const ANIME_SEARCH_SCOPES: &[SearchScope] = &[SearchScope::Anime];
 const NO_ENRICHMENT_SCOPES: &[SearchScope] = &[];
 
-pub struct JikanSource {
+pub(crate) struct JikanSource {
     client: Client,
     parser: JikanParser,
     base_url: String,
 }
 
 impl JikanSource {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::with_base_url(DEFAULT_BASE_URL)
     }
 
     #[allow(dead_code)]
-    pub fn with_base_url(base_url: impl Into<String>) -> Self {
+    pub(crate) fn with_base_url(base_url: impl Into<String>) -> Self {
         Self {
             client: Client::new(),
             parser: JikanParser,
@@ -100,7 +100,7 @@ impl SourceAdapter for JikanSource {
     }
 }
 
-pub struct JikanParser;
+pub(crate) struct JikanParser;
 
 impl SourceParser for JikanParser {
     fn source(&self) -> &'static str {

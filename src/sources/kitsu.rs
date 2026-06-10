@@ -17,19 +17,19 @@ const DEFAULT_BASE_URL: &str = "https://kitsu.io/api/edge";
 const ANIME_SEARCH_SCOPES: &[SearchScope] = &[SearchScope::Anime];
 const NO_ENRICHMENT_SCOPES: &[SearchScope] = &[];
 
-pub struct KitsuSource {
+pub(crate) struct KitsuSource {
     client: Client,
     parser: KitsuParser,
     base_url: String,
 }
 
 impl KitsuSource {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::with_base_url(DEFAULT_BASE_URL)
     }
 
     #[allow(dead_code)]
-    pub fn with_base_url(base_url: impl Into<String>) -> Self {
+    pub(crate) fn with_base_url(base_url: impl Into<String>) -> Self {
         Self {
             client: Client::new(),
             parser: KitsuParser,
@@ -104,7 +104,7 @@ impl SourceAdapter for KitsuSource {
     }
 }
 
-pub struct KitsuParser;
+pub(crate) struct KitsuParser;
 
 impl SourceParser for KitsuParser {
     fn source(&self) -> &'static str {

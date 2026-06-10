@@ -15,13 +15,13 @@ const APP_DIR: &str = "animesh";
 const DB_FILENAME: &str = "library.db";
 
 /// Resolve the DB path using the process environment.
-pub fn resolve_db_path() -> Result<PathBuf> {
+pub(crate) fn resolve_db_path() -> Result<PathBuf> {
     resolve_with(std::env::var(ENV_OVERRIDE).ok())
 }
 
 /// Pure variant: takes the override explicitly. Used by tests so we don't
 /// have to mutate the process env in parallel-run unit tests.
-pub fn resolve_with(override_path: Option<String>) -> Result<PathBuf> {
+pub(crate) fn resolve_with(override_path: Option<String>) -> Result<PathBuf> {
     if let Some(p) = override_path.filter(|s| !s.is_empty()) {
         return Ok(PathBuf::from(p));
     }

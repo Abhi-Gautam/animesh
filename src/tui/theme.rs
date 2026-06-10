@@ -6,17 +6,17 @@
 
 use ratatui::style::{Color, Modifier, Style};
 
-pub const DEFAULT_THEME_ID: &str = "catppuccin-mocha";
-pub const KV_UI_THEME: &str = "ui.theme";
+pub(crate) const DEFAULT_THEME_ID: &str = "catppuccin-mocha";
+pub(crate) const KV_UI_THEME: &str = "ui.theme";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Appearance {
+pub(crate) enum Appearance {
     Light,
     Dark,
 }
 
 impl Appearance {
-    pub fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Light => "light",
             Self::Dark => "dark",
@@ -26,7 +26,7 @@ impl Appearance {
 
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug)]
-pub struct ThemePalette {
+pub(crate) struct ThemePalette {
     pub rosewater: Color,
     pub flamingo: Color,
     pub pink: Color,
@@ -57,7 +57,7 @@ pub struct ThemePalette {
 
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug)]
-pub struct ThemeRoles {
+pub(crate) struct ThemeRoles {
     pub bg: Color,
     pub panel_bg: Color,
     pub popup_bg: Color,
@@ -84,7 +84,7 @@ pub struct ThemeRoles {
 
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug)]
-pub struct ThemeStyles {
+pub(crate) struct ThemeStyles {
     pub normal: Style,
     pub muted: Style,
     pub dim: Style,
@@ -105,7 +105,7 @@ pub struct ThemeStyles {
 
 #[allow(dead_code)]
 #[derive(Clone, Debug)]
-pub struct Theme {
+pub(crate) struct Theme {
     pub id: &'static str,
     pub name: &'static str,
     pub family: &'static str,
@@ -116,7 +116,7 @@ pub struct Theme {
 }
 
 impl Theme {
-    pub fn from_catppuccin(
+    pub(crate) fn from_catppuccin(
         id: &'static str,
         name: &'static str,
         appearance: Appearance,
@@ -126,7 +126,7 @@ impl Theme {
         Self::from_roles(id, name, "Catppuccin", appearance, palette, roles)
     }
 
-    pub fn from_roles(
+    pub(crate) fn from_roles(
         id: &'static str,
         name: &'static str,
         family: &'static str,
@@ -180,12 +180,12 @@ impl Theme {
 }
 
 #[derive(Clone, Debug)]
-pub struct ThemeRegistry {
+pub(crate) struct ThemeRegistry {
     themes: Vec<Theme>,
 }
 
 impl ThemeRegistry {
-    pub fn builtin() -> Self {
+    pub(crate) fn builtin() -> Self {
         Self {
             themes: vec![
                 catppuccin_mocha(),
@@ -196,20 +196,20 @@ impl ThemeRegistry {
         }
     }
 
-    pub fn all(&self) -> &[Theme] {
+    pub(crate) fn all(&self) -> &[Theme] {
         &self.themes
     }
 
-    pub fn get(&self, id: &str) -> Option<&Theme> {
+    pub(crate) fn get(&self, id: &str) -> Option<&Theme> {
         let id = normalize_theme_id(id);
         self.themes.iter().find(|theme| theme.id == id)
     }
 
-    pub fn default_theme(&self) -> &Theme {
+    pub(crate) fn default_theme(&self) -> &Theme {
         self.get(DEFAULT_THEME_ID).unwrap_or(&self.themes[0])
     }
 
-    pub fn index_of(&self, id: &str) -> usize {
+    pub(crate) fn index_of(&self, id: &str) -> usize {
         let id = normalize_theme_id(id);
         self.themes
             .iter()
@@ -224,7 +224,7 @@ impl ThemeRegistry {
 }
 
 #[derive(Clone, Debug)]
-pub struct ThemePickerState {
+pub(crate) struct ThemePickerState {
     pub selected: usize,
     pub original_theme_id: String,
     pub preview_theme_id: Option<String>,
@@ -241,17 +241,17 @@ impl Default for ThemePickerState {
 }
 
 impl ThemePickerState {
-    pub fn open(&mut self, current_theme_id: &str, selected: usize) {
+    pub(crate) fn open(&mut self, current_theme_id: &str, selected: usize) {
         self.selected = selected;
         self.original_theme_id = current_theme_id.to_string();
         self.preview_theme_id = Some(current_theme_id.to_string());
     }
 
-    pub fn close(&mut self) {
+    pub(crate) fn close(&mut self) {
         self.preview_theme_id = None;
     }
 
-    pub fn move_selection(&mut self, delta: i32, len: usize) {
+    pub(crate) fn move_selection(&mut self, delta: i32, len: usize) {
         if len == 0 {
             self.selected = 0;
             self.preview_theme_id = None;
@@ -263,7 +263,7 @@ impl ThemePickerState {
     }
 }
 
-pub fn normalize_theme_id(id: &str) -> &str {
+pub(crate) fn normalize_theme_id(id: &str) -> &str {
     match id.trim().to_ascii_lowercase().as_str() {
         "catppuccin" | "catppuccin-dark" | "mocha" | "dark" => "catppuccin-mocha",
         "catppuccin-light" | "latte" | "light" => "catppuccin-latte",
@@ -312,7 +312,7 @@ fn catppuccin_roles(p: ThemePalette, appearance: Appearance) -> ThemeRoles {
     }
 }
 
-pub fn catppuccin_latte() -> Theme {
+pub(crate) fn catppuccin_latte() -> Theme {
     Theme::from_catppuccin(
         "catppuccin-latte",
         "Catppuccin Latte",
@@ -348,7 +348,7 @@ pub fn catppuccin_latte() -> Theme {
     )
 }
 
-pub fn catppuccin_frappe() -> Theme {
+pub(crate) fn catppuccin_frappe() -> Theme {
     Theme::from_catppuccin(
         "catppuccin-frappe",
         "Catppuccin Frappé",
@@ -384,7 +384,7 @@ pub fn catppuccin_frappe() -> Theme {
     )
 }
 
-pub fn catppuccin_macchiato() -> Theme {
+pub(crate) fn catppuccin_macchiato() -> Theme {
     Theme::from_catppuccin(
         "catppuccin-macchiato",
         "Catppuccin Macchiato",
@@ -420,7 +420,7 @@ pub fn catppuccin_macchiato() -> Theme {
     )
 }
 
-pub fn catppuccin_mocha() -> Theme {
+pub(crate) fn catppuccin_mocha() -> Theme {
     Theme::from_catppuccin(
         "catppuccin-mocha",
         "Catppuccin Mocha",
