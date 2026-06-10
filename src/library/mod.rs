@@ -37,8 +37,9 @@ use crate::ids::{CanonicalId, ReleaseKind};
 use crate::ingest::{RawSourcePayload, SourceObservation};
 use crate::search::source_candidate::SourceCandidateResult;
 use crate::store::{
-    CacheEntry, CanonicalFollowOutcome, CanonicalRelease, Db, Engagement, EngagementEvent,
-    EngagementMeta, EngagementSource, SourceParseError, SourceRef,
+    CacheEntry, CanonicalFollowOutcome, CanonicalRelease, CanonicalScheduleEvent, Db, Engagement,
+    EngagementEvent, EngagementMeta, EngagementSource, SourceParseError, SourceRef,
+    SourceRefRefreshState, SourceSearchCacheEntry,
 };
 use crate::time::Clock;
 
@@ -125,6 +126,29 @@ impl Library {
     pub fn drop_canonical(&self, canonical_id: &CanonicalId) -> Result<bool> {
         let db = self.lock_db()?;
         db.drop_canonical(canonical_id, self.now())
+    }
+
+    /// Follow an indexed source candidate. This is intentionally source-agnostic:
+    /// callers provide the selected candidate, and Library owns the canonical
+    /// row + source_ref + followed_at mutation.
+    pub fn follow_source_candidate(
+        &self,
+        candidate: &SourceCandidateResult,
+    ) -> Result<CanonicalFollowOutcome> {
+        let canonical_id = CanonicalId::legacy_from_source(
+            candidate.kind,
+            &candidate.source,
+            &candidate.source_id,
+        );
+        self.follow_with_source(
+            &canonical_id,
+            candidate.kind,
+            &candidate.display_title,
+            &candidate.source,
+            &candidate.source_id,
+            Some(&candidate.display_title),
+            1.0,
+        )
     }
 
     // ------------------------------------------------------------------
@@ -243,6 +267,54 @@ impl Library {
     ) -> Result<Vec<SourceCandidateResult>> {
         let db = self.lock_db()?;
         db.search_source_candidates(query, limit)
+    }
+
+    #[allow(dead_code)]
+    pub fn upsert_source_search_cache(&self, entry: &SourceSearchCacheEntry) -> Result<()> {
+        let db = self.lock_db()?;
+        db.upsert_source_search_cache(entry)
+    }
+
+    #[allow(dead_code)]
+    pub fn get_source_search_cache(
+        &self,
+        source: &str,
+        query_key: &str,
+    ) -> Result<Option<SourceSearchCacheEntry>> {
+        let db = self.lock_db()?;
+        db.get_source_search_cache(source, query_key)
+    }
+
+    #[allow(dead_code)]
+    pub fn upsert_source_ref_refresh_state(&self, state: &SourceRefRefreshState) -> Result<()> {
+        let db = self.lock_db()?;
+        db.upsert_source_ref_refresh_state(state)
+    }
+
+    #[allow(dead_code)]
+    pub fn due_source_ref_refresh_states(&self, limit: u32) -> Result<Vec<SourceRefRefreshState>> {
+        let db = self.lock_db()?;
+        db.due_source_ref_refresh_states(self.now(), limit)
+    }
+
+    #[allow(dead_code)]
+    pub fn project_canonical_schedule_events(
+        &self,
+        canonical_id: &CanonicalId,
+        source: &str,
+        observation: &SourceObservation,
+    ) -> Result<()> {
+        let db = self.lock_db()?;
+        db.upsert_canonical_schedule_events(canonical_id, source, &observation.release_events)
+    }
+
+    #[allow(dead_code)]
+    pub fn schedule_events_for_canonical(
+        &self,
+        canonical_id: &CanonicalId,
+    ) -> Result<Vec<CanonicalScheduleEvent>> {
+        let db = self.lock_db()?;
+        db.schedule_events_for_canonical(canonical_id)
     }
 
     // ------------------------------------------------------------------
@@ -686,6 +758,155 @@ mod tests {
     // ------------------------------------------------------------------
     // source ingestion — raw payloads -> observations -> candidates
     // ------------------------------------------------------------------
+
+    #[test]
+    fn source_parsers_materialize_searchable_candidates() {
+        use crate::ingest::{HttpMethod, RawSourcePayload, SourceParser};
+        use crate::sources::{
+            anilist::AniListParser, itunes::ItunesParser, jikan::JikanParser, kitsu::KitsuParser,
+            musicbrainz::MusicBrainzParser,
+        };
+
+        struct Case {
+            source: &'static str,
+            endpoint: &'static str,
+            body: &'static str,
+            parser: Box<dyn SourceParser>,
+            search_query: &'static str,
+            expected_source_id: &'static str,
+        }
+
+        let cases = vec![
+            Case {
+                source: "anilist",
+                endpoint: "search_media",
+                parser: Box::new(AniListParser),
+                search_query: "one piece",
+                expected_source_id: "21",
+                body: r#"{
+                    "data": {"Page": {"media": [{
+                        "id": 21,
+                        "title": {"romaji": "ONE PIECE", "english": "One Piece", "native": "ワンピース"},
+                        "status": "RELEASING",
+                        "episodes": null,
+                        "format": "TV",
+                        "nextAiringEpisode": {"episode": 1100, "airingAt": 1700000000}
+                    }]}}
+                }"#,
+            },
+            Case {
+                source: "musicbrainz",
+                endpoint: "artist_search",
+                parser: Box::new(MusicBrainzParser),
+                search_query: "radiohead",
+                expected_source_id: "a74b1b7f-71a5-4011-9441-d0b5e4122711",
+                body: r#"{
+                    "artists": [{
+                        "id": "a74b1b7f-71a5-4011-9441-d0b5e4122711",
+                        "name": "Radiohead",
+                        "sort-name": "Radiohead",
+                        "type": "Group",
+                        "country": "GB",
+                        "aliases": [{"name": "On A Friday"}],
+                        "tags": [{"name": "alternative rock"}]
+                    }]
+                }"#,
+            },
+            Case {
+                source: "itunes",
+                endpoint: "search",
+                parser: Box::new(ItunesParser),
+                search_query: "dune",
+                expected_source_id: "track:123",
+                body: r#"{
+                    "resultCount": 1,
+                    "results": [{
+                        "wrapperType": "track",
+                        "kind": "feature-movie",
+                        "trackId": 123,
+                        "trackName": "Dune: Part Two",
+                        "artistName": "Denis Villeneuve",
+                        "releaseDate": "2024-03-01T08:00:00Z"
+                    }]
+                }"#,
+            },
+            Case {
+                source: "kitsu",
+                endpoint: "anime_search",
+                parser: Box::new(KitsuParser),
+                search_query: "bebop",
+                expected_source_id: "1",
+                body: r#"{
+                    "data": [{
+                        "id": "1",
+                        "type": "anime",
+                        "attributes": {
+                            "canonicalTitle": "Cowboy Bebop",
+                            "titles": {"ja_jp": "カウボーイビバップ"},
+                            "status": "finished",
+                            "startDate": "1998-04-03"
+                        }
+                    }]
+                }"#,
+            },
+            Case {
+                source: "jikan",
+                endpoint: "anime_search",
+                parser: Box::new(JikanParser),
+                search_query: "fullmetal",
+                expected_source_id: "5114",
+                body: r#"{
+                    "data": [{
+                        "mal_id": 5114,
+                        "title": "Fullmetal Alchemist: Brotherhood",
+                        "title_japanese": "鋼の錬金術師 FULLMETAL ALCHEMIST",
+                        "status": "Finished Airing"
+                    }]
+                }"#,
+            },
+        ];
+
+        for (idx, case) in cases.into_iter().enumerate() {
+            let lib = lib_at(1_000 + idx as i64);
+            let raw = RawSourcePayload {
+                id: format!("raw:{}:{idx}", case.source),
+                source: case.source.into(),
+                endpoint: case.endpoint.into(),
+                method: HttpMethod::Get,
+                request_key: format!("{}:{}:{idx}", case.source, case.endpoint),
+                request_hash: format!("req-{idx}"),
+                request_json: None,
+                http_status: 200,
+                response_hash: format!("resp-{idx}"),
+                response_json: case.body.into(),
+                fetched_at: 1_000 + idx as i64,
+                expires_at: None,
+                created_at: 1_000 + idx as i64,
+            };
+
+            lib.store_raw_source_payload(&raw).unwrap();
+            let observations = case.parser.parse_search(&raw).unwrap();
+            assert!(
+                !observations.is_empty(),
+                "{} should parse observations",
+                case.source
+            );
+            for observation in observations {
+                lib.store_source_observation(&observation).unwrap();
+            }
+
+            let hits = lib.search_source_candidates(case.search_query, 10).unwrap();
+            assert!(
+                hits.iter().any(|hit| {
+                    hit.source == case.source && hit.source_id == case.expected_source_id
+                }),
+                "{} candidate should be searchable for {:?}; hits: {:?}",
+                case.source,
+                case.search_query,
+                hits
+            );
+        }
+    }
 
     #[test]
     fn source_observation_materializes_searchable_candidate() {

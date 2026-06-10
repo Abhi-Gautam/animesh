@@ -64,8 +64,7 @@ impl TtlConfig {
         let d = Self::DEFAULT;
         Self {
             releasing: env_i64("ANIMESH_TTL_RELEASING").unwrap_or(d.releasing),
-            not_yet_released: env_i64("ANIMESH_TTL_NOT_YET_RELEASED")
-                .unwrap_or(d.not_yet_released),
+            not_yet_released: env_i64("ANIMESH_TTL_NOT_YET_RELEASED").unwrap_or(d.not_yet_released),
             finished: env_i64("ANIMESH_TTL_FINISHED").unwrap_or(d.finished),
             unknown: env_i64("ANIMESH_TTL_UNKNOWN").unwrap_or(d.unknown),
         }
@@ -216,7 +215,6 @@ impl CacheEntry {
             streaming_links_json: row.get("streaming_links_json")?,
         })
     }
-
 }
 
 impl Db {
@@ -286,7 +284,6 @@ impl Db {
             .optional()
             .context("get_cache")
     }
-
 }
 
 #[cfg(test)]
@@ -330,7 +327,10 @@ mod tests {
 
     #[test]
     fn parse_status_handles_anilist_strings_and_unknown() {
-        assert_eq!(CacheStatus::parse(Some("RELEASING")), CacheStatus::Releasing);
+        assert_eq!(
+            CacheStatus::parse(Some("RELEASING")),
+            CacheStatus::Releasing
+        );
         assert_eq!(
             CacheStatus::parse(Some("currently_airing")),
             CacheStatus::Releasing
@@ -362,7 +362,8 @@ mod tests {
     #[test]
     fn upsert_replaces_existing_row() {
         let db = fresh();
-        db.upsert_cache(&entry("21", "RELEASING", 100, 200)).unwrap();
+        db.upsert_cache(&entry("21", "RELEASING", 100, 200))
+            .unwrap();
         let mut updated = entry("21", "FINISHED", 500, 1000);
         updated.display_title = Some("Renamed".into());
         db.upsert_cache(&updated).unwrap();
@@ -371,5 +372,4 @@ mod tests {
         assert_eq!(got.status.as_deref(), Some("FINISHED"));
         assert_eq!(got.expires_at, 1000);
     }
-
 }

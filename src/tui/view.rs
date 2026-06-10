@@ -14,20 +14,13 @@ use crate::tui::app::{App, Overlay, PANE_LABELS};
 use crate::tui::command::{self, Suggestion};
 use crate::tui::help::HELP_PAIRS;
 use crate::tui::palette::FollowStage;
-
-const ACCENT: Color = Color::Rgb(0xff, 0x7a, 0x59);
-const INK: Color = Color::Rgb(0xcd, 0xd6, 0xe2);
-const INK_2: Color = Color::Rgb(0x9a, 0xa6, 0xb6);
-const DIM: Color = Color::Rgb(0x58, 0x60, 0x71);
-const DIMMER: Color = Color::Rgb(0x3a, 0x43, 0x50);
-const SOON: Color = Color::Rgb(0x61, 0xaf, 0xef);
-const LATE: Color = Color::Rgb(0xe0, 0x6c, 0x75);
-/// Opaque background for overlay cards. Without this, ratatui blocks
-/// only paint borders — the panes beneath bleed through.
-const PANEL_BG: Color = Color::Rgb(0x14, 0x18, 0x1f);
+use crate::tui::theme::Theme;
 
 pub fn render(f: &mut Frame, app: &App) {
+    let theme = app.visible_theme();
     let area = f.area();
+    f.render_widget(Block::default().style(theme.styles.normal), area);
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -38,29 +31,30 @@ pub fn render(f: &mut Frame, app: &App) {
         ])
         .split(area);
 
-    render_status_line(f, app, chunks[0]);
+    render_status_line(f, app, theme, chunks[0]);
     if app.is_first_run() {
-        render_empty_state(f, chunks[1]);
+        render_empty_state(f, theme, chunks[1]);
     } else {
         render_body(f, app, chunks[1]);
     }
-    render_cmdline(f, app, chunks[2]);
-    render_hint_bar(f, app, chunks[3]);
+    render_cmdline(f, app, theme, chunks[2]);
+    render_hint_bar(f, app, theme, chunks[3]);
 
     match app.overlay {
         Overlay::None => {}
-        Overlay::Command => render_command_palette(f, app, area),
-        Overlay::Search => render_search_palette(f, app, area),
-        Overlay::Follow => render_follow_palette(f, app, area),
-        Overlay::Help => render_help(f, area),
+        Overlay::Command => render_command_palette(f, app, theme, area),
+        Overlay::Search => render_search_palette(f, app, theme, area),
+        Overlay::Follow => render_follow_palette(f, app, theme, area),
+        Overlay::Theme => render_theme_picker(f, app, theme, area),
+        Overlay::Help => render_help(f, theme, area),
     }
 
     if let Some(text) = app.toasts.visible() {
-        render_toast(f, area, text);
+        render_toast(f, theme, area, text);
     }
 }
 
-fn render_status_line(f: &mut Frame, app: &App, area: Rect) {
+fn render_status_line(f: &mut Frame, app: &App, theme: &Theme, area: Rect) {
     let active = app.shelf.shows.len();
     let playable = app.items_in(crate::tui::app::PANE_PLAYABLE).len();
     let dropping = app.items_in(crate::tui::app::PANE_DROPPING).len();
@@ -70,20 +64,14 @@ fn render_status_line(f: &mut Frame, app: &App, area: Rect) {
         .map(|t| t.format("%H:%M").to_string())
         .unwrap_or_else(|| "--:--".into());
     let mut left = vec![
-        Span::styled(
-            "~",
-            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            "animesh",
-            Style::default().fg(INK).add_modifier(Modifier::BOLD),
-        ),
+        Span::styled("~", theme.styles.key),
+        Span::styled("animesh", theme.styles.title),
         Span::raw("   "),
-        Span::styled("panes", Style::default().fg(INK_2)),
+        Span::styled("panes", theme.styles.muted),
         Span::raw(" › "),
         Span::styled(
             PANE_LABELS[app.focused_index()].to_lowercase(),
-            Style::default().fg(DIM),
+            theme.styles.dim,
         ),
     ];
     let subs_text = if app.subs.streamers().is_empty() {
@@ -93,21 +81,28 @@ fn render_status_line(f: &mut Frame, app: &App, area: Rect) {
     };
     left.extend(vec![
         Span::raw("   "),
-        Span::styled("subs", Style::default().fg(INK_2)),
+        Span::styled("subs", theme.styles.muted),
         Span::raw(" › "),
-        Span::styled(subs_text, Style::default().fg(DIM)),
+        Span::styled(subs_text, theme.styles.dim),
     ]);
     let right = vec![
-        Span::styled(format!("{active} followed"), Style::default().fg(DIM)),
+        Span::styled(format!("{active} followed"), theme.styles.dim),
         Span::raw(" · "),
         Span::styled(
             format!("{playable} playable"),
-            Style::default().fg(if playable > 0 { ACCENT } else { DIM }),
+            Style::default().fg(if playable > 0 {
+                theme.roles.playable
+            } else {
+                theme.roles.fg_dim
+            }),
         ),
         Span::raw(" · "),
-        Span::styled(format!("{dropping} dropping"), Style::default().fg(SOON)),
+        Span::styled(
+            format!("{dropping} dropping"),
+            Style::default().fg(theme.roles.upcoming),
+        ),
         Span::raw(" · "),
-        Span::styled(clock, Style::default().fg(INK_2)),
+        Span::styled(clock, theme.styles.muted),
     ];
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
@@ -131,7 +126,7 @@ fn render_body(f: &mut Frame, app: &App, area: Rect) {
 
 /// Onboarding takeover: rendered instead of the three panes whenever
 /// `library.shows` is empty. Derived state — no flag to remember to set.
-fn render_empty_state(f: &mut Frame, area: Rect) {
+fn render_empty_state(f: &mut Frame, theme: &Theme, area: Rect) {
     let w = (area.width.saturating_sub(8)).min(72);
     let h = 14.min(area.height.saturating_sub(2));
     let x = area.x + (area.width.saturating_sub(w)) / 2;
@@ -141,54 +136,50 @@ fn render_empty_state(f: &mut Frame, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(ACCENT))
+        .border_style(theme.styles.border_focused)
         .title(Span::styled(
             " welcome to animesh ",
-            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-        ));
+            theme.styles.title_focused,
+        ))
+        .style(theme.styles.normal);
     let inner = block.inner(rect);
     f.render_widget(block, rect);
 
-    let key = |k: &str| {
-        Span::styled(
-            format!("  {k:<6}"),
-            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-        )
-    };
+    let key = |k: &str| Span::styled(format!("  {k:<6}"), theme.styles.key);
     let lines = vec![
         Line::raw(""),
         Line::from(Span::styled(
             "  Your library is empty. Three keys to get going:",
-            Style::default().fg(INK),
+            theme.styles.normal,
         )),
         Line::raw(""),
         Line::from(vec![
             key("a"),
             Span::styled(
                 "Search AniList and follow your first show",
-                Style::default().fg(INK_2),
+                theme.styles.muted,
             ),
         ]),
         Line::from(vec![
             key(":"),
             Span::styled(
                 "Command mode — try :follow 21  (One Piece)",
-                Style::default().fg(INK_2),
+                theme.styles.muted,
             ),
         ]),
         Line::from(vec![
             key("?"),
-            Span::styled("Full keymap. ", Style::default().fg(INK_2)),
-            Span::styled("q quits.", Style::default().fg(DIM)),
+            Span::styled("Full keymap. ", theme.styles.muted),
+            Span::styled("q quits.", theme.styles.dim),
         ]),
         Line::raw(""),
         Line::from(Span::styled(
             "  Once you've followed shows, panes split into",
-            Style::default().fg(DIM),
+            theme.styles.dim,
         )),
         Line::from(Span::styled(
             "  Playable now  ·  Dropping soon  ·  Following. Press c for LLM context.",
-            Style::default().fg(DIM),
+            theme.styles.dim,
         )),
     ];
     f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
@@ -203,15 +194,20 @@ fn render_panels(f: &mut Frame, app: &App, area: Rect) {
             Constraint::Min(0),
         ])
         .split(area);
+    let theme = app.visible_theme();
     for (pane_idx, &chunk) in chunks.iter().enumerate() {
-        render_panel(f, app, pane_idx, chunk);
+        render_panel(f, app, theme, pane_idx, chunk);
     }
 }
 
-fn render_panel(f: &mut Frame, app: &App, pane_idx: usize, area: Rect) {
+fn render_panel(f: &mut Frame, app: &App, theme: &Theme, pane_idx: usize, area: Rect) {
     let focused = app.focused_index() == pane_idx;
     let items = app.items_in(pane_idx);
-    let header_color = if focused { ACCENT } else { DIM };
+    let title_style = if focused {
+        theme.styles.title_focused
+    } else {
+        theme.styles.dim.add_modifier(Modifier::BOLD)
+    };
     let title = format!(
         " {}   {}   {} ",
         pane_idx + 1,
@@ -221,13 +217,13 @@ fn render_panel(f: &mut Frame, app: &App, pane_idx: usize, area: Rect) {
     let block = Block::default()
         .borders(Borders::LEFT)
         .border_type(BorderType::Plain)
-        .border_style(Style::default().fg(if focused { ACCENT } else { Color::Reset }))
-        .title(Span::styled(
-            title,
-            Style::default()
-                .fg(header_color)
-                .add_modifier(Modifier::BOLD),
-        ));
+        .border_style(if focused {
+            theme.styles.border_focused
+        } else {
+            Style::default().fg(theme.roles.bg).bg(theme.roles.bg)
+        })
+        .title(Span::styled(title, title_style))
+        .style(theme.styles.normal);
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -235,13 +231,14 @@ fn render_panel(f: &mut Frame, app: &App, pane_idx: usize, area: Rect) {
     let lines: Vec<Line> = items
         .iter()
         .enumerate()
-        .map(|(i, s)| render_row(s, i == sel, focused, pane_idx, app.now))
+        .map(|(i, s)| render_row(theme, s, i == sel, focused, pane_idx, app.now))
         .collect();
-    let para = Paragraph::new(lines);
+    let para = Paragraph::new(lines).style(theme.styles.normal);
     f.render_widget(para, inner);
 }
 
 fn render_row(
+    theme: &Theme,
     s: &crate::tui::model::Show,
     selected: bool,
     pane_focused: bool,
@@ -249,33 +246,33 @@ fn render_row(
     now: i64,
 ) -> Line<'static> {
     let _ = pane_idx;
-    let mark_color = if selected && pane_focused {
-        ACCENT
+    let selected_active = selected && pane_focused;
+    let mark_color = if selected_active {
+        theme.roles.accent
     } else {
-        DIMMER
+        theme.roles.subtle
     };
     let mark = Span::styled("▸ ", Style::default().fg(mark_color));
 
     // Dim rows where we have a verified link but on no subscribed
     // streamer — they're catalogued but the user can't watch.
     let unreachable = s.last_verified.is_some() && !s.subscribed_match;
-    let base = if unreachable { DIM } else { INK_2 };
-    let title_color = if selected && pane_focused {
-        Color::White
+    let base = if unreachable {
+        theme.roles.fg_dim
     } else {
-        base
+        theme.roles.fg_muted
     };
-    let title_style = if selected && pane_focused {
+    let title_style = if selected_active {
         Style::default()
-            .fg(title_color)
+            .fg(theme.roles.fg)
             .add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(title_color)
+        Style::default().fg(base)
     };
     let title = Span::styled(s.display_title().to_string(), title_style);
 
     let middle = kind_descriptor(s);
-    let (glyph, glyph_text, glyph_color) = badge_for(s, now);
+    let (glyph, glyph_text, glyph_color) = badge_for(theme, s, now);
     let glyph_span = Span::styled(format!(" {glyph} "), Style::default().fg(glyph_color));
     let glyph_label = Span::styled(glyph_text, Style::default().fg(glyph_color));
 
@@ -283,7 +280,7 @@ fn render_row(
         mark,
         title,
         Span::raw("  "),
-        Span::styled(middle, Style::default().fg(DIM)),
+        Span::styled(middle, theme.styles.dim),
         glyph_span,
         glyph_label,
     ])
@@ -312,26 +309,24 @@ fn kind_descriptor(s: &crate::tui::model::Show) -> String {
 }
 
 /// Trailing badge glyph + label + color.
-///
-/// Precedence:
-/// 1. Verified + subscribed streamer → ▶ <streamer> in ACCENT.
-/// 2. Future scheduled drop → 🛈 in SOON.
-/// 3. Past scheduled drop (no verification) → ✗ in LATE.
-/// 4. Otherwise → · (idle) in DIM.
-fn badge_for(s: &crate::tui::model::Show, now: i64) -> (&'static str, String, Color) {
+fn badge_for(
+    scheme: &Theme,
+    s: &crate::tui::model::Show,
+    now: i64,
+) -> (&'static str, String, Color) {
     if let (Some(at), Some(streamer)) = (s.verified_at(), s.verified_streamer()) {
         if s.subscribed_match {
-            return ("▶", streamer.to_lowercase(), ACCENT);
+            return ("▶", streamer.to_lowercase(), scheme.roles.playable);
         }
         let _ = at;
     }
     if let Some(drop_at) = s.next_drop_at() {
         if drop_at > now {
-            return ("🛈", relative_short(drop_at, now), SOON);
+            return ("🛈", relative_short(drop_at, now), scheme.roles.upcoming);
         }
-        return ("✗", relative_short(drop_at, now), LATE);
+        return ("✗", relative_short(drop_at, now), scheme.roles.late);
     }
-    ("·", String::new(), DIM)
+    ("·", String::new(), scheme.roles.fg_dim)
 }
 
 pub fn relative_short(at: i64, now: i64) -> String {
@@ -354,48 +349,40 @@ pub fn relative_short(at: i64, now: i64) -> String {
     }
 }
 
-fn render_cmdline(f: &mut Frame, app: &App, area: Rect) {
+fn render_cmdline(f: &mut Frame, app: &App, theme: &Theme, area: Rect) {
     let line = match app.overlay {
         Overlay::Command => Line::from(vec![
-            Span::styled(
-                ":",
-                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(&app.palette.query, Style::default().fg(INK)),
-            Span::styled("▏", Style::default().fg(INK)),
+            Span::styled(":", theme.styles.key),
+            Span::styled(&app.palette.query, theme.styles.normal),
+            Span::styled("▏", theme.styles.normal),
         ]),
         Overlay::Search => Line::from(vec![
-            Span::styled(
-                "/",
-                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(&app.palette.query, Style::default().fg(INK)),
-            Span::styled("▏", Style::default().fg(INK)),
+            Span::styled("/", theme.styles.key),
+            Span::styled(&app.palette.query, theme.styles.normal),
+            Span::styled("▏", theme.styles.normal),
         ]),
         Overlay::Follow => Line::from(vec![
-            Span::styled(
-                "a ",
-                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(&app.palette.query, Style::default().fg(INK)),
-            Span::styled("▏", Style::default().fg(INK)),
+            Span::styled("a ", theme.styles.key),
+            Span::styled(&app.palette.query, theme.styles.normal),
+            Span::styled("▏", theme.styles.normal),
+        ]),
+        Overlay::Theme => Line::from(vec![
+            Span::styled("theme ", theme.styles.key),
+            Span::styled("j/k preview · Enter apply · Esc cancel", theme.styles.dim),
         ]),
         _ => Line::from(vec![
+            Span::styled(": ", theme.styles.key),
             Span::styled(
-                ": ",
-                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                "press : for commands  ·  / to jump  ·  a to follow a new show",
-                Style::default().fg(DIMMER),
+                "press : for commands  ·  / to jump  ·  a to follow  ·  t for theme",
+                theme.styles.subtle,
             ),
         ]),
     };
-    f.render_widget(Paragraph::new(line), area);
+    f.render_widget(Paragraph::new(line).style(theme.styles.normal), area);
 }
 
 /// Context-aware footer. Keys shown depend on which overlay is open.
-fn render_hint_bar(f: &mut Frame, app: &App, area: Rect) {
+fn render_hint_bar(f: &mut Frame, app: &App, theme: &Theme, area: Rect) {
     let (pairs, mode_label): (&[(&str, &str)], &str) = match app.overlay {
         Overlay::None => (
             &[
@@ -404,6 +391,7 @@ fn render_hint_bar(f: &mut Frame, app: &App, area: Rect) {
                 ("w", "watched"),
                 ("g", "stream"),
                 ("c", "context"),
+                ("t", "theme"),
                 (":", "cmd"),
                 ("/", "jump"),
                 ("a", "add"),
@@ -434,21 +422,30 @@ fn render_hint_bar(f: &mut Frame, app: &App, area: Rect) {
                 " FOLLOW ",
             ),
             _ => (
-                &[("Enter", "search AniList"), ("Esc", "cancel")],
+                &[
+                    ("typing", "local"),
+                    ("Enter", "query sources"),
+                    ("Esc", "cancel"),
+                ],
                 " FOLLOW ",
             ),
         },
+        Overlay::Theme => (
+            &[
+                ("Enter", "apply"),
+                ("↑↓ / j k", "preview"),
+                ("Esc", "cancel"),
+            ],
+            " THEME ",
+        ),
         Overlay::Help => (&[("Esc / ?", "close")], " HELP "),
     };
 
     let mut spans = Vec::with_capacity(pairs.len() * 4);
     for (key, label) in pairs {
-        spans.push(Span::styled(
-            *key,
-            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-        ));
+        spans.push(Span::styled(*key, theme.styles.key));
         spans.push(Span::raw(" "));
-        spans.push(Span::styled(*label, Style::default().fg(DIM)));
+        spans.push(Span::styled(*label, theme.styles.dim));
         spans.push(Span::raw("  "));
     }
     let chunks = Layout::default()
@@ -458,10 +455,7 @@ fn render_hint_bar(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(Paragraph::new(Line::from(spans)), chunks[0]);
     let mode = Line::from(vec![Span::styled(
         mode_label.to_string(),
-        Style::default()
-            .bg(ACCENT)
-            .fg(Color::Rgb(0x0a, 0x0a, 0x0a))
-            .add_modifier(Modifier::BOLD),
+        theme.styles.mode_badge,
     )]);
     f.render_widget(Paragraph::new(mode).alignment(Alignment::Right), chunks[1]);
 }
@@ -474,7 +468,7 @@ fn centered_rect(area: Rect, w: u16, h: u16) -> Rect {
     Rect::new(x, y, w, h)
 }
 
-fn render_command_palette(f: &mut Frame, app: &App, area: Rect) {
+fn render_command_palette(f: &mut Frame, app: &App, theme: &Theme, area: Rect) {
     let suggestions = command::suggest(&app.palette.query);
     let h = (4 + suggestions.len() as u16).min(18);
     let rect = centered_rect(area, 70, h);
@@ -482,92 +476,84 @@ fn render_command_palette(f: &mut Frame, app: &App, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(ACCENT))
-        .title(Span::styled(
-            " :command ",
-            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-        ))
-        .style(Style::default().bg(PANEL_BG));
+        .border_style(theme.styles.border_focused)
+        .title(Span::styled(" :command ", theme.styles.title_focused))
+        .style(theme.styles.popup);
     let inner = block.inner(rect);
     f.render_widget(block, rect);
 
     let mut lines: Vec<Line> = vec![
         Line::from(vec![
-            Span::styled(
-                ":",
-                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(&app.palette.query, Style::default().fg(INK)),
-            Span::styled("▏", Style::default().fg(INK)),
+            Span::styled(":", theme.styles.key),
+            Span::styled(&app.palette.query, theme.styles.popup),
+            Span::styled("▏", theme.styles.popup),
         ]),
         Line::raw(""),
     ];
     for (i, s) in suggestions.iter().enumerate() {
-        lines.push(render_suggestion(s, i == app.palette.selected));
+        lines.push(render_suggestion(theme, s, i == app.palette.selected));
     }
     f.render_widget(
         Paragraph::new(lines)
-            .style(Style::default().bg(PANEL_BG))
+            .style(theme.styles.popup)
             .wrap(Wrap { trim: false }),
         inner,
     );
 }
 
-fn render_suggestion(s: &Suggestion, selected: bool) -> Line<'static> {
+fn render_suggestion(theme: &Theme, s: &Suggestion, selected: bool) -> Line<'static> {
     let arrow = Span::styled(
         if selected { "▸ " } else { "  " },
-        Style::default().fg(if selected { ACCENT } else { DIMMER }),
+        Style::default().fg(if selected {
+            theme.roles.accent
+        } else {
+            theme.roles.subtle
+        }),
     );
     let name_style = if selected {
         Style::default()
-            .fg(Color::White)
+            .fg(theme.roles.fg)
             .add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(INK)
+        Style::default().fg(theme.roles.fg)
     };
     let name = Span::styled(format!(":{}", s.spec.name), name_style);
     let arg = match s.spec.arg_hint {
-        Some(h) => Span::styled(format!(" {h}"), Style::default().fg(INK_2)),
+        Some(h) => Span::styled(format!(" {h}"), Style::default().fg(theme.roles.fg_muted)),
         None => Span::raw(""),
     };
     let desc = Span::styled(
         format!("    {}", s.spec.description),
-        Style::default().fg(DIM),
+        Style::default().fg(theme.roles.fg_dim),
     );
     Line::from(vec![arrow, name, arg, desc])
 }
 
-fn render_search_palette(f: &mut Frame, app: &App, area: Rect) {
+fn render_search_palette(f: &mut Frame, app: &App, theme: &Theme, area: Rect) {
     let hits_n = app.palette.search_hits.len();
     let rect = centered_rect(area, 70, (4 + hits_n as u16).min(18));
     f.render_widget(Clear, rect);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(ACCENT))
-        .title(Span::styled(
-            " /jump ",
-            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-        ))
-        .style(Style::default().bg(PANEL_BG));
+        .border_style(theme.styles.border_focused)
+        .title(Span::styled(" /jump ", theme.styles.title_focused))
+        .style(theme.styles.popup);
     let inner = block.inner(rect);
     f.render_widget(block, rect);
 
     let mut lines: Vec<Line> = vec![
         Line::from(vec![
-            Span::styled(
-                "/",
-                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(&app.palette.query, Style::default().fg(INK)),
-            Span::styled("▏", Style::default().fg(INK)),
+            Span::styled("/", theme.styles.key),
+            Span::styled(&app.palette.query, theme.styles.popup),
+            Span::styled("▏", theme.styles.popup),
         ]),
         Line::raw(""),
     ];
     if hits_n == 0 {
         lines.push(Line::from(Span::styled(
             "  no followed shows match",
-            Style::default().fg(DIM),
+            theme.styles.dim,
         )));
     } else {
         for (i, &idx) in app.palette.search_hits.iter().enumerate().take(12) {
@@ -575,14 +561,18 @@ fn render_search_palette(f: &mut Frame, app: &App, area: Rect) {
             let selected = i == app.palette.selected;
             let arrow = Span::styled(
                 if selected { "▸ " } else { "  " },
-                Style::default().fg(if selected { ACCENT } else { DIMMER }),
+                Style::default().fg(if selected {
+                    theme.roles.accent
+                } else {
+                    theme.roles.subtle
+                }),
             );
             let style = if selected {
                 Style::default()
-                    .fg(Color::White)
+                    .fg(theme.roles.fg)
                     .add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(INK)
+                Style::default().fg(theme.roles.fg)
             };
             lines.push(Line::from(vec![
                 arrow,
@@ -592,50 +582,47 @@ fn render_search_palette(f: &mut Frame, app: &App, area: Rect) {
     }
     f.render_widget(
         Paragraph::new(lines)
-            .style(Style::default().bg(PANEL_BG))
+            .style(theme.styles.popup)
             .wrap(Wrap { trim: false }),
         inner,
     );
 }
 
-fn render_follow_palette(f: &mut Frame, app: &App, area: Rect) {
+fn render_follow_palette(f: &mut Frame, app: &App, theme: &Theme, area: Rect) {
     let hits_n = app.palette.follow_hits.len();
     let rect = centered_rect(area, 74, (6 + hits_n as u16).min(20));
     f.render_widget(Clear, rect);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(ACCENT))
+        .border_style(theme.styles.border_focused)
         .title(Span::styled(
             " a · follow new show ",
-            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            theme.styles.title_focused,
         ))
-        .style(Style::default().bg(PANEL_BG));
+        .style(theme.styles.popup);
     let inner = block.inner(rect);
     f.render_widget(block, rect);
 
     let mut lines: Vec<Line> = vec![
         Line::from(vec![
-            Span::styled(
-                "search › ",
-                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(&app.palette.query, Style::default().fg(INK)),
-            Span::styled("▏", Style::default().fg(INK)),
+            Span::styled("search › ", theme.styles.key),
+            Span::styled(&app.palette.query, theme.styles.popup),
+            Span::styled("▏", theme.styles.popup),
         ]),
         Line::raw(""),
     ];
     if let Some(err) = &app.palette.follow_error {
         lines.push(Line::from(Span::styled(
             format!("  {err}"),
-            Style::default().fg(LATE),
+            theme.styles.danger,
         )));
     }
     match app.palette.follow_stage {
         FollowStage::AwaitingQuery if hits_n == 0 => {
             lines.push(Line::from(Span::styled(
-                "  type a title, press Enter to search AniList",
-                Style::default().fg(DIM),
+                "  type to search local candidates; Enter queries sources",
+                theme.styles.dim,
             )));
         }
         _ => {
@@ -643,22 +630,26 @@ fn render_follow_palette(f: &mut Frame, app: &App, area: Rect) {
                 let selected = i == app.palette.selected;
                 let arrow = Span::styled(
                     if selected { "▸ " } else { "  " },
-                    Style::default().fg(if selected { ACCENT } else { DIMMER }),
+                    Style::default().fg(if selected {
+                        theme.roles.accent
+                    } else {
+                        theme.roles.subtle
+                    }),
                 );
                 let style = if selected {
                     Style::default()
-                        .fg(Color::White)
+                        .fg(theme.roles.fg)
                         .add_modifier(Modifier::BOLD)
                 } else {
-                    Style::default().fg(INK)
+                    Style::default().fg(theme.roles.fg)
                 };
                 let badge = Span::styled(
-                    format!("  #{}  {}", m.id, m.status.as_deref().unwrap_or("")),
-                    Style::default().fg(DIM),
+                    format!("  {}:{}  {:?}", m.source, m.source_id, m.kind),
+                    theme.styles.dim,
                 );
                 lines.push(Line::from(vec![
                     arrow,
-                    Span::styled(m.display_title().to_string(), style),
+                    Span::styled(m.display_title.to_string(), style),
                     badge,
                 ]));
             }
@@ -666,67 +657,134 @@ fn render_follow_palette(f: &mut Frame, app: &App, area: Rect) {
     }
     f.render_widget(
         Paragraph::new(lines)
-            .style(Style::default().bg(PANEL_BG))
+            .style(theme.styles.popup)
             .wrap(Wrap { trim: false }),
         inner,
     );
 }
 
-fn render_help(f: &mut Frame, area: Rect) {
-    let w = (area.width - 8).min(72);
+fn render_theme_picker(f: &mut Frame, app: &App, theme: &Theme, area: Rect) {
+    let themes = app.theme_registry.all();
+    let rect = centered_rect(area, 78, (5 + themes.len() as u16).min(18));
+    f.render_widget(Clear, rect);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(theme.styles.border_focused)
+        .title(Span::styled(" theme ", theme.styles.title_focused))
+        .style(theme.styles.popup);
+    let inner = block.inner(rect);
+    f.render_widget(block, rect);
+
+    let mut lines: Vec<Line> = Vec::with_capacity(themes.len() + 3);
+    for (i, candidate) in themes.iter().enumerate() {
+        let selected = i == app.theme_picker.selected;
+        let arrow = Span::styled(
+            if selected { "▸ " } else { "  " },
+            Style::default().fg(if selected {
+                theme.roles.accent
+            } else {
+                theme.roles.subtle
+            }),
+        );
+        let name_style = if selected {
+            Style::default()
+                .fg(theme.roles.fg)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.roles.fg)
+        };
+        let active = if candidate.id == app.active_theme_id {
+            " current"
+        } else {
+            ""
+        };
+        lines.push(Line::from(vec![
+            arrow,
+            Span::styled(format!("{:<24}", candidate.name), name_style),
+            Span::styled(
+                format!(" {:<5}", candidate.appearance.label()),
+                theme.styles.dim,
+            ),
+            Span::raw("  "),
+            swatch(candidate.roles.accent),
+            Span::raw(" "),
+            swatch(candidate.roles.success),
+            Span::raw(" "),
+            swatch(candidate.roles.warning),
+            Span::raw(" "),
+            swatch(candidate.roles.danger),
+            Span::styled(active, theme.styles.dim),
+        ]));
+    }
+    lines.push(Line::raw(""));
+    lines.push(Line::from(vec![
+        Span::styled("  Enter", theme.styles.key),
+        Span::styled(" apply · ", theme.styles.dim),
+        Span::styled("Esc", theme.styles.key),
+        Span::styled(" cancel · ", theme.styles.dim),
+        Span::styled(":theme <id>", theme.styles.key),
+        Span::styled(" direct apply", theme.styles.dim),
+    ]));
+
+    f.render_widget(
+        Paragraph::new(lines)
+            .style(theme.styles.popup)
+            .wrap(Wrap { trim: false }),
+        inner,
+    );
+}
+
+fn swatch(color: Color) -> Span<'static> {
+    Span::styled("  ", Style::default().bg(color))
+}
+
+fn render_help(f: &mut Frame, theme: &Theme, area: Rect) {
+    let w = area.width.saturating_sub(8).min(72);
     let h = ((HELP_PAIRS.len() + 4) as u16).min(area.height.saturating_sub(4));
-    let x = (area.width - w) / 2;
-    let y = (area.height.saturating_sub(h)) / 2;
+    let x = area.x + (area.width.saturating_sub(w)) / 2;
+    let y = area.y + (area.height.saturating_sub(h)) / 2;
     let rect = Rect::new(x, y, w, h);
     f.render_widget(Clear, rect);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(DIM))
-        .title(Span::styled(
-            " keymap ",
-            Style::default().fg(INK).add_modifier(Modifier::BOLD),
-        ))
-        .style(Style::default().bg(PANEL_BG));
+        .border_style(theme.styles.border)
+        .title(Span::styled(" keymap ", theme.styles.title))
+        .style(theme.styles.popup);
     let inner = block.inner(rect);
     f.render_widget(block, rect);
     let lines: Vec<Line> = HELP_PAIRS
         .iter()
         .map(|(k, label)| {
             Line::from(vec![
-                Span::styled(
-                    format!("  {k:<16}"),
-                    Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-                ),
-                Span::styled((*label).to_string(), Style::default().fg(INK_2)),
+                Span::styled(format!("  {k:<16}"), theme.styles.key),
+                Span::styled((*label).to_string(), theme.styles.muted),
             ])
         })
         .collect();
-    f.render_widget(
-        Paragraph::new(lines).style(Style::default().bg(PANEL_BG)),
-        inner,
-    );
+    f.render_widget(Paragraph::new(lines).style(theme.styles.popup), inner);
 }
 
-fn render_toast(f: &mut Frame, area: Rect, text: &str) {
+fn render_toast(f: &mut Frame, theme: &Theme, area: Rect, text: &str) {
     let w = (text.len() as u16 + 6).min(area.width.saturating_sub(4));
-    let x = (area.width.saturating_sub(w)) / 2;
-    let y = area.height.saturating_sub(5);
+    let x = area.x + (area.width.saturating_sub(w)) / 2;
+    let y = area.y + area.height.saturating_sub(5);
     let rect = Rect::new(x, y, w, 3);
     f.render_widget(Clear, rect);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Plain)
-        .border_style(Style::default().fg(ACCENT))
-        .style(Style::default().bg(PANEL_BG));
+        .border_style(theme.styles.border_focused)
+        .style(theme.styles.popup);
     let inner = block.inner(rect);
     f.render_widget(block, rect);
     f.render_widget(
         Paragraph::new(Line::from(Span::styled(
             text.to_string(),
-            Style::default().fg(INK),
+            theme.styles.popup,
         )))
-        .style(Style::default().bg(PANEL_BG)),
+        .style(theme.styles.popup),
         inner,
     );
 }

@@ -41,7 +41,10 @@ impl CanonicalRelease {
             rusqlite::Error::FromSqlConversionFailure(
                 1,
                 rusqlite::types::Type::Text,
-                Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())),
+                Box::new(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    e.to_string(),
+                )),
             )
         })?;
         Ok(Self {
@@ -125,7 +128,10 @@ impl Db {
         id: &CanonicalId,
         followed_at: i64,
     ) -> Result<CanonicalFollowOutcome> {
-        let tx = self.conn_mut().transaction().context("follow_canonical tx")?;
+        let tx = self
+            .conn_mut()
+            .transaction()
+            .context("follow_canonical tx")?;
         let existing: Option<(Option<i64>, Option<i64>)> = tx
             .query_row(
                 "SELECT followed_at, dropped_at FROM canonical_release WHERE id = ?1",
@@ -225,8 +231,12 @@ mod tests {
     fn upsert_inserts_then_is_idempotent() {
         let db = fresh();
         let id = id("severance");
-        assert!(db.upsert_canonical(&id, ReleaseKind::Tv, "Severance", 100).unwrap());
-        assert!(!db.upsert_canonical(&id, ReleaseKind::Tv, "Severance", 200).unwrap());
+        assert!(db
+            .upsert_canonical(&id, ReleaseKind::Tv, "Severance", 100)
+            .unwrap());
+        assert!(!db
+            .upsert_canonical(&id, ReleaseKind::Tv, "Severance", 200)
+            .unwrap());
         // The second upsert did NOT change the existing row.
         let row = db.find_canonical(&id).unwrap().unwrap();
         assert_eq!(row.created_at, 100);
@@ -249,7 +259,8 @@ mod tests {
     fn follow_lifecycle_newly_then_dropped_then_restored() {
         let mut db = fresh();
         let id = id("severance");
-        db.upsert_canonical(&id, ReleaseKind::Tv, "Severance", 1).unwrap();
+        db.upsert_canonical(&id, ReleaseKind::Tv, "Severance", 1)
+            .unwrap();
 
         let out = db.follow_canonical(&id, 100).unwrap();
         assert_eq!(out, CanonicalFollowOutcome::NewlyFollowed);
@@ -259,13 +270,21 @@ mod tests {
 
         assert!(db.drop_canonical(&id, 200).unwrap());
         let row = db.find_canonical(&id).unwrap().unwrap();
-        assert_eq!(row.followed_at, Some(100), "followed_at preserved across drop");
+        assert_eq!(
+            row.followed_at,
+            Some(100),
+            "followed_at preserved across drop"
+        );
         assert_eq!(row.dropped_at, Some(200));
 
         let out = db.follow_canonical(&id, 300).unwrap();
         assert_eq!(out, CanonicalFollowOutcome::RestoredFromDrop);
         let row = db.find_canonical(&id).unwrap().unwrap();
-        assert_eq!(row.followed_at, Some(100), "followed_at preserved across restore");
+        assert_eq!(
+            row.followed_at,
+            Some(100),
+            "followed_at preserved across restore"
+        );
         assert_eq!(row.dropped_at, None);
 
         let out = db.follow_canonical(&id, 400).unwrap();
@@ -281,7 +300,11 @@ mod tests {
         assert!(db.drop_canonical(&id, 200).unwrap());
         assert!(db.drop_canonical(&id, 999).unwrap());
         let row = db.find_canonical(&id).unwrap().unwrap();
-        assert_eq!(row.dropped_at, Some(200), "COALESCE keeps original drop time");
+        assert_eq!(
+            row.dropped_at,
+            Some(200),
+            "COALESCE keeps original drop time"
+        );
     }
 
     #[test]
@@ -291,7 +314,8 @@ mod tests {
         // semantics here protect against accidental orphan-drops.
         let db = fresh();
         let id = id("never-followed");
-        db.upsert_canonical(&id, ReleaseKind::Tv, "Ghost", 1).unwrap();
+        db.upsert_canonical(&id, ReleaseKind::Tv, "Ghost", 1)
+            .unwrap();
         assert!(!db.drop_canonical(&id, 100).unwrap());
         let row = db.find_canonical(&id).unwrap().unwrap();
         assert_eq!(row.followed_at, None);

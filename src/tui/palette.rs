@@ -8,7 +8,7 @@
 //! The `mode` discriminator lets one render path handle all three with
 //! different headers, candidates, and Enter wiring.
 
-use crate::sources::anilist::Media;
+use crate::search::source_candidate::SourceCandidateResult;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PaletteMode {
@@ -36,8 +36,8 @@ pub struct PaletteState {
     /// Search mode: indices into `library.shows` matching the query,
     /// ranked by nucleo. Recomputed on every keystroke.
     pub search_hits: Vec<usize>,
-    /// Follow mode: AniList search results.
-    pub follow_hits: Vec<Media>,
+    /// Follow mode: local source candidates ranked by search.
+    pub follow_hits: Vec<SourceCandidateResult>,
     pub follow_stage: FollowStage,
     /// Follow mode: last error message, surfaced inline so the user
     /// doesn't have to close the overlay to see why search failed.

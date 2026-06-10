@@ -13,9 +13,9 @@ use std::fmt;
 use std::str::FromStr;
 
 use anyhow::{anyhow, Context, Result};
-use rusqlite::{params, Row};
 #[cfg(test)]
 use rusqlite::OptionalExtension;
+use rusqlite::{params, Row};
 use serde::{Deserialize, Serialize};
 
 use crate::ids::CanonicalId;
@@ -104,12 +104,22 @@ impl EngagementMeta {
             EngagementEvent::Completed => serde_json::from_str::<CompletedJson>(raw)
                 .ok()
                 .map(|m| Self::Completed { seen: m.seen }),
-            EngagementEvent::Verified => serde_json::from_str::<VerifiedJson>(raw)
-                .ok()
-                .map(|m| Self::Verified { streamer: m.streamer, url: m.url }),
-            EngagementEvent::Rated => serde_json::from_str::<RatedJson>(raw)
-                .ok()
-                .map(|m| Self::Rated { score: m.score, max: m.max }),
+            EngagementEvent::Verified => {
+                serde_json::from_str::<VerifiedJson>(raw)
+                    .ok()
+                    .map(|m| Self::Verified {
+                        streamer: m.streamer,
+                        url: m.url,
+                    })
+            }
+            EngagementEvent::Rated => {
+                serde_json::from_str::<RatedJson>(raw)
+                    .ok()
+                    .map(|m| Self::Rated {
+                        score: m.score,
+                        max: m.max,
+                    })
+            }
             EngagementEvent::Opened | EngagementEvent::Paused | EngagementEvent::Snoozed => None,
         }
     }
@@ -214,7 +224,10 @@ impl Engagement {
             rusqlite::Error::FromSqlConversionFailure(
                 2,
                 rusqlite::types::Type::Text,
-                Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())),
+                Box::new(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    e.to_string(),
+                )),
             )
         })?;
         let raw_meta: Option<String> = row.get("meta")?;
@@ -273,10 +286,7 @@ impl Db {
 
     /// Every engagement event for one canonical, newest-first. Used by
     /// the detail pane and the LLM export.
-    pub fn engagement_for_canonical(
-        &self,
-        canonical_id: &CanonicalId,
-    ) -> Result<Vec<Engagement>> {
+    pub fn engagement_for_canonical(&self, canonical_id: &CanonicalId) -> Result<Vec<Engagement>> {
         let conn = self.conn();
         let mut stmt = conn
             .prepare_cached(
@@ -349,8 +359,7 @@ mod tests {
 
         // Legacy row with `deep_link` instead of `url` decodes the same.
         let legacy = r#"{"streamer":"Netflix","deep_link":"https://netflix.com/x"}"#;
-        let from_legacy =
-            EngagementMeta::decode(EngagementEvent::Verified, Some(legacy)).unwrap();
+        let from_legacy = EngagementMeta::decode(EngagementEvent::Verified, Some(legacy)).unwrap();
         assert_eq!(from_legacy, m);
     }
 
@@ -414,9 +423,12 @@ mod tests {
         let db = fresh();
         let cid = id("foo");
         with_canonical(&db, &cid);
-        db.append_engagement(&cid, EngagementEvent::Opened, 100, None).unwrap();
-        db.append_engagement(&cid, EngagementEvent::Verified, 200, None).unwrap();
-        db.append_engagement(&cid, EngagementEvent::Opened, 300, None).unwrap();
+        db.append_engagement(&cid, EngagementEvent::Opened, 100, None)
+            .unwrap();
+        db.append_engagement(&cid, EngagementEvent::Verified, 200, None)
+            .unwrap();
+        db.append_engagement(&cid, EngagementEvent::Opened, 300, None)
+            .unwrap();
         let last_open = db
             .last_engagement(&cid, EngagementEvent::Opened)
             .unwrap()

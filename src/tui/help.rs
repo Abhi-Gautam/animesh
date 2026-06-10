@@ -11,6 +11,8 @@ pub const HELP_PAIRS: &[(&str, &str)] = &[
     ("g", "Open where to watch (prefers subs)"),
     (":", "Command mode  (try :watched, :sync, :follow 21)"),
     (":subs", "Manage streamer subscriptions (add/remove/list)"),
+    (":theme", "Choose a Catppuccin theme"),
+    ("t", "Open theme picker"),
     (":context", "Alias of c — copy LLM context"),
     ("/", "Jump to a followed show by fuzzy title"),
     ("a", "Add a show — search AniList"),

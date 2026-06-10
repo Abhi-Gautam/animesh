@@ -16,7 +16,7 @@ mod embedded {
 
 /// Highest migration version this binary knows about. Bump alongside
 /// each `Vxxxx__*.sql` file added under `migrations/`.
-pub const MAX_KNOWN_VERSION: u32 = 6;
+pub const MAX_KNOWN_VERSION: u32 = 7;
 
 /// Owning wrapper around a rusqlite Connection. The only struct in the
 /// codebase that holds a `Connection`.
@@ -225,6 +225,9 @@ mod tests {
             "source_ref",
             "engagement",
             "canonicalization_cache",
+            "source_search_cache",
+            "source_ref_refresh_state",
+            "canonical_schedule_event",
         ] {
             assert!(
                 names.iter().any(|n| n == required),

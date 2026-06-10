@@ -25,7 +25,9 @@ impl Subs {
     /// Case-insensitive full-string match against the subscription list.
     pub fn matches(&self, streamer: &str) -> bool {
         let needle = streamer.to_ascii_lowercase();
-        self.streamers.iter().any(|s| s.to_ascii_lowercase() == needle)
+        self.streamers
+            .iter()
+            .any(|s| s.to_ascii_lowercase() == needle)
     }
 
     pub fn add(&mut self, lib: &Library, streamer: &str) -> Result<bool> {
@@ -41,8 +43,7 @@ impl Subs {
     pub fn remove(&mut self, lib: &Library, streamer: &str) -> Result<bool> {
         let needle = streamer.trim().to_ascii_lowercase();
         let before = self.streamers.len();
-        self.streamers
-            .retain(|s| s.to_ascii_lowercase() != needle);
+        self.streamers.retain(|s| s.to_ascii_lowercase() != needle);
         if self.streamers.len() == before {
             return Ok(false);
         }

@@ -11,14 +11,15 @@ use std::sync::Arc;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::ids::{CanonicalId, ReleaseKind};
+use crate::ingest::{AliasObservation, HttpMethod, RawSourcePayload, SourceObservation};
 use crate::library::Library as Facade;
-use crate::sources::anilist::AniListClient;
+use crate::sources::SourceRegistry;
 use crate::store::{CacheEntry, EngagementEvent, EngagementMeta};
 use crate::time::FixedClock;
 use crate::tui::app::{App, Overlay};
 use crate::tui::model::Shelf;
-use crate::tui::pane::Windows;
 use crate::tui::palette::PaletteMode;
+use crate::tui::pane::Windows;
 use crate::tui::subs::Subs;
 
 fn key(code: KeyCode) -> KeyEvent {
@@ -89,8 +90,7 @@ fn app_with_one_show(now: i64) -> App {
     subs.add(&facade, "Netflix").unwrap();
     let windows = Windows::from_env();
     let shelf = Shelf::load(&facade, now, windows, &subs).unwrap();
-    let client = AniListClient::new();
-    App::new(facade, client, shelf, windows, subs, now)
+    App::new(facade, SourceRegistry::empty(), shelf, windows, subs, now)
 }
 
 fn empty_app(now: i64) -> App {
@@ -98,8 +98,7 @@ fn empty_app(now: i64) -> App {
     let subs = Subs::default();
     let windows = Windows::from_env();
     let shelf = Shelf::load(&facade, now, windows, &subs).unwrap();
-    let client = AniListClient::new();
-    App::new(facade, client, shelf, windows, subs, now)
+    App::new(facade, SourceRegistry::empty(), shelf, windows, subs, now)
 }
 
 // ---------- Command mode (`:`) ----------
@@ -143,7 +142,12 @@ fn colon_watched_enter_increments_progress_and_pushes_toast() {
         )
         .unwrap()
         .expect("engagement was persisted");
-    assert_eq!(last.seen(), Some(1), "expected seen=1, meta was: {:?}", last.meta);
+    assert_eq!(
+        last.seen(),
+        Some(1),
+        "expected seen=1, meta was: {:?}",
+        last.meta
+    );
 }
 
 #[test]
@@ -236,6 +240,106 @@ fn slash_typing_filters_hits() {
     assert!(!app.palette.search_hits.is_empty());
     super::handle_key(&mut app, key(KeyCode::Enter));
     assert_eq!(app.overlay, Overlay::None);
+}
+
+// ---------- Theme picker ----------
+
+#[test]
+fn theme_shortcut_opens_picker_and_esc_cancels() {
+    let mut app = app_with_one_show(1_700_000_000);
+    let original = app.active_theme_id.clone();
+    super::handle_key(&mut app, char_key('t'));
+    assert_eq!(app.overlay, Overlay::Theme);
+    super::handle_key(&mut app, key(KeyCode::Down));
+    assert!(app.theme_picker.preview_theme_id.is_some());
+    super::handle_key(&mut app, key(KeyCode::Esc));
+    assert_eq!(app.overlay, Overlay::None);
+    assert_eq!(app.active_theme_id, original);
+}
+
+#[test]
+fn colon_theme_direct_apply_persists_choice() {
+    let mut app = app_with_one_show(1_700_000_000);
+    super::handle_key(&mut app, char_key(':'));
+    type_str(&mut app, "theme latte");
+    super::handle_key(&mut app, key(KeyCode::Enter));
+    assert_eq!(app.active_theme_id, "catppuccin-latte");
+    assert_eq!(
+        app.facade.kv_get(crate::tui::theme::KV_UI_THEME).unwrap(),
+        Some("catppuccin-latte".to_string())
+    );
+}
+
+#[test]
+fn colon_theme_without_arg_opens_picker() {
+    let mut app = app_with_one_show(1_700_000_000);
+    super::handle_key(&mut app, char_key(':'));
+    type_str(&mut app, "theme");
+    super::handle_key(&mut app, key(KeyCode::Enter));
+    assert_eq!(app.overlay, Overlay::Theme);
+}
+
+// ---------- Follow candidate mode (`a`) ----------
+
+#[test]
+fn follow_palette_typing_searches_local_candidates_and_enter_follows_selected() {
+    let now = 1_700_000_000;
+    let mut app = empty_app(now);
+    let raw = RawSourcePayload {
+        id: "raw:jikan:5114".into(),
+        source: "jikan".into(),
+        endpoint: "anime_search".into(),
+        method: HttpMethod::Get,
+        request_key: "jikan:anime:fullmetal".into(),
+        request_hash: "req".into(),
+        request_json: None,
+        http_status: 200,
+        response_hash: "resp".into(),
+        response_json: r#"{"data":[]}"#.into(),
+        fetched_at: now,
+        expires_at: None,
+        created_at: now,
+    };
+    app.facade.store_raw_source_payload(&raw).unwrap();
+    app.facade
+        .store_source_observation(&SourceObservation {
+            source: "jikan".into(),
+            source_id: "5114".into(),
+            raw_payload_id: raw.id.clone(),
+            kind: ReleaseKind::Anime,
+            display_title: "Fullmetal Alchemist: Brotherhood".into(),
+            raw_title: Some("Hagane no Renkinjutsushi".into()),
+            description: None,
+            status: Some("Finished Airing".into()),
+            observed_at: now,
+            source_updated_at: None,
+            aliases: vec![AliasObservation {
+                alias: "FMA Brotherhood".into(),
+                locale: Some("en".into()),
+                alias_kind: Some("synonym".into()),
+                confidence: 0.9,
+            }],
+            external_ids: vec![],
+            release_events: vec![],
+            links: vec![],
+            images: vec![],
+        })
+        .unwrap();
+
+    super::handle_key(&mut app, char_key('a'));
+    type_str(&mut app, "fma");
+    assert_eq!(app.overlay, Overlay::Follow);
+    assert_eq!(app.palette.follow_hits.len(), 1);
+    assert_eq!(app.palette.follow_hits[0].source, "jikan");
+
+    super::handle_key(&mut app, key(KeyCode::Enter));
+    assert_eq!(app.overlay, Overlay::None);
+    assert_eq!(app.facade.count_followed().unwrap(), 1);
+    assert_eq!(app.shelf.shows.len(), 1);
+    assert_eq!(
+        app.shelf.shows[0].display_title(),
+        "Fullmetal Alchemist: Brotherhood"
+    );
 }
 
 // ---------- Help (`?`) and Esc ----------
@@ -359,7 +463,7 @@ fn verified_subscribed_show_lands_in_playable() {
     subs.add(&facade, "Crunchyroll").unwrap();
     let windows = Windows::DEFAULT;
     let shelf = Shelf::load(&facade, now, windows, &subs).unwrap();
-    let app = App::new(facade, AniListClient::new(), shelf, windows, subs, now);
+    let app = App::new(facade, SourceRegistry::empty(), shelf, windows, subs, now);
     assert_eq!(app.items_in(PANE_PLAYABLE).len(), 1);
     assert_eq!(app.items_in(PANE_DROPPING).len(), 0);
     assert_eq!(app.items_in(PANE_FOLLOWING).len(), 0);
@@ -386,7 +490,7 @@ fn verified_unsubscribed_show_is_following_not_playable() {
     let subs = Subs::default(); // none subscribed
     let windows = Windows::DEFAULT;
     let shelf = Shelf::load(&facade, now, windows, &subs).unwrap();
-    let app = App::new(facade, AniListClient::new(), shelf, windows, subs, now);
+    let app = App::new(facade, SourceRegistry::empty(), shelf, windows, subs, now);
     assert_eq!(app.items_in(PANE_PLAYABLE).len(), 0);
     assert_eq!(app.items_in(PANE_FOLLOWING).len(), 1);
 }
@@ -398,10 +502,7 @@ fn copy_context_builds_well_formed_json() {
     let _cid = follow_anime(&facade, "1", "Frieren");
     let subs = Subs::default();
     let shelf = Shelf::load(&facade, now, Windows::DEFAULT, &subs).unwrap();
-    let show = shelf
-        .shows
-        .first()
-        .expect("one show in shelf after follow");
+    let show = shelf.shows.first().expect("one show in shelf after follow");
     let v = crate::tui::llm_context::build(&facade, show).unwrap();
     assert_eq!(v["title"], "Frieren");
     assert_eq!(v["kind"], "anime");

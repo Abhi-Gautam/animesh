@@ -56,7 +56,9 @@ mod tests {
         // host running the tests). We do assert the tail.
         assert_eq!(p.file_name().and_then(|s| s.to_str()), Some(DB_FILENAME));
         assert_eq!(
-            p.parent().and_then(|p| p.file_name()).and_then(|s| s.to_str()),
+            p.parent()
+                .and_then(|p| p.file_name())
+                .and_then(|s| s.to_str()),
             Some(APP_DIR)
         );
     }

@@ -197,12 +197,7 @@ impl Shelf {
 
     /// Re-derive each show's `pane` from current state. Call after
     /// the user mutates progress (e.g. `w` key) or on tick.
-    pub fn recompute_panes(
-        &mut self,
-        now: i64,
-        windows: Windows,
-        subs: &crate::tui::subs::Subs,
-    ) {
+    pub fn recompute_panes(&mut self, now: i64, windows: Windows, subs: &crate::tui::subs::Subs) {
         for s in &mut self.shows {
             s.subscribed_match = s
                 .verified_streamer()

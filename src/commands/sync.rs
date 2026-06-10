@@ -31,6 +31,11 @@ pub struct SyncReport {
 }
 
 /// Inner sync execution with all I/O dependencies injected.
+pub async fn sync_inner_default(facade: &Arc<Facade>, now: i64) -> Result<SyncReport> {
+    let client = AniListClient::new();
+    sync_inner(facade, &client, now).await
+}
+
 pub async fn sync_inner(
     facade: &Arc<Facade>,
     client: &AniListClient,

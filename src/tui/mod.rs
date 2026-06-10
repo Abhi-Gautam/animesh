@@ -21,6 +21,7 @@ pub mod model;
 pub mod palette;
 pub mod pane;
 pub mod subs;
+pub mod theme;
 pub mod toast;
 pub mod view;
 pub mod view_detail;
@@ -42,7 +43,7 @@ use ratatui::{backend::CrosstermBackend, Terminal};
 use std::sync::Arc;
 
 use crate::library::Library as Facade;
-use crate::sources::anilist::AniListClient;
+use crate::sources::SourceRegistry;
 use crate::store::resolve_db_path;
 use crate::time::SystemClock;
 use crate::tui::app::{App, Overlay};
@@ -58,14 +59,14 @@ const TICK_INTERVAL: Duration = Duration::from_secs(30);
 /// with no subcommand.
 pub fn run() -> Result<()> {
     let path = resolve_db_path()?;
-    let client = AniListClient::new();
+    let sources = SourceRegistry::production();
     let facade = Arc::new(Facade::open(&path, Arc::new(SystemClock))?);
 
     let windows = Windows::from_env();
     let now = Utc::now().timestamp();
     let subs = crate::tui::subs::Subs::load_arc(&facade)?;
     let shelf = Shelf::load(&facade, now, windows, &subs)?;
-    let app = App::new(facade, client, shelf, windows, subs, now);
+    let app = App::new(facade, sources, shelf, windows, subs, now);
 
     let mut terminal = setup_terminal().context("setup terminal")?;
     install_panic_hook();
@@ -109,6 +110,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
         Overlay::Command => handle_key_command(app, key),
         Overlay::Search => handle_key_search(app, key),
         Overlay::Follow => handle_key_follow(app, key),
+        Overlay::Theme => handle_key_theme(app, key),
         Overlay::Help => handle_key_help(app, key),
     }
 }
@@ -121,6 +123,7 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) {
             Char('a') => app.open_palette(PaletteMode::Follow),
             Char(':') => app.open_palette(PaletteMode::Command),
             Char('?') => app.dispatch(Command::Help),
+            Char('t') => app.open_theme_picker(),
             Char('q') => app.dispatch(Command::Quit),
             _ => {}
         }
@@ -138,6 +141,7 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) {
         Char('2') => app.set_pane(1),
         Char('3') => app.set_pane(2),
         Char('?') => app.dispatch(Command::Help),
+        Char('t') => app.open_theme_picker(),
         Char(':') => app.open_palette(PaletteMode::Command),
         Char('/') => {
             app.open_palette(PaletteMode::Search);
@@ -230,10 +234,12 @@ fn handle_key_follow(app: &mut App, key: KeyEvent) {
             KeyCode::Backspace => {
                 app.palette.query.pop();
                 app.palette.follow_error = None;
+                app.recompute_follow_hits();
             }
             KeyCode::Char(c) => {
                 app.palette.query.push(c);
                 app.palette.follow_error = None;
+                app.recompute_follow_hits();
             }
             _ => {}
         },
@@ -248,13 +254,29 @@ fn handle_key_follow(app: &mut App, key: KeyEvent) {
                 let len = app.palette.follow_hits.len();
                 app.palette.move_selection(-1, len);
             }
-            // Any other char resets to a new query (escape-hatch UX).
-            KeyCode::Char(_) => {
-                app.palette.follow_stage = FollowStage::AwaitingQuery;
-                app.palette.follow_hits.clear();
+            KeyCode::Backspace => {
+                app.palette.query.pop();
+                app.palette.follow_error = None;
+                app.recompute_follow_hits();
+            }
+            KeyCode::Char(c) => {
+                app.palette.query.push(c);
+                app.palette.follow_error = None;
+                app.recompute_follow_hits();
             }
             _ => {}
         },
+    }
+}
+
+fn handle_key_theme(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Esc => app.cancel_theme_picker(),
+        KeyCode::Enter => app.confirm_theme_picker(),
+        KeyCode::Down | KeyCode::Char('j') => app.move_theme_selection(1),
+        KeyCode::Up | KeyCode::Char('k') => app.move_theme_selection(-1),
+        KeyCode::Char('q') => app.cancel_theme_picker(),
+        _ => {}
     }
 }
 

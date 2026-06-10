@@ -16,15 +16,19 @@ use anyhow::Result;
 use chrono::Utc;
 use tokio::runtime::Handle;
 
-use crate::commands::follow::follow_inner;
-use crate::commands::sync::sync_inner;
+use crate::commands::follow::follow_candidate_inner;
+use crate::commands::sync::sync_inner_default;
+use crate::ingest::service::IngestSearchService;
 use crate::library::Library as Facade;
-use crate::sources::anilist::AniListClient;
+use crate::sources::SourceRegistry;
 use crate::store::{CanonicalFollowOutcome, EngagementEvent, EngagementMeta};
 use crate::tui::command::Command;
 use crate::tui::model::Shelf;
 use crate::tui::palette::{FollowStage, PaletteMode, PaletteState};
 use crate::tui::pane::{Pane, Windows};
+use crate::tui::theme::{
+    normalize_theme_id, Theme, ThemePickerState, ThemeRegistry, DEFAULT_THEME_ID, KV_UI_THEME,
+};
 use crate::tui::toast::ToastQueue;
 
 /// Which overlay (if any) is intercepting input.
@@ -37,6 +41,8 @@ pub enum Overlay {
     Search,
     /// `a` — AniList picker to follow a new show.
     Follow,
+    /// `t` / `:theme` — theme picker with live preview.
+    Theme,
     /// `?` — keymap reference.
     Help,
 }
@@ -51,13 +57,16 @@ pub const PANE_KINDS: [Pane; 3] = [Pane::Playable, Pane::Dropping, Pane::Followi
 
 pub struct App {
     pub facade: Arc<Facade>,
-    pub client: AniListClient,
+    pub sources: SourceRegistry,
     pub shelf: Shelf,
     pub focused_pane: usize,
     /// Per-pane cursor; remembered across pane switches.
     pub selection: [usize; 3],
     pub overlay: Overlay,
     pub palette: PaletteState,
+    pub theme_registry: ThemeRegistry,
+    pub active_theme_id: String,
+    pub theme_picker: ThemePickerState,
     pub toasts: ToastQueue,
     pub windows: Windows,
     pub subs: crate::tui::subs::Subs,
@@ -69,20 +78,34 @@ pub struct App {
 impl App {
     pub fn new(
         facade: Arc<Facade>,
-        client: AniListClient,
+        sources: SourceRegistry,
         shelf: Shelf,
         windows: Windows,
         subs: crate::tui::subs::Subs,
         now: i64,
     ) -> Self {
+        let theme_registry = ThemeRegistry::builtin();
+        let stored_theme = facade
+            .kv_get(KV_UI_THEME)
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| DEFAULT_THEME_ID.to_string());
+        let active_theme_id = theme_registry
+            .get(&stored_theme)
+            .map(|theme| theme.id.to_string())
+            .unwrap_or_else(|| DEFAULT_THEME_ID.to_string());
+
         Self {
             facade,
-            client,
+            sources,
             shelf,
             focused_pane: PANE_PLAYABLE,
             selection: [0; 3],
             overlay: Overlay::None,
             palette: PaletteState::default(),
+            theme_registry,
+            active_theme_id,
+            theme_picker: ThemePickerState::default(),
             toasts: ToastQueue::default(),
             windows,
             subs,
@@ -141,7 +164,8 @@ impl App {
 
     /// Called on the 30s tick (and after any state-changing action).
     pub fn refresh_buckets(&mut self) {
-        self.shelf.recompute_panes(self.now, self.windows, &self.subs);
+        self.shelf
+            .recompute_panes(self.now, self.windows, &self.subs);
         for i in 0..3 {
             let n = self.items_in(i).len();
             if self.selection[i] >= n {
@@ -168,6 +192,7 @@ impl App {
             Command::SubsAdd(name) => self.do_subs_add(&name),
             Command::SubsRemove(name) => self.do_subs_remove(&name),
             Command::SubsList => self.do_subs_list(),
+            Command::Theme(theme_id) => self.do_theme(theme_id.as_deref()),
             Command::Help => {
                 self.overlay = Overlay::Help;
             }
@@ -224,8 +249,9 @@ impl App {
                     .shows
                     .retain(|sh| sh.canonical.id != canonical_id);
                 self.refresh_buckets();
-                self.toasts
-                    .push(format!("✗ Dropped {title} — undo with `:follow {source_id}`"));
+                self.toasts.push(format!(
+                    "✗ Dropped {title} — undo with `:follow {source_id}`"
+                ));
             }
             Ok(false) => self.toasts.push("nothing to drop"),
             Err(e) => self.toasts.push(format!("error: {e}")),
@@ -278,8 +304,9 @@ impl App {
                 Some(format!("opens on {site} — not in your subs")),
             );
         }
-        self.toasts
-            .push(format!("no streaming link cached for {title} — try `:sync`"));
+        self.toasts.push(format!(
+            "no streaming link cached for {title} — try `:sync`"
+        ));
     }
 
     fn open_url(&mut self, title: &str, url: &str, warn: Option<String>) {
@@ -346,45 +373,28 @@ impl App {
     fn do_subs_list(&mut self) {
         let s = self.subs.streamers();
         if s.is_empty() {
-            self.toasts
-                .push("no subs — `:subs add netflix` to start");
+            self.toasts.push("no subs — `:subs add netflix` to start");
         } else {
             self.toasts.push(format!("subs › {}", s.join(" · ")));
         }
     }
 
-    fn do_follow(&mut self, id: i64) {
-        let now = Utc::now().timestamp();
-        let result = tokio::task::block_in_place(|| {
-            Handle::current().block_on(follow_inner(&self.facade, &self.client, id, now))
-        });
-        match result {
-            Ok(report) => {
-                let title = report.media.display_title().to_string();
-                let msg = match report.outcome {
-                    CanonicalFollowOutcome::NewlyFollowed => format!("✓ Followed {title}"),
-                    CanonicalFollowOutcome::RestoredFromDrop => format!("↻ Restored {title}"),
-                    CanonicalFollowOutcome::AlreadyFollowing => {
-                        format!("already following {title}")
-                    }
-                    // follow_with_source upserts the canonical first, so
-                    // NotFound should be impossible here. Surface it as
-                    // a clear error rather than silently swallowing.
-                    CanonicalFollowOutcome::NotFound => {
-                        format!("follow failed: canonical missing for {title}")
-                    }
-                };
-                self.toasts.push(msg);
-                self.reload_shelf(now);
-            }
-            Err(e) => self.toasts.push(format!("follow failed: {e}")),
+    fn do_theme(&mut self, theme_id: Option<&str>) {
+        match theme_id {
+            None => self.open_theme_picker(),
+            Some(id) => self.apply_theme_id(id, true),
         }
+    }
+
+    fn do_follow(&mut self, _id: i64) {
+        self.toasts
+            .push("direct :follow id is retired — press `a`, search candidates, then Enter");
     }
 
     fn do_sync(&mut self) {
         let now = Utc::now().timestamp();
         let result = tokio::task::block_in_place(|| {
-            Handle::current().block_on(sync_inner(&self.facade, &self.client, now))
+            Handle::current().block_on(sync_inner_default(&self.facade, now))
         });
         match result {
             Ok(report) => {
@@ -434,6 +444,80 @@ impl App {
         };
     }
 
+    pub fn theme(&self) -> &Theme {
+        self.theme_registry
+            .get(&self.active_theme_id)
+            .unwrap_or_else(|| self.theme_registry.default_theme())
+    }
+
+    pub fn visible_theme(&self) -> &Theme {
+        if self.overlay == Overlay::Theme {
+            if let Some(id) = &self.theme_picker.preview_theme_id {
+                if let Some(theme) = self.theme_registry.get(id) {
+                    return theme;
+                }
+            }
+        }
+        self.theme()
+    }
+
+    pub fn open_theme_picker(&mut self) {
+        let selected = self.theme_registry.index_of(&self.active_theme_id);
+        self.theme_picker.open(&self.active_theme_id, selected);
+        self.sync_theme_preview();
+        self.overlay = Overlay::Theme;
+    }
+
+    pub fn move_theme_selection(&mut self, delta: i32) {
+        let len = self.theme_registry.all().len();
+        self.theme_picker.move_selection(delta, len);
+        self.sync_theme_preview();
+    }
+
+    pub fn confirm_theme_picker(&mut self) {
+        let Some(id) = self.theme_picker.preview_theme_id.clone() else {
+            self.close_overlay();
+            return;
+        };
+        self.apply_theme_id(&id, true);
+        self.theme_picker.close();
+        self.overlay = Overlay::None;
+    }
+
+    pub fn cancel_theme_picker(&mut self) {
+        self.active_theme_id = self.theme_picker.original_theme_id.clone();
+        self.theme_picker.close();
+        self.overlay = Overlay::None;
+    }
+
+    fn sync_theme_preview(&mut self) {
+        self.theme_picker.preview_theme_id = self
+            .theme_registry
+            .all()
+            .get(self.theme_picker.selected)
+            .map(|theme| theme.id.to_string());
+    }
+
+    fn apply_theme_id(&mut self, id: &str, persist: bool) {
+        let normalized = normalize_theme_id(id);
+        let Some(theme) = self.theme_registry.get(normalized) else {
+            self.toasts.push(format!("unknown theme: {id}"));
+            return;
+        };
+        let theme_id = theme.id.to_string();
+        let theme_name = theme.name;
+        self.active_theme_id = theme_id.clone();
+        self.theme_picker.preview_theme_id = Some(theme_id.clone());
+        if persist {
+            match self.facade.kv_set(KV_UI_THEME, &theme_id) {
+                Ok(()) => self.toasts.push(format!("theme › {theme_name}")),
+                Err(e) => self
+                    .toasts
+                    .push(format!("theme saved for session only: {e}")),
+            }
+        }
+    }
+
     pub fn close_overlay(&mut self) {
         self.overlay = Overlay::None;
     }
@@ -441,7 +525,10 @@ impl App {
     /// Recompute `palette.search_hits` from the current query. Called
     /// on every keystroke in Search mode.
     pub fn recompute_search_hits(&mut self) {
-        use nucleo::{pattern::{CaseMatching, Normalization, Pattern}, Config, Matcher};
+        use nucleo::{
+            pattern::{CaseMatching, Normalization, Pattern},
+            Config, Matcher,
+        };
         let q = self.palette.query.trim();
         self.palette.search_hits.clear();
         if q.is_empty() {
@@ -493,7 +580,35 @@ impl App {
         Ok(())
     }
 
-    /// Run AniList search for the current Follow-mode query. Blocking.
+    /// Recompute follow candidates from local `source_candidate_fts` only.
+    /// Called on every keystroke in Follow mode; no network happens here.
+    pub fn recompute_follow_hits(&mut self) {
+        let q = self.palette.query.trim();
+        self.palette.follow_hits.clear();
+        if q.is_empty() {
+            self.palette.selected = 0;
+            self.palette.follow_stage = FollowStage::AwaitingQuery;
+            return;
+        }
+        match self.facade.search_source_candidates(q, 10) {
+            Ok(hits) => {
+                self.palette.follow_hits = hits;
+                self.palette.selected = 0;
+                self.palette.follow_stage = if self.palette.follow_hits.is_empty() {
+                    FollowStage::AwaitingQuery
+                } else {
+                    FollowStage::Picking
+                };
+            }
+            Err(e) => {
+                self.palette.follow_error = Some(format!("local candidate search: {e}"));
+                self.palette.follow_stage = FollowStage::AwaitingQuery;
+            }
+        }
+    }
+
+    /// Go online for the current Follow-mode query, ingest fresh source
+    /// candidates, then show local candidate search results.
     pub fn run_follow_search(&mut self) {
         let q = self.palette.query.trim().to_string();
         if q.is_empty() {
@@ -502,12 +617,15 @@ impl App {
         }
         self.palette.follow_error = None;
         self.palette.follow_stage = FollowStage::Searching;
+        let now = Utc::now().timestamp();
         let result = tokio::task::block_in_place(|| {
-            Handle::current().block_on(self.client.search(&q, 10))
+            let service = IngestSearchService::new(&self.facade, &self.sources);
+            Handle::current().block_on(service.refresh_candidates(&q, 10, now))
         });
         match result {
             Ok(hits) if hits.is_empty() => {
-                self.palette.follow_error = Some("no matches on AniList".into());
+                self.palette.follow_hits.clear();
+                self.palette.follow_error = Some("no source candidates found".into());
                 self.palette.follow_stage = FollowStage::AwaitingQuery;
             }
             Ok(hits) => {
@@ -516,19 +634,36 @@ impl App {
                 self.palette.follow_stage = FollowStage::Picking;
             }
             Err(e) => {
-                self.palette.follow_error = Some(format!("AniList: {e}"));
+                self.palette.follow_error = Some(format!("source search: {e}"));
                 self.palette.follow_stage = FollowStage::AwaitingQuery;
             }
         }
     }
 
-    /// Follow the AniList id from the currently selected Follow-mode hit.
+    /// Follow the currently selected source candidate.
     pub fn confirm_follow(&mut self) {
-        let Some(media) = self.palette.follow_hits.get(self.palette.selected).cloned() else {
+        let Some(candidate) = self.palette.follow_hits.get(self.palette.selected).cloned() else {
             return;
         };
-        let id = media.id;
+        let now = Utc::now().timestamp();
         self.close_overlay();
-        self.dispatch(Command::Follow(id));
+        match follow_candidate_inner(&self.facade, &candidate) {
+            Ok(report) => {
+                let title = report.display_title;
+                let msg = match report.outcome {
+                    CanonicalFollowOutcome::NewlyFollowed => format!("✓ Followed {title}"),
+                    CanonicalFollowOutcome::RestoredFromDrop => format!("↻ Restored {title}"),
+                    CanonicalFollowOutcome::AlreadyFollowing => {
+                        format!("already following {title}")
+                    }
+                    CanonicalFollowOutcome::NotFound => {
+                        format!("follow failed: canonical missing for {title}")
+                    }
+                };
+                self.toasts.push(msg);
+                self.reload_shelf(now);
+            }
+            Err(e) => self.toasts.push(format!("follow failed: {e}")),
+        }
     }
 }

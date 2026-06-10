@@ -30,6 +30,8 @@ pub enum Command {
     SubsRemove(String),
     /// `:subs` — toast the current subscription list.
     SubsList,
+    /// `:theme [id]` — open picker or apply a theme directly.
+    Theme(Option<String>),
 }
 
 /// Static metadata for the palette. `name` is the canonical spelling
@@ -83,6 +85,12 @@ pub const SPECS: &[CommandSpec] = &[
         arg_hint: None,
     },
     CommandSpec {
+        name: "theme",
+        aliases: &["colorscheme", "color", "scheme"],
+        description: "Choose the UI theme",
+        arg_hint: Some("[theme-id]"),
+    },
+    CommandSpec {
         name: "help",
         aliases: &["?"],
         description: "Open the keymap overlay",
@@ -116,7 +124,10 @@ pub enum ParseError {
     /// First token doesn't match any verb name or alias.
     UnknownVerb(String),
     /// Verb requires an argument and none was given.
-    MissingArg { verb: &'static str, hint: &'static str },
+    MissingArg {
+        verb: &'static str,
+        hint: &'static str,
+    },
     /// Verb takes an argument but the user supplied the wrong shape.
     BadArg { verb: &'static str, reason: String },
 }
@@ -152,8 +163,10 @@ pub fn parse(query: &str) -> Result<Command, ParseError> {
 
     let spec = SPECS
         .iter()
-        .find(|s| s.name.eq_ignore_ascii_case(verb_token)
-            || s.aliases.iter().any(|a| a.eq_ignore_ascii_case(verb_token)))
+        .find(|s| {
+            s.name.eq_ignore_ascii_case(verb_token)
+                || s.aliases.iter().any(|a| a.eq_ignore_ascii_case(verb_token))
+        })
         .ok_or_else(|| ParseError::UnknownVerb(verb_token.to_string()))?;
 
     match spec.name {
@@ -163,6 +176,11 @@ pub fn parse(query: &str) -> Result<Command, ParseError> {
         "sync" => Ok(Command::Sync),
         "doctor" => Ok(Command::Doctor),
         "help" => Ok(Command::Help),
+        "theme" => Ok(Command::Theme(if rest.is_empty() {
+            None
+        } else {
+            Some(rest.to_string())
+        })),
         "quit" => Ok(Command::Quit),
         "context" => Ok(Command::CopyContext),
         "subs" => {
@@ -226,16 +244,11 @@ pub fn suggest(query: &str) -> Vec<Suggestion> {
         // Match against the name; aliases as fallback haystacks so
         // `:s` ranks `snooze` (alias match) but loses to a name-match
         // hit if one exists.
-        let name_score = pattern.score(
-            nucleo::Utf32Str::Ascii(spec.name.as_bytes()),
-            &mut matcher,
-        );
+        let name_score = pattern.score(nucleo::Utf32Str::Ascii(spec.name.as_bytes()), &mut matcher);
         let alias_score = spec
             .aliases
             .iter()
-            .filter_map(|a| {
-                pattern.score(nucleo::Utf32Str::Ascii(a.as_bytes()), &mut matcher)
-            })
+            .filter_map(|a| pattern.score(nucleo::Utf32Str::Ascii(a.as_bytes()), &mut matcher))
             .max();
         let score = match (name_score, alias_score) {
             (Some(n), Some(a)) => Some(n.max(a)),
@@ -312,7 +325,10 @@ mod tests {
     #[test]
     fn parse_follow_non_numeric() {
         match parse("follow frieren") {
-            Err(ParseError::BadArg { verb: "follow", reason }) => {
+            Err(ParseError::BadArg {
+                verb: "follow",
+                reason,
+            }) => {
                 assert!(reason.contains("frieren"));
             }
             other => panic!("expected BadArg, got {other:?}"),
@@ -338,7 +354,10 @@ mod tests {
     fn suggest_finds_via_alias() {
         let s = suggest("refresh");
         let names: Vec<_> = s.iter().map(|x| x.spec.name).collect();
-        assert!(names.contains(&"sync"), "expected sync via alias 'refresh', got {names:?}");
+        assert!(
+            names.contains(&"sync"),
+            "expected sync via alias 'refresh', got {names:?}"
+        );
     }
 
     #[test]
@@ -391,7 +410,10 @@ mod tests {
         assert_eq!(
             format!(
                 "{}",
-                ParseError::MissingArg { verb: "follow", hint: "<anilist-id>" }
+                ParseError::MissingArg {
+                    verb: "follow",
+                    hint: "<anilist-id>"
+                }
             ),
             ":follow needs <anilist-id>",
         );

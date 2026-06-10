@@ -90,11 +90,8 @@ impl CanonicalId {
     pub fn legacy_from_source(kind: ReleaseKind, source: &str, source_id: &str) -> Self {
         // Unwrap is safe: kind/source/source_id are non-empty by caller
         // contract, and we know the slug we build doesn't contain ':'.
-        Self::new(
-            kind,
-            &format!("legacy-{source}-{source_id}"),
-        )
-        .expect("legacy slug is well-formed by construction")
+        Self::new(kind, &format!("legacy-{source}-{source_id}"))
+            .expect("legacy slug is well-formed by construction")
     }
 
     /// Parse a serialized id. Validates kind and prefix.
@@ -134,7 +131,10 @@ impl CanonicalId {
     #[cfg(test)]
     pub fn slug(&self) -> &str {
         // Safe by construction (see `kind`).
-        self.0.splitn(3, ':').nth(2).expect("validated at construction")
+        self.0
+            .splitn(3, ':')
+            .nth(2)
+            .expect("validated at construction")
     }
 }
 
@@ -291,7 +291,8 @@ mod tests {
     #[test]
     fn rusqlite_round_trip() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
-        conn.execute_batch("CREATE TABLE t (id TEXT PRIMARY KEY)").unwrap();
+        conn.execute_batch("CREATE TABLE t (id TEXT PRIMARY KEY)")
+            .unwrap();
         let id = CanonicalId::new(ReleaseKind::Tv, "severance").unwrap();
         conn.execute("INSERT INTO t VALUES (?1)", rusqlite::params![id])
             .unwrap();
@@ -304,10 +305,12 @@ mod tests {
     #[test]
     fn rusqlite_load_rejects_malformed_id_from_db() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
-        conn.execute_batch("CREATE TABLE t (id TEXT PRIMARY KEY)").unwrap();
+        conn.execute_batch("CREATE TABLE t (id TEXT PRIMARY KEY)")
+            .unwrap();
         conn.execute("INSERT INTO t VALUES ('not-a-canonical-id')", [])
             .unwrap();
-        let res: rusqlite::Result<CanonicalId> = conn.query_row("SELECT id FROM t", [], |r| r.get(0));
+        let res: rusqlite::Result<CanonicalId> =
+            conn.query_row("SELECT id FROM t", [], |r| r.get(0));
         assert!(res.is_err(), "FromSql must reject malformed id");
     }
 

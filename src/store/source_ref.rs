@@ -76,7 +76,10 @@ impl Db {
                 "source_ref confidence must be in [0, 1], got {confidence}"
             ));
         }
-        let tx = self.conn_mut().transaction().context("attach_source_ref tx")?;
+        let tx = self
+            .conn_mut()
+            .transaction()
+            .context("attach_source_ref tx")?;
         let existing: Option<CanonicalId> = tx
             .query_row(
                 "SELECT canonical_id FROM source_ref WHERE source = ?1 AND source_id = ?2",
@@ -119,10 +122,7 @@ impl Db {
 
     /// List every (source, source_id) attached to a canonical. Useful
     /// for the LLM context export and for the canonical detail pane.
-    pub fn source_refs_for_canonical(
-        &self,
-        canonical_id: &CanonicalId,
-    ) -> Result<Vec<SourceRef>> {
+    pub fn source_refs_for_canonical(&self, canonical_id: &CanonicalId) -> Result<Vec<SourceRef>> {
         let conn = self.conn();
         let mut stmt = conn
             .prepare_cached(
@@ -184,7 +184,8 @@ mod tests {
         let mut db = fresh();
         let cid = id("foo");
         with_canonical(&db, &cid);
-        db.attach_source_ref(&cid, "anilist", "21", Some("Foo"), 0.7).unwrap();
+        db.attach_source_ref(&cid, "anilist", "21", Some("Foo"), 0.7)
+            .unwrap();
         let out = db
             .attach_source_ref(&cid, "anilist", "21", Some("Foo (updated)"), 0.95)
             .unwrap();
@@ -201,7 +202,8 @@ mod tests {
         let b = id("bar");
         with_canonical(&db, &a);
         with_canonical(&db, &b);
-        db.attach_source_ref(&a, "anilist", "21", Some("Foo"), 0.9).unwrap();
+        db.attach_source_ref(&a, "anilist", "21", Some("Foo"), 0.9)
+            .unwrap();
         let err = db
             .attach_source_ref(&b, "anilist", "21", Some("Foo"), 0.9)
             .unwrap_err();
@@ -233,8 +235,10 @@ mod tests {
         let mut db = fresh();
         let cid = id("foo");
         with_canonical(&db, &cid);
-        db.attach_source_ref(&cid, "anilist", "21", Some("AL"), 0.95).unwrap();
-        db.attach_source_ref(&cid, "tmdb", "33", Some("TMDB"), 0.85).unwrap();
+        db.attach_source_ref(&cid, "anilist", "21", Some("AL"), 0.95)
+            .unwrap();
+        db.attach_source_ref(&cid, "tmdb", "33", Some("TMDB"), 0.85)
+            .unwrap();
         let refs = db.source_refs_for_canonical(&cid).unwrap();
         assert_eq!(refs.len(), 2);
         // ORDER BY confidence DESC — AniList (0.95) before TMDB (0.85).

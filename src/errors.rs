@@ -110,7 +110,9 @@ mod tests {
     #[test]
     fn user_error_through_context_chain() {
         let inner: anyhow::Error = user_error(anyhow!("no match"));
-        let outer = Err::<(), _>(inner).context("looking up follow").unwrap_err();
+        let outer = Err::<(), _>(inner)
+            .context("looking up follow")
+            .unwrap_err();
         assert_eq!(classify(&outer), ExitKind::User);
     }
 
