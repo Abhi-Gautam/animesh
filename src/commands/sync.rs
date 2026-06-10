@@ -1,27 +1,22 @@
-//! `:sync` — refresh metadata_cache for every active follow.
+//! `:sync` — source-agnostic bounded refresh for due followed source refs.
 //!
-//! Explicit, observable, partial-success-tolerant. Honors per-item
-//! failures (logs them but continues) and stamps the kv with last
-//! attempt/success/error so `:doctor` can surface sync health.
-//!
-//! v0.5: iterates the canonical graph via [`Facade::followed`] and
-//! uses the canonical's primary source_ref to drive each refresh.
-//! Only the `anilist` source is wired today — other sources fall
-//! through silently until their adapters land in the sync engine.
+//! Network stays inside source adapters. The command is thin marshalling:
+//! stamp sync health keys, call [`RefreshService`], and return a compact report
+//! for the TUI toast.
 
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 
+use crate::ingest::budget::RequestBudget;
+use crate::ingest::refresh::RefreshService;
 use crate::library::Library as Facade;
-use crate::sources::anilist::AniListClient;
-use crate::store::{CacheEntry, TtlConfig};
+use crate::sources::SourceRegistry;
 
 const KV_LAST_ATTEMPT: &str = "sync.last_attempt_at";
 const KV_LAST_SUCCESS: &str = "sync.last_success_at";
 const KV_LAST_ERROR: &str = "sync.last_error";
 
-/// Per-item outcome of one sync pass.
 #[derive(Debug)]
 pub struct SyncReport {
     pub total: usize,
@@ -30,67 +25,33 @@ pub struct SyncReport {
     pub failures: Vec<(String, String)>,
 }
 
-/// Inner sync execution with all I/O dependencies injected.
 pub async fn sync_inner_default(facade: &Arc<Facade>, now: i64) -> Result<SyncReport> {
-    let client = AniListClient::new();
-    sync_inner(facade, &client, now).await
+    let sources = SourceRegistry::production();
+    sync_inner_with_sources(
+        facade,
+        &sources,
+        RequestBudget::default().max_manual_sync_requests,
+        now,
+    )
+    .await
 }
 
-pub async fn sync_inner(
+pub async fn sync_inner_with_sources(
     facade: &Arc<Facade>,
-    client: &AniListClient,
+    sources: &SourceRegistry,
+    budget: usize,
     now: i64,
 ) -> Result<SyncReport> {
     facade.kv_set(KV_LAST_ATTEMPT, &now.to_string())?;
 
-    let canonicals = facade.followed().context("followed canonicals")?;
-    let total = canonicals.len();
-    let ttl = TtlConfig::from_env();
-    let mut succeeded = 0usize;
-    let mut failures: Vec<(String, String)> = Vec::new();
-
-    for canonical in &canonicals {
-        // Take every attached source_ref so a canonical can refresh
-        // across multiple sources in a single tick. For v0.5 only the
-        // anilist branch produces a network call — other sources are
-        // silently skipped until their adapters land here.
-        let refs = match facade.source_refs_for(&canonical.id) {
-            Ok(refs) => refs,
-            Err(e) => {
-                failures.push((canonical.id.to_string(), format!("source_refs: {e:#}")));
-                continue;
-            }
-        };
-        let Some(primary) = refs.into_iter().next() else {
-            // Defensive: a followed canonical with no source_ref
-            // shouldn't exist (follow_with_source always attaches one).
-            // Log to the failure list so doctor surfaces it.
-            failures.push((canonical.id.to_string(), "no source_ref attached".into()));
-            continue;
-        };
-        if primary.source != "anilist" {
-            continue;
-        }
-        let id_n: i64 = match primary.source_id.parse() {
-            Ok(n) => n,
-            Err(_) => {
-                failures.push((primary.source_id.clone(), "non-numeric anilist id".into()));
-                continue;
-            }
-        };
-        match client.by_id(id_n).await {
-            Ok(Some(media)) => {
-                let entry = CacheEntry::from_media(&media, &ttl, now);
-                if let Err(e) = facade.upsert_cache(&entry) {
-                    failures.push((primary.source_id.clone(), format!("cache upsert: {e:#}")));
-                } else {
-                    succeeded += 1;
-                }
-            }
-            Ok(None) => failures.push((primary.source_id.clone(), "not found on AniList".into())),
-            Err(e) => failures.push((primary.source_id.clone(), format!("{e:#}"))),
-        }
-    }
+    let service = RefreshService::new(facade, sources);
+    let refresh = service.refresh_due(budget, now).await?;
+    let total = refresh.attempted + refresh.skipped_missing_adapter;
+    let failures: Vec<(String, String)> = refresh
+        .failures
+        .into_iter()
+        .map(|(source, source_id, error)| (format!("{source}:{source_id}"), error))
+        .collect();
 
     if failures.is_empty() {
         facade.kv_set(KV_LAST_SUCCESS, &now.to_string())?;
@@ -102,7 +63,7 @@ pub async fn sync_inner(
 
     Ok(SyncReport {
         total,
-        succeeded,
+        succeeded: refresh.succeeded,
         failures,
     })
 }
@@ -111,15 +72,23 @@ pub async fn sync_inner(
 mod tests {
     use super::*;
     use crate::ids::{CanonicalId, ReleaseKind};
+    use crate::sources::anilist::{AniListClient, AniListSource};
+    use crate::store::SourceRefRefreshState;
     use crate::time::FixedClock;
 
-    fn body_for_id(id: i64, title: &str, status: &str) -> String {
+    fn body_for_id(id: i64, title: &str, status: &str, next_episode: Option<(i64, i64)>) -> String {
+        let next = match next_episode {
+            Some((episode, airing_at)) => {
+                format!(r#"{{"episode": {episode}, "airingAt": {airing_at}}}"#)
+            }
+            None => "null".into(),
+        };
         format!(
             r#"{{"data": {{ "Media": {{
                 "id": {id},
-                "title": {{"romaji": "{title}", "english": "{title}", "native": "{title}"}},
+                "title": {{"romaji": "{title} Romaji", "english": "{title}", "native": "{title} Native"}},
                 "status": "{status}", "episodes": 12, "format": "TV",
-                "nextAiringEpisode": null
+                "nextAiringEpisode": {next}
             }} }} }}"#
         )
     }
@@ -128,7 +97,7 @@ mod tests {
         Arc::new(Facade::open_in_memory(Arc::new(FixedClock(now))).unwrap())
     }
 
-    async fn follow_one(facade: &Arc<Facade>, source_id: &str, title: &str) -> CanonicalId {
+    fn follow_due(facade: &Arc<Facade>, source_id: &str, title: &str, now: i64) -> CanonicalId {
         let cid = CanonicalId::legacy_from_source(ReleaseKind::Anime, "anilist", source_id);
         facade
             .follow_with_source(
@@ -141,36 +110,55 @@ mod tests {
                 1.0,
             )
             .unwrap();
+        facade
+            .upsert_source_ref_refresh_state(&SourceRefRefreshState {
+                source: "anilist".into(),
+                source_id: source_id.into(),
+                last_attempt_at: None,
+                last_success_at: None,
+                last_error: None,
+                next_due_at: Some(now - 1),
+                failure_count: 0,
+            })
+            .unwrap();
         cid
     }
 
     #[tokio::test]
-    async fn sync_refreshes_cache_for_all_active_follows() {
+    async fn sync_refreshes_due_source_refs_and_projects_schedule() {
         let mut server = mockito::Server::new_async().await;
         let _m = server
             .mock("POST", "/")
             .with_status(200)
-            .with_body(body_for_id(21, "One Piece", "RELEASING"))
+            .with_body(body_for_id(
+                21,
+                "One Piece",
+                "RELEASING",
+                Some((1100, 2_000)),
+            ))
             .expect_at_least(1)
             .create_async()
             .await;
-        let client = AniListClient::with_base_url(server.url());
-        let facade = facade(100);
-        follow_one(&facade, "21", "One Piece").await;
+        let facade = facade(1_000);
+        let cid = follow_due(&facade, "21", "One Piece", 1_000);
+        let sources = SourceRegistry::new(vec![Box::new(AniListSource::with_client(
+            AniListClient::with_base_url(server.url()),
+        ))]);
 
-        let report = sync_inner(&facade, &client, 1_000).await.unwrap();
+        let report = sync_inner_with_sources(&facade, &sources, 50, 1_000)
+            .await
+            .unwrap();
         assert_eq!(report.total, 1);
         assert_eq!(report.succeeded, 1);
         assert!(report.failures.is_empty());
 
-        let cached = facade.get_cache("anilist", "21").unwrap().unwrap();
-        assert_eq!(cached.status.as_deref(), Some("RELEASING"));
-        assert_eq!(cached.fetched_at, 1_000);
-
-        let last_attempt = facade.kv_get(KV_LAST_ATTEMPT).unwrap().unwrap();
-        assert_eq!(last_attempt, "1000");
-        let last_success = facade.kv_get(KV_LAST_SUCCESS).unwrap().unwrap();
-        assert_eq!(last_success, "1000");
+        let events = facade.schedule_events_for_canonical(&cid).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].source_event_id, "anilist:airing:21:1100");
+        assert_eq!(
+            facade.kv_get(KV_LAST_SUCCESS).unwrap().as_deref(),
+            Some("1000")
+        );
         assert!(facade.kv_get(KV_LAST_ERROR).unwrap().is_none());
     }
 
@@ -181,14 +169,19 @@ mod tests {
             .mock("POST", "/")
             .with_status(503)
             .with_body("server error")
+            .expect_at_least(2)
             .create_async()
             .await;
-        let client = AniListClient::with_base_url(server.url());
-        let facade = facade(100);
-        follow_one(&facade, "21", "One Piece").await;
-        follow_one(&facade, "22", "Naruto").await;
+        let facade = facade(1_000);
+        follow_due(&facade, "21", "One Piece", 1_000);
+        follow_due(&facade, "22", "Naruto", 1_000);
+        let sources = SourceRegistry::new(vec![Box::new(AniListSource::with_client(
+            AniListClient::with_base_url(server.url()),
+        ))]);
 
-        let report = sync_inner(&facade, &client, 1_000).await.unwrap();
+        let report = sync_inner_with_sources(&facade, &sources, 50, 1_000)
+            .await
+            .unwrap();
         assert_eq!(report.total, 2);
         assert_eq!(report.succeeded, 0);
         assert_eq!(report.failures.len(), 2);
@@ -199,7 +192,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sync_empty_library_succeeds_with_zero_total() {
+    async fn sync_empty_due_set_succeeds_with_zero_total() {
         let mut server = mockito::Server::new_async().await;
         let _m = server
             .mock("POST", "/")
@@ -208,9 +201,13 @@ mod tests {
             .expect(0)
             .create_async()
             .await;
-        let client = AniListClient::with_base_url(server.url());
         let facade = facade(500);
-        let report = sync_inner(&facade, &client, 500).await.unwrap();
+        let sources = SourceRegistry::new(vec![Box::new(AniListSource::with_client(
+            AniListClient::with_base_url(server.url()),
+        ))]);
+        let report = sync_inner_with_sources(&facade, &sources, 50, 500)
+            .await
+            .unwrap();
         assert_eq!(report.total, 0);
         assert_eq!(report.succeeded, 0);
         assert!(facade.kv_get(KV_LAST_SUCCESS).unwrap().is_some());

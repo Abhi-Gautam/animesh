@@ -12,9 +12,12 @@ use crate::ingest::{
     AliasObservation, ExternalIdObservation, HttpMethod, ImageObservation, LinkObservation,
     RawSourcePayload, ReleaseEventObservation, SourceObservation, SourceParser, TimePrecision,
 };
+use crate::search::SearchScope;
 use crate::sources::{stable_hash, SourceAdapter, SourceFuture};
 
 const DEFAULT_BASE_URL: &str = "https://graphql.anilist.co";
+const ANIME_SEARCH_SCOPES: &[SearchScope] = &[SearchScope::Anime];
+const NO_ENRICHMENT_SCOPES: &[SearchScope] = &[];
 
 pub struct AniListClient {
     client: Client,
@@ -166,6 +169,14 @@ impl SourceAdapter for AniListSource {
         &self.parser
     }
 
+    fn search_scopes(&self) -> &'static [SearchScope] {
+        ANIME_SEARCH_SCOPES
+    }
+
+    fn enrichment_scopes(&self) -> &'static [SearchScope] {
+        NO_ENRICHMENT_SCOPES
+    }
+
     fn search<'a>(
         &'a self,
         query: &'a str,
@@ -263,7 +274,6 @@ pub struct Media {
     pub id: i64,
     pub title: MediaTitle,
     pub status: Option<String>,
-    pub episodes: Option<i64>,
     pub format: Option<String>,
     #[serde(rename = "nextAiringEpisode")]
     pub next_airing_episode: Option<NextAiringEpisode>,
@@ -272,8 +282,6 @@ pub struct Media {
     pub cover_image: Option<MediaCoverImage>,
     #[serde(default)]
     pub description: Option<String>,
-    #[serde(rename = "averageScore", default)]
-    pub average_score: Option<i64>,
     #[serde(default)]
     pub studios: Option<MediaStudios>,
     #[serde(rename = "externalLinks", default)]
@@ -505,51 +513,6 @@ impl Media {
             .or(self.title.native.as_deref())
             .unwrap_or("(untitled)")
     }
-
-    /// Pick the highest-resolution cover image URL we have.
-    pub fn cover_url(&self) -> Option<&str> {
-        self.cover_image
-            .as_ref()
-            .and_then(|c| c.large.as_deref().or(c.medium.as_deref()))
-    }
-
-    /// Comma-joined studios. Animation studios first.
-    pub fn studios_joined(&self) -> Option<String> {
-        let s = self.studios.as_ref()?;
-        if s.nodes.is_empty() {
-            return None;
-        }
-        let mut animation: Vec<&str> = s
-            .nodes
-            .iter()
-            .filter(|n| n.is_animation_studio)
-            .map(|n| n.name.as_str())
-            .collect();
-        let other: Vec<&str> = s
-            .nodes
-            .iter()
-            .filter(|n| !n.is_animation_studio)
-            .map(|n| n.name.as_str())
-            .collect();
-        animation.extend(other);
-        Some(animation.join(", "))
-    }
-
-    /// External links that look like streaming services.
-    pub fn streaming_links(&self) -> Vec<&MediaExternalLink> {
-        match &self.external_links {
-            None => Vec::new(),
-            Some(links) => links
-                .iter()
-                .filter(|l| {
-                    l.link_type
-                        .as_deref()
-                        .map(|t| t.eq_ignore_ascii_case("STREAMING"))
-                        .unwrap_or(false)
-                })
-                .collect(),
-        }
-    }
 }
 
 #[cfg(test)]
@@ -726,12 +689,10 @@ mod tests {
                 native: Some("c".into()),
             },
             status: None,
-            episodes: None,
             format: None,
             next_airing_episode: None,
             cover_image: None,
             description: None,
-            average_score: None,
             studios: None,
             external_links: None,
         };

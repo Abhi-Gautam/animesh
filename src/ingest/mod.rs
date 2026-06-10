@@ -4,8 +4,11 @@
 //! candidate ETL path. Parsers are pure functions that produce these
 //! structs; `Library` persists them through `store`.
 
+pub mod budget;
+pub mod follow;
 pub mod observation;
 pub mod parser;
+pub mod refresh;
 pub mod request;
 pub mod service;
 

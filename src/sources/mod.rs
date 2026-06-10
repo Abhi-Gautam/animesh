@@ -12,6 +12,7 @@ use std::pin::Pin;
 use anyhow::Result;
 
 use crate::ingest::{RawSourcePayload, SourceParser};
+use crate::search::SearchScope;
 
 pub mod anilist;
 pub mod itunes;
@@ -29,6 +30,11 @@ pub trait SourceAdapter: Send + Sync {
     fn source(&self) -> &'static str;
 
     fn parser(&self) -> &dyn SourceParser;
+
+    fn search_scopes(&self) -> &'static [SearchScope];
+
+    #[allow(dead_code)]
+    fn enrichment_scopes(&self) -> &'static [SearchScope];
 
     fn search<'a>(
         &'a self,
@@ -62,11 +68,38 @@ impl SourceRegistry {
     }
 
     pub fn production() -> Self {
-        Self::new(vec![Box::new(anilist::AniListSource::new())])
+        Self::new(vec![
+            Box::new(anilist::AniListSource::new()),
+            Box::new(jikan::JikanSource::new()),
+            Box::new(kitsu::KitsuSource::new()),
+            Box::new(tvmaze::TvMazeSource::new()),
+            Box::new(musicbrainz::MusicBrainzSource::new()),
+            Box::new(itunes::ItunesSource::new()),
+        ])
     }
 
+    #[allow(dead_code)]
     pub fn adapters(&self) -> &[Box<dyn SourceAdapter>] {
         &self.adapters
+    }
+
+    pub fn adapter(&self, source: &str) -> Option<&dyn SourceAdapter> {
+        self.adapters
+            .iter()
+            .map(|adapter| adapter.as_ref())
+            .find(|adapter| adapter.source() == source)
+    }
+
+    pub fn search_adapters(&self, scope: SearchScope) -> Vec<&dyn SourceAdapter> {
+        self.adapters
+            .iter()
+            .map(|adapter| adapter.as_ref())
+            .filter(|adapter| {
+                scope == SearchScope::All
+                    || adapter.search_scopes().contains(&SearchScope::All)
+                    || adapter.search_scopes().contains(&scope)
+            })
+            .collect()
     }
 }
 
@@ -79,4 +112,62 @@ pub(crate) fn stable_hash(input: &str) -> String {
         hash = hash.wrapping_mul(0x100000001b3);
     }
     format!("{hash:016x}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn production_anime_search_has_four_primary_sources() {
+        let registry = SourceRegistry::production();
+        let sources: Vec<&str> = registry
+            .search_adapters(SearchScope::Anime)
+            .into_iter()
+            .map(|adapter| adapter.source())
+            .collect();
+        assert_eq!(sources, vec!["anilist", "jikan", "kitsu", "tvmaze"]);
+    }
+
+    #[test]
+    fn registry_can_lookup_selected_source_adapter() {
+        let registry = SourceRegistry::production();
+        assert_eq!(registry.adapter("jikan").unwrap().source(), "jikan");
+        assert_eq!(registry.adapter("kitsu").unwrap().source(), "kitsu");
+        assert_eq!(registry.adapter("tvmaze").unwrap().source(), "tvmaze");
+        assert_eq!(
+            registry.adapter("musicbrainz").unwrap().source(),
+            "musicbrainz"
+        );
+        assert_eq!(registry.adapter("itunes").unwrap().source(), "itunes");
+    }
+
+    #[test]
+    fn all_scope_returns_all_searchable_adapters() {
+        let registry = SourceRegistry::production();
+        assert_eq!(registry.search_adapters(SearchScope::All).len(), 6);
+    }
+
+    #[test]
+    fn secondary_sources_are_not_in_anime_search() {
+        let registry = SourceRegistry::production();
+        let sources: Vec<&str> = registry
+            .search_adapters(SearchScope::Anime)
+            .into_iter()
+            .map(|adapter| adapter.source())
+            .collect();
+        assert!(!sources.contains(&"musicbrainz"));
+        assert!(!sources.contains(&"itunes"));
+    }
+
+    #[test]
+    fn music_scope_includes_music_sources() {
+        let registry = SourceRegistry::production();
+        let sources: Vec<&str> = registry
+            .search_adapters(SearchScope::Music)
+            .into_iter()
+            .map(|adapter| adapter.source())
+            .collect();
+        assert_eq!(sources, vec!["musicbrainz", "itunes"]);
+    }
 }

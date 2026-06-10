@@ -1,0 +1,7 @@
+edition = "2021"
+
+# The two options below tidy and de-churn import blocks but are nightly-only.
+# Uncommenting them on stable rustfmt prints a harmless warning and is ignored,
+# so they stay off until/if the project moves to a nightly fmt step.
+# imports_granularity = "Crate"
+# group_imports = "StdExternalCrate"

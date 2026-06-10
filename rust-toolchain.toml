@@ -1,0 +1,7 @@
+# Pins the toolchain so CI and any rustup-based machine build identically.
+# NOTE: only honored by rustup. The current local install is Homebrew rustc,
+# which ignores this file — it exists so CI (and a future rustup setup) are
+# reproducible. Bump `channel` deliberately, not incidentally.
+[toolchain]
+channel = "1.88.0"
+components = ["clippy", "rustfmt"]

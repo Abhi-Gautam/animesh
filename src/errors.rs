@@ -64,10 +64,8 @@ pub fn user_error<E: Into<AnyError>>(e: E) -> AnyError {
     AnyError::new(UserError(e.into()))
 }
 
-/// Build a network error. Test-only today — production code wraps
-/// network failures via `reqwest::Error`, which `classify` detects
-/// directly. The helper exists so tests can synthesize a sentinel
-/// without depending on a real HTTP failure.
+/// Build a network error. Source adapters should wrap intentional transient
+/// network failures with this sentinel before errors cross module boundaries.
 #[cfg(test)]
 pub fn network_error<E: Into<AnyError>>(e: E) -> AnyError {
     AnyError::new(NetworkError(e.into()))
@@ -81,9 +79,6 @@ pub fn classify(err: &AnyError) -> ExitKind {
             return ExitKind::User;
         }
         if cause.is::<NetworkError>() {
-            return ExitKind::Network;
-        }
-        if cause.is::<reqwest::Error>() {
             return ExitKind::Network;
         }
     }

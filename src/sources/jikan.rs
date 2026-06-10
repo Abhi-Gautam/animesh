@@ -1,13 +1,104 @@
 //! Jikan parser for MyAnimeList anime enrichment observations.
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
+use reqwest::{Client, Url};
 use serde::Deserialize;
 
 use crate::ids::ReleaseKind;
 use crate::ingest::{
-    AliasObservation, ExternalIdObservation, ImageObservation, LinkObservation, RawSourcePayload,
-    ReleaseEventObservation, SourceObservation, SourceParser, TimePrecision,
+    AliasObservation, ExternalIdObservation, HttpMethod, ImageObservation, LinkObservation,
+    RawSourcePayload, ReleaseEventObservation, SourceObservation, SourceParser, TimePrecision,
 };
+use crate::search::SearchScope;
+use crate::sources::{stable_hash, SourceAdapter, SourceFuture};
+
+const DEFAULT_BASE_URL: &str = "https://api.jikan.moe/v4";
+const ANIME_SEARCH_SCOPES: &[SearchScope] = &[SearchScope::Anime];
+const NO_ENRICHMENT_SCOPES: &[SearchScope] = &[];
+
+pub struct JikanSource {
+    client: Client,
+    parser: JikanParser,
+    base_url: String,
+}
+
+impl JikanSource {
+    pub fn new() -> Self {
+        Self::with_base_url(DEFAULT_BASE_URL)
+    }
+
+    #[allow(dead_code)]
+    pub fn with_base_url(base_url: impl Into<String>) -> Self {
+        Self {
+            client: Client::new(),
+            parser: JikanParser,
+            base_url: base_url.into(),
+        }
+    }
+}
+
+impl Default for JikanSource {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SourceAdapter for JikanSource {
+    fn source(&self) -> &'static str {
+        "jikan"
+    }
+
+    fn parser(&self) -> &dyn SourceParser {
+        &self.parser
+    }
+
+    fn search_scopes(&self) -> &'static [SearchScope] {
+        ANIME_SEARCH_SCOPES
+    }
+
+    fn enrichment_scopes(&self) -> &'static [SearchScope] {
+        NO_ENRICHMENT_SCOPES
+    }
+
+    fn search<'a>(
+        &'a self,
+        query: &'a str,
+        limit: u32,
+        now: i64,
+    ) -> SourceFuture<'a, Vec<RawSourcePayload>> {
+        Box::pin(async move {
+            let url = url_with_params(
+                &self.base_url,
+                "anime",
+                &[("q", query.to_string()), ("limit", limit.to_string())],
+            )?;
+            let response_json = get_json(&self.client, url.as_str()).await?;
+            Ok(vec![raw_payload(
+                "anime_search",
+                &format!("jikan:anime_search:{query}:limit:{limit}"),
+                response_json,
+                now,
+            )])
+        })
+    }
+
+    fn ingest<'a>(
+        &'a self,
+        source_id: &'a str,
+        now: i64,
+    ) -> SourceFuture<'a, Option<RawSourcePayload>> {
+        Box::pin(async move {
+            let url = url_with_path(&self.base_url, &format!("anime/{source_id}/full"))?;
+            let response_json = get_json(&self.client, url.as_str()).await?;
+            Ok(Some(raw_payload(
+                "anime_full",
+                &format!("jikan:anime_full:{source_id}"),
+                response_json,
+                now,
+            )))
+        })
+    }
+}
 
 pub struct JikanParser;
 
@@ -126,6 +217,60 @@ struct NamedResource {
 struct ExternalLink {
     name: String,
     url: String,
+}
+
+async fn get_json(client: &Client, url: &str) -> Result<String> {
+    let resp = client
+        .get(url)
+        .send()
+        .await
+        .with_context(|| format!("GET {url}"))?;
+    let status = resp.status();
+    let body = resp.text().await.context("read Jikan response body")?;
+    if !status.is_success() {
+        return Err(anyhow!("Jikan HTTP {status}: {body}"));
+    }
+    Ok(body)
+}
+
+fn raw_payload(
+    endpoint: &str,
+    request_key: &str,
+    response_json: String,
+    now: i64,
+) -> RawSourcePayload {
+    let request_hash = stable_hash(request_key);
+    let response_hash = stable_hash(&response_json);
+    RawSourcePayload {
+        id: format!("raw:jikan:{endpoint}:{request_hash}:{response_hash}"),
+        source: "jikan".into(),
+        endpoint: endpoint.into(),
+        method: HttpMethod::Get,
+        request_key: request_key.into(),
+        request_hash,
+        request_json: None,
+        http_status: 200,
+        response_hash,
+        response_json,
+        fetched_at: now,
+        expires_at: None,
+        created_at: now,
+    }
+}
+
+fn url_with_path(base_url: &str, path: &str) -> Result<Url> {
+    let base = format!("{}/", base_url.trim_end_matches('/'));
+    Url::parse(&base)
+        .context("parse Jikan base URL")?
+        .join(path)
+        .with_context(|| format!("join Jikan path {path:?}"))
+}
+
+fn url_with_params(base_url: &str, path: &str, params: &[(&str, String)]) -> Result<Url> {
+    let mut url = url_with_path(base_url, path)?;
+    url.query_pairs_mut()
+        .extend_pairs(params.iter().map(|(k, v)| (*k, v.as_str())));
+    Ok(url)
 }
 
 fn anime_to_observation(anime: Anime, payload: &RawSourcePayload) -> Result<SourceObservation> {

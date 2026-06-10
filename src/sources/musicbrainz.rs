@@ -1,13 +1,115 @@
 //! MusicBrainz parser for artist identity observations.
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
+use reqwest::{Client, Url};
 use serde::Deserialize;
 
 use crate::ids::ReleaseKind;
 use crate::ingest::{
-    AliasObservation, ExternalIdObservation, LinkObservation, RawSourcePayload, SourceObservation,
-    SourceParser,
+    AliasObservation, ExternalIdObservation, HttpMethod, LinkObservation, RawSourcePayload,
+    SourceObservation, SourceParser,
 };
+use crate::search::SearchScope;
+use crate::sources::{stable_hash, SourceAdapter, SourceFuture};
+
+const DEFAULT_BASE_URL: &str = "https://musicbrainz.org/ws/2";
+const MUSIC_SEARCH_SCOPES: &[SearchScope] = &[SearchScope::Music];
+const MUSIC_ENRICHMENT_SCOPES: &[SearchScope] = &[SearchScope::Music];
+
+pub struct MusicBrainzSource {
+    client: Client,
+    parser: MusicBrainzParser,
+    base_url: String,
+}
+
+impl MusicBrainzSource {
+    pub fn new() -> Self {
+        Self::with_base_url(DEFAULT_BASE_URL)
+    }
+
+    #[allow(dead_code)]
+    pub fn with_base_url(base_url: impl Into<String>) -> Self {
+        Self {
+            client: Client::new(),
+            parser: MusicBrainzParser,
+            base_url: base_url.into(),
+        }
+    }
+}
+
+impl Default for MusicBrainzSource {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SourceAdapter for MusicBrainzSource {
+    fn source(&self) -> &'static str {
+        "musicbrainz"
+    }
+
+    fn parser(&self) -> &dyn SourceParser {
+        &self.parser
+    }
+
+    fn search_scopes(&self) -> &'static [SearchScope] {
+        MUSIC_SEARCH_SCOPES
+    }
+
+    fn enrichment_scopes(&self) -> &'static [SearchScope] {
+        MUSIC_ENRICHMENT_SCOPES
+    }
+
+    fn search<'a>(
+        &'a self,
+        query: &'a str,
+        limit: u32,
+        now: i64,
+    ) -> SourceFuture<'a, Vec<RawSourcePayload>> {
+        Box::pin(async move {
+            let url = url_with_params(
+                &self.base_url,
+                "artist",
+                &[
+                    ("query", query.to_string()),
+                    ("limit", limit.to_string()),
+                    ("fmt", "json".to_string()),
+                ],
+            )?;
+            let response_json = get_json(&self.client, url.as_str()).await?;
+            Ok(vec![raw_payload(
+                "artist_search",
+                &format!("musicbrainz:artist_search:{query}:limit:{limit}"),
+                response_json,
+                now,
+            )])
+        })
+    }
+
+    fn ingest<'a>(
+        &'a self,
+        source_id: &'a str,
+        now: i64,
+    ) -> SourceFuture<'a, Option<RawSourcePayload>> {
+        Box::pin(async move {
+            let url = url_with_params(
+                &self.base_url,
+                &format!("artist/{source_id}"),
+                &[
+                    ("inc", "url-rels+aliases+tags".to_string()),
+                    ("fmt", "json".to_string()),
+                ],
+            )?;
+            let response_json = get_json(&self.client, url.as_str()).await?;
+            Ok(Some(raw_payload(
+                "artist",
+                &format!("musicbrainz:artist:{source_id}"),
+                response_json,
+                now,
+            )))
+        })
+    }
+}
 
 pub struct MusicBrainzParser;
 
@@ -93,6 +195,67 @@ struct RelationUrl {
 struct LifeSpan {
     #[serde(default)]
     ended: Option<bool>,
+}
+
+async fn get_json(client: &Client, url: &str) -> Result<String> {
+    let resp = client
+        .get(url)
+        .header(
+            "User-Agent",
+            "animesh/0.5.0 (local-first personal release radar)",
+        )
+        .send()
+        .await
+        .with_context(|| format!("GET {url}"))?;
+    let status = resp.status();
+    let body = resp
+        .text()
+        .await
+        .context("read MusicBrainz response body")?;
+    if !status.is_success() {
+        return Err(anyhow!("MusicBrainz HTTP {status}: {body}"));
+    }
+    Ok(body)
+}
+
+fn raw_payload(
+    endpoint: &str,
+    request_key: &str,
+    response_json: String,
+    now: i64,
+) -> RawSourcePayload {
+    let request_hash = stable_hash(request_key);
+    let response_hash = stable_hash(&response_json);
+    RawSourcePayload {
+        id: format!("raw:musicbrainz:{endpoint}:{request_hash}:{response_hash}"),
+        source: "musicbrainz".into(),
+        endpoint: endpoint.into(),
+        method: HttpMethod::Get,
+        request_key: request_key.into(),
+        request_hash,
+        request_json: None,
+        http_status: 200,
+        response_hash,
+        response_json,
+        fetched_at: now,
+        expires_at: None,
+        created_at: now,
+    }
+}
+
+fn url_with_path(base_url: &str, path: &str) -> Result<Url> {
+    let base = format!("{}/", base_url.trim_end_matches('/'));
+    Url::parse(&base)
+        .context("parse MusicBrainz base URL")?
+        .join(path)
+        .with_context(|| format!("join MusicBrainz path {path:?}"))
+}
+
+fn url_with_params(base_url: &str, path: &str, params: &[(&str, String)]) -> Result<Url> {
+    let mut url = url_with_path(base_url, path)?;
+    url.query_pairs_mut()
+        .extend_pairs(params.iter().map(|(k, v)| (*k, v.as_str())));
+    Ok(url)
 }
 
 fn artist_to_observation(artist: Artist, payload: &RawSourcePayload) -> Result<SourceObservation> {

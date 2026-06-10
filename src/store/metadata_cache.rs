@@ -6,8 +6,6 @@
 //! `expires_at`; the policy lives in [`TtlConfig`] so it stays out of
 //! SQL.
 
-use std::env;
-
 use anyhow::{Context, Result};
 use rusqlite::params;
 #[cfg(test)]
@@ -60,16 +58,6 @@ impl TtlConfig {
         unknown: 24 * HOUR,
     };
 
-    pub fn from_env() -> Self {
-        let d = Self::DEFAULT;
-        Self {
-            releasing: env_i64("ANIMESH_TTL_RELEASING").unwrap_or(d.releasing),
-            not_yet_released: env_i64("ANIMESH_TTL_NOT_YET_RELEASED").unwrap_or(d.not_yet_released),
-            finished: env_i64("ANIMESH_TTL_FINISHED").unwrap_or(d.finished),
-            unknown: env_i64("ANIMESH_TTL_UNKNOWN").unwrap_or(d.unknown),
-        }
-    }
-
     pub fn ttl_for(&self, status: CacheStatus) -> i64 {
         match status {
             CacheStatus::Releasing => self.releasing,
@@ -83,10 +71,6 @@ impl TtlConfig {
     pub fn expires_at(&self, status: CacheStatus, fetched_at: i64) -> i64 {
         fetched_at + self.ttl_for(status)
     }
-}
-
-fn env_i64(key: &str) -> Option<i64> {
-    env::var(key).ok().and_then(|v| v.parse().ok())
 }
 
 /// One row of metadata_cache. Mirrors V0001 + V0002 columns.
@@ -113,44 +97,6 @@ pub struct CacheEntry {
 }
 
 impl CacheEntry {
-    /// Build a CacheEntry from an AniList `Media`. Centralizes the
-    /// mapping so call sites (follow/sync/schedule) don't duplicate
-    /// it. Computes expires_at from the supplied TTL config.
-    pub fn from_media(
-        media: &crate::sources::anilist::Media,
-        ttl: &TtlConfig,
-        fetched_at: i64,
-    ) -> Self {
-        let status_enum = CacheStatus::parse(media.status.as_deref());
-        let streaming_json = {
-            let streaming = media.streaming_links();
-            if streaming.is_empty() {
-                None
-            } else {
-                serde_json::to_string(&streaming).ok()
-            }
-        };
-        Self {
-            source: "anilist".into(),
-            source_id: media.id.to_string(),
-            display_title: Some(media.display_title().to_string()),
-            title_english: media.title.english.clone(),
-            title_native: media.title.native.clone(),
-            status: media.status.clone(),
-            total_episodes: media.episodes,
-            format: media.format.clone(),
-            next_episode_number: media.next_airing_episode.map(|n| n.episode),
-            next_episode_airs_at: media.next_airing_episode.map(|n| n.airing_at),
-            fetched_at,
-            expires_at: ttl.expires_at(status_enum, fetched_at),
-            cover_image_url: media.cover_url().map(|s| s.to_string()),
-            description: media.description.clone(),
-            score: media.average_score.map(|s| s as f64),
-            studios: media.studios_joined(),
-            streaming_links_json: streaming_json,
-        }
-    }
-
     /// Picks the best alternate title — English first, then native. The
     /// canonical's own `display_title` is what users see by default;
     /// this is the "second language" pass for hero subheaders and the

@@ -31,32 +31,22 @@
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 
 use crate::ids::{CanonicalId, ReleaseKind};
 use crate::ingest::{RawSourcePayload, SourceObservation};
 use crate::search::source_candidate::SourceCandidateResult;
+pub use crate::store::ResolvedRelease;
 use crate::store::{
     CacheEntry, CanonicalFollowOutcome, CanonicalRelease, CanonicalScheduleEvent, Db, Engagement,
-    EngagementEvent, EngagementMeta, EngagementSource, SourceParseError, SourceRef,
-    SourceRefRefreshState, SourceSearchCacheEntry,
+    EngagementEvent, EngagementMeta, SourceParseError, SourceRef, SourceRefRefreshState,
+    SourceSearchCacheEntry,
 };
 use crate::time::Clock;
 
-/// One fully-resolved canonical the TUI can render directly. Produced
-/// by [`Library::load_resolved`] in a single query — no per-row joins
-/// from the caller.
-#[derive(Debug, Clone)]
-pub struct ResolvedRelease {
-    pub canonical: CanonicalRelease,
-    /// Highest-confidence attached source_ref. Invariant: a followed
-    /// canonical has at least one attached ref (enforced at follow
-    /// time), so this is never absent for the rows `load_resolved`
-    /// returns.
-    pub primary_source: SourceRef,
-    pub cache: Option<CacheEntry>,
-    pub last_completed: Option<Engagement>,
-    pub last_verified: Option<Engagement>,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SourceIngestSuccess {
+    pub projected_events: usize,
 }
 
 /// The domain facade. Hold one of these per process; share via
@@ -128,6 +118,21 @@ impl Library {
         db.drop_canonical(canonical_id, self.now())
     }
 
+    pub fn canonical_id_for_source_candidate(candidate: &SourceCandidateResult) -> CanonicalId {
+        CanonicalId::legacy_from_source(candidate.kind, &candidate.source, &candidate.source_id)
+    }
+
+    pub fn canonical_id_for_source_ref(
+        &self,
+        source: &str,
+        source_id: &str,
+    ) -> Result<Option<CanonicalId>> {
+        let db = self.lock_db()?;
+        Ok(db
+            .find_source_ref(source, source_id)?
+            .map(|source_ref| source_ref.canonical_id))
+    }
+
     /// Follow an indexed source candidate. This is intentionally source-agnostic:
     /// callers provide the selected candidate, and Library owns the canonical
     /// row + source_ref + followed_at mutation.
@@ -135,11 +140,7 @@ impl Library {
         &self,
         candidate: &SourceCandidateResult,
     ) -> Result<CanonicalFollowOutcome> {
-        let canonical_id = CanonicalId::legacy_from_source(
-            candidate.kind,
-            &candidate.source,
-            &candidate.source_id,
-        );
+        let canonical_id = Self::canonical_id_for_source_candidate(candidate);
         self.follow_with_source(
             &canonical_id,
             candidate.kind,
@@ -167,7 +168,7 @@ impl Library {
     /// used to do.
     pub fn load_resolved(&self) -> Result<Vec<ResolvedRelease>> {
         let db = self.lock_db()?;
-        load_resolved_rows(&db)
+        db.load_resolved()
     }
 
     #[cfg(test)]
@@ -227,14 +228,6 @@ impl Library {
         db.source_refs_for_canonical(canonical_id)
     }
 
-    /// Test-only — production reads source the cache through
-    /// [`Library::load_resolved`].
-    #[cfg(test)]
-    pub fn get_cache(&self, source: &str, source_id: &str) -> Result<Option<CacheEntry>> {
-        let db = self.lock_db()?;
-        db.get_cache(source, source_id)
-    }
-
     pub fn upsert_cache(&self, entry: &CacheEntry) -> Result<()> {
         let db = self.lock_db()?;
         db.upsert_cache(entry)
@@ -254,6 +247,75 @@ impl Library {
         db.upsert_source_observation(observation)
     }
 
+    pub fn record_source_ingest_success(
+        &self,
+        canonical_id: &CanonicalId,
+        raw_payload: &RawSourcePayload,
+        observation: &SourceObservation,
+        next_due_at: i64,
+    ) -> Result<SourceIngestSuccess> {
+        if raw_payload.source != observation.source {
+            return Err(anyhow!(
+                "raw payload source {:?} does not match observation source {:?}",
+                raw_payload.source,
+                observation.source
+            ));
+        }
+        if raw_payload.id != observation.raw_payload_id {
+            return Err(anyhow!(
+                "raw payload id {:?} does not match observation raw_payload_id {:?}",
+                raw_payload.id,
+                observation.raw_payload_id
+            ));
+        }
+
+        let now = self.now();
+        let projected_events = observation.release_events.len();
+        let mut db = self.lock_db()?;
+        db.upsert_raw_source_payload(raw_payload)?;
+        db.upsert_source_observation(observation)?;
+        db.upsert_canonical_schedule_events(
+            canonical_id,
+            &observation.source,
+            &observation.release_events,
+        )?;
+        db.upsert_source_ref_refresh_state(&SourceRefRefreshState {
+            source: observation.source.clone(),
+            source_id: observation.source_id.clone(),
+            last_attempt_at: Some(now),
+            last_success_at: Some(now),
+            last_error: None,
+            next_due_at: Some(next_due_at),
+            failure_count: 0,
+        })?;
+        Ok(SourceIngestSuccess { projected_events })
+    }
+
+    pub fn record_source_ingest_failure(
+        &self,
+        source: &str,
+        source_id: &str,
+        error: &str,
+        next_due_at: i64,
+    ) -> Result<()> {
+        let now = self.now();
+        let db = self.lock_db()?;
+        let existing = db.get_source_ref_refresh_state(source, source_id)?;
+        let failure_count = existing
+            .as_ref()
+            .map(|state| state.failure_count + 1)
+            .unwrap_or(1);
+        db.upsert_source_ref_refresh_state(&SourceRefRefreshState {
+            source: source.to_string(),
+            source_id: source_id.to_string(),
+            last_attempt_at: Some(now),
+            last_success_at: existing.as_ref().and_then(|state| state.last_success_at),
+            last_error: Some(error.to_string()),
+            next_due_at: Some(next_due_at),
+            failure_count,
+        })
+    }
+
     #[allow(dead_code)]
     pub fn record_source_parse_error(&self, err: &SourceParseError) -> Result<()> {
         let db = self.lock_db()?;
@@ -269,13 +331,11 @@ impl Library {
         db.search_source_candidates(query, limit)
     }
 
-    #[allow(dead_code)]
     pub fn upsert_source_search_cache(&self, entry: &SourceSearchCacheEntry) -> Result<()> {
         let db = self.lock_db()?;
         db.upsert_source_search_cache(entry)
     }
 
-    #[allow(dead_code)]
     pub fn get_source_search_cache(
         &self,
         source: &str,
@@ -291,7 +351,15 @@ impl Library {
         db.upsert_source_ref_refresh_state(state)
     }
 
-    #[allow(dead_code)]
+    pub fn get_source_ref_refresh_state(
+        &self,
+        source: &str,
+        source_id: &str,
+    ) -> Result<Option<SourceRefRefreshState>> {
+        let db = self.lock_db()?;
+        db.get_source_ref_refresh_state(source, source_id)
+    }
+
     pub fn due_source_ref_refresh_states(&self, limit: u32) -> Result<Vec<SourceRefRefreshState>> {
         let db = self.lock_db()?;
         db.due_source_ref_refresh_states(self.now(), limit)
@@ -365,163 +433,6 @@ impl Library {
             .lock()
             .map_err(|_| anyhow::anyhow!("Library DB mutex poisoned"))
     }
-}
-
-/// One prepared-and-cached statement runs every per-frame resolved
-/// load. The window-function picks the highest-confidence source_ref
-/// per canonical and the newest `Completed`/`Verified` event per
-/// canonical — all in a single round trip.
-const LOAD_RESOLVED_SQL: &str = "\
-WITH primary_sr AS (\
-    SELECT canonical_id, source, source_id, raw_title, confidence \
-    FROM (\
-        SELECT canonical_id, source, source_id, raw_title, confidence, \
-               ROW_NUMBER() OVER ( \
-                   PARTITION BY canonical_id \
-                   ORDER BY confidence DESC, source ASC \
-               ) AS rn \
-        FROM source_ref\
-    ) WHERE rn = 1\
-), \
-last_engagement_by_event AS (\
-    SELECT canonical_id, event, id, occurred_at, meta \
-    FROM (\
-        SELECT canonical_id, event, id, occurred_at, meta, \
-               ROW_NUMBER() OVER ( \
-                   PARTITION BY canonical_id, event \
-                   ORDER BY occurred_at DESC, id DESC \
-               ) AS rn \
-        FROM engagement \
-        WHERE event IN ('completed', 'verified')\
-    ) WHERE rn = 1\
-) \
-SELECT \
-    cr.id, cr.kind, cr.display_title, cr.cover_ascii, cr.cover_color, \
-    cr.followed_at, cr.dropped_at, cr.user_note, cr.created_at, \
-    psr.source, psr.source_id, psr.raw_title, psr.confidence, \
-    mc.display_title, mc.title_english, mc.title_native, mc.status, \
-    mc.total_episodes, mc.format, mc.next_episode_number, mc.next_episode_airs_at, \
-    mc.fetched_at, mc.expires_at, mc.cover_image_url, mc.description, \
-    mc.score, mc.studios, mc.streaming_links_json, \
-    lc.id, lc.occurred_at, lc.meta, \
-    lv.id, lv.occurred_at, lv.meta \
-FROM canonical_release cr \
-JOIN primary_sr psr ON psr.canonical_id = cr.id \
-LEFT JOIN metadata_cache mc \
-    ON mc.source = psr.source AND mc.source_id = psr.source_id \
-LEFT JOIN last_engagement_by_event lc \
-    ON lc.canonical_id = cr.id AND lc.event = 'completed' \
-LEFT JOIN last_engagement_by_event lv \
-    ON lv.canonical_id = cr.id AND lv.event = 'verified' \
-WHERE cr.followed_at IS NOT NULL AND cr.dropped_at IS NULL \
-ORDER BY cr.followed_at DESC";
-
-fn load_resolved_rows(db: &Db) -> Result<Vec<ResolvedRelease>> {
-    let conn = db.conn();
-    let mut stmt = conn
-        .prepare_cached(LOAD_RESOLVED_SQL)
-        .context("prepare load_resolved")?;
-    let rows = stmt
-        .query_map([], map_resolved_row)
-        .context("query load_resolved")?;
-    rows.collect::<rusqlite::Result<Vec<_>>>()
-        .context("collect load_resolved rows")
-}
-
-fn map_resolved_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ResolvedRelease> {
-    // canonical_release block (cols 0..9).
-    let cr_id: CanonicalId = row.get(0)?;
-    let kind_str: String = row.get(1)?;
-    let kind = kind_str.parse::<ReleaseKind>().map_err(|e| {
-        rusqlite::Error::FromSqlConversionFailure(
-            1,
-            rusqlite::types::Type::Text,
-            Box::new(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                e.to_string(),
-            )),
-        )
-    })?;
-    let canonical = CanonicalRelease {
-        id: cr_id.clone(),
-        kind,
-        display_title: row.get(2)?,
-        cover_ascii: row.get(3)?,
-        cover_color: row.get(4)?,
-        followed_at: row.get(5)?,
-        dropped_at: row.get(6)?,
-        user_note: row.get(7)?,
-        created_at: row.get(8)?,
-    };
-
-    // primary source_ref (cols 9..13).
-    let primary_source = SourceRef {
-        canonical_id: cr_id.clone(),
-        source: row.get(9)?,
-        source_id: row.get(10)?,
-        raw_title: row.get(11)?,
-        confidence: row.get(12)?,
-    };
-
-    // metadata_cache (cols 13..28). `fetched_at` is NOT NULL when the
-    // LEFT JOIN matched; we use it as the "row exists" signal.
-    let mc_fetched_at: Option<i64> = row.get(21)?;
-    let cache = if let Some(fetched_at) = mc_fetched_at {
-        Some(CacheEntry {
-            source: primary_source.source.clone(),
-            source_id: primary_source.source_id.clone(),
-            display_title: row.get(13)?,
-            title_english: row.get(14)?,
-            title_native: row.get(15)?,
-            status: row.get(16)?,
-            total_episodes: row.get(17)?,
-            format: row.get(18)?,
-            next_episode_number: row.get(19)?,
-            next_episode_airs_at: row.get(20)?,
-            fetched_at,
-            expires_at: row.get(22)?,
-            cover_image_url: row.get(23)?,
-            description: row.get(24)?,
-            score: row.get(25)?,
-            studios: row.get(26)?,
-            streaming_links_json: row.get(27)?,
-        })
-    } else {
-        None
-    };
-
-    // last_completed engagement (cols 28..31).
-    let last_completed = engagement_from_join(row, 28, EngagementEvent::Completed, &cr_id)?;
-
-    // last_verified engagement (cols 31..34).
-    let last_verified = engagement_from_join(row, 31, EngagementEvent::Verified, &cr_id)?;
-
-    Ok(ResolvedRelease {
-        canonical,
-        primary_source,
-        cache,
-        last_completed,
-        last_verified,
-    })
-}
-
-fn engagement_from_join(
-    row: &rusqlite::Row<'_>,
-    base: usize,
-    event: EngagementEvent,
-    canonical_id: &CanonicalId,
-) -> rusqlite::Result<Option<Engagement>> {
-    let id: Option<i64> = row.get(base)?;
-    let Some(id) = id else { return Ok(None) };
-    let occurred_at: i64 = row.get(base + 1)?;
-    let raw_meta: Option<String> = row.get(base + 2)?;
-    Ok(Some(Engagement {
-        source: EngagementSource::Persisted(id),
-        canonical_id: canonical_id.clone(),
-        event,
-        occurred_at,
-        meta: EngagementMeta::decode(event, raw_meta.as_deref()),
-    }))
 }
 
 #[cfg(test)]
@@ -972,7 +883,8 @@ mod tests {
     // load_resolved — the single-query read path
     // ------------------------------------------------------------------
 
-    use crate::store::{CacheEntry, EngagementMeta, TtlConfig};
+    use crate::store::metadata_cache::TtlConfig;
+    use crate::store::{CacheEntry, EngagementMeta};
 
     fn cache_for(source_id: &str, status: &str, fetched_at: i64) -> CacheEntry {
         let ttl = TtlConfig::DEFAULT;

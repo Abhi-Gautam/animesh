@@ -7,11 +7,14 @@
 
 use anyhow::{anyhow, Context, Result};
 
+use crate::ingest::budget::{RequestBudget, SEARCH_CACHE_TTL_SECS};
 use crate::ingest::RawSourcePayload;
 use crate::library::Library;
+use crate::search::query::normalize_query_key;
 use crate::search::source_candidate::SourceCandidateResult;
+use crate::search::SearchScope;
 use crate::sources::SourceRegistry;
-use crate::store::SourceParseError;
+use crate::store::{SourceParseError, SourceSearchCacheEntry};
 
 pub struct IngestSearchService<'a> {
     library: &'a Library,
@@ -32,15 +35,59 @@ impl<'a> IngestSearchService<'a> {
         limit: u32,
         now: i64,
     ) -> Result<Vec<SourceCandidateResult>> {
+        self.refresh_candidates_in_scope(
+            query,
+            SearchScope::Anime,
+            limit,
+            RequestBudget::default().max_enter_search_requests,
+            now,
+        )
+        .await
+    }
+
+    pub async fn refresh_candidates_in_scope(
+        &self,
+        query: &str,
+        scope: SearchScope,
+        limit: u32,
+        max_requests: usize,
+        now: i64,
+    ) -> Result<Vec<SourceCandidateResult>> {
         let mut failures = Vec::new();
-        for source in self.sources.adapters() {
+        let query_key = normalize_query_key(query);
+        let mut requests = 0usize;
+        for source in self.sources.search_adapters(scope) {
+            let cache = self
+                .library
+                .get_source_search_cache(source.source(), &query_key)
+                .with_context(|| format!("get {} search cache", source.source()))?;
+            if matches!(cache.and_then(|entry| entry.next_due_at), Some(next_due_at) if next_due_at > now)
+            {
+                continue;
+            }
+            if requests >= max_requests {
+                break;
+            }
+            requests += 1;
+
             match source.search(query, limit, now).await {
                 Ok(payloads) => {
+                    let mut ingest_failed = false;
                     for payload in payloads {
                         if let Err(err) = self.ingest_search_payload(&payload, source.parser(), now)
                         {
+                            ingest_failed = true;
                             failures.push(format!("{} ingest: {err:#}", source.source()));
                         }
+                    }
+                    if !ingest_failed {
+                        self.library
+                            .upsert_source_search_cache(&SourceSearchCacheEntry {
+                                source: source.source().to_string(),
+                                query_key: query_key.clone(),
+                                last_success_at: Some(now),
+                                next_due_at: Some(now + SEARCH_CACHE_TTL_SECS),
+                            })?;
                     }
                 }
                 Err(err) => failures.push(format!("{} search: {err:#}", source.source())),
@@ -138,5 +185,45 @@ mod tests {
         assert_eq!(hits[0].source, "anilist");
         assert_eq!(hits[0].source_id, "21");
         assert_eq!(hits[0].display_title, "One Piece");
+    }
+
+    #[tokio::test]
+    async fn refresh_candidates_skips_recently_cached_source_query() {
+        let mut server = mockito::Server::new_async().await;
+        let body = r#"{
+            "data": {"Page": {"media": [{
+                "id": 21,
+                "title": {"romaji": "ONE PIECE", "english": "One Piece", "native": "ワンピース"},
+                "status": "RELEASING",
+                "episodes": null,
+                "format": "TV",
+                "nextAiringEpisode": null
+            }]}}
+        }"#;
+        let _m = server
+            .mock("POST", "/")
+            .with_status(200)
+            .with_body(body)
+            .expect(1)
+            .create_async()
+            .await;
+        let library = Library::open_in_memory(Arc::new(FixedClock(1_000))).unwrap();
+        let registry = SourceRegistry::new(vec![Box::new(AniListSource::with_client(
+            AniListClient::with_base_url(server.url()),
+        ))]);
+        let service = IngestSearchService::new(&library, &registry);
+
+        let first = service
+            .refresh_candidates("one piece", 10, 1_000)
+            .await
+            .unwrap();
+        let second = service
+            .refresh_candidates("  ONE   piece ", 10, 1_010)
+            .await
+            .unwrap();
+
+        assert_eq!(first.len(), 1);
+        assert_eq!(second.len(), 1);
+        assert_eq!(second[0].source_id, "21");
     }
 }

@@ -41,7 +41,6 @@ impl Db {
         Ok(())
     }
 
-    #[allow(dead_code)]
     pub fn get_source_ref_refresh_state(
         &self,
         source: &str,

@@ -16,8 +16,8 @@ use anyhow::Result;
 use chrono::Utc;
 use tokio::runtime::Handle;
 
-use crate::commands::follow::follow_candidate_inner;
 use crate::commands::sync::sync_inner_default;
+use crate::ingest::follow::FollowIngestService;
 use crate::ingest::service::IngestSearchService;
 use crate::library::Library as Facade;
 use crate::sources::SourceRegistry;
@@ -647,10 +647,21 @@ impl App {
         };
         let now = Utc::now().timestamp();
         self.close_overlay();
-        match follow_candidate_inner(&self.facade, &candidate) {
+        let result = match Handle::try_current() {
+            Ok(handle) => tokio::task::block_in_place(|| {
+                let service = FollowIngestService::new(&self.facade, &self.sources);
+                handle.block_on(service.follow_and_ingest(&candidate, now))
+            }),
+            Err(_) => {
+                let rt = tokio::runtime::Runtime::new().expect("create follow ingest runtime");
+                let service = FollowIngestService::new(&self.facade, &self.sources);
+                rt.block_on(service.follow_and_ingest(&candidate, now))
+            }
+        };
+        match result {
             Ok(report) => {
-                let title = report.display_title;
-                let msg = match report.outcome {
+                let title = report.candidate.display_title;
+                let mut msg = match report.outcome {
                     CanonicalFollowOutcome::NewlyFollowed => format!("✓ Followed {title}"),
                     CanonicalFollowOutcome::RestoredFromDrop => format!("↻ Restored {title}"),
                     CanonicalFollowOutcome::AlreadyFollowing => {
@@ -660,6 +671,15 @@ impl App {
                         format!("follow failed: canonical missing for {title}")
                     }
                 };
+                if report.detail_ingested {
+                    if report.projected_events > 0 {
+                        msg.push_str(&format!(" · ingested {} events", report.projected_events));
+                    } else {
+                        msg.push_str(" · no schedule events found");
+                    }
+                } else if let Some(warning) = report.warning {
+                    msg.push_str(&format!(" · detail ingest failed, will retry ({warning})"));
+                }
                 self.toasts.push(msg);
                 self.reload_shelf(now);
             }

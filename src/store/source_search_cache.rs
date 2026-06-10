@@ -57,15 +57,6 @@ impl Db {
     }
 }
 
-#[allow(dead_code)]
-pub fn normalize_query_key(query: &str) -> String {
-    query
-        .split_whitespace()
-        .map(str::to_lowercase)
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -83,14 +74,6 @@ mod tests {
         assert_eq!(
             db.get_source_search_cache("anilist", "frieren").unwrap(),
             Some(entry)
-        );
-    }
-
-    #[test]
-    fn query_key_normalizes_case_and_space() {
-        assert_eq!(
-            normalize_query_key("  Frieren   Beyond  "),
-            "frieren beyond"
         );
     }
 }
