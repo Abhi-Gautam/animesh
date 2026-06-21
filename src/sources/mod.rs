@@ -12,7 +12,6 @@ use std::pin::Pin;
 use anyhow::Result;
 
 use crate::ingest::{RawSourcePayload, SourceParser};
-use crate::search::SearchScope;
 
 pub(crate) mod anilist;
 pub(crate) mod itunes;
@@ -30,11 +29,6 @@ pub(crate) trait SourceAdapter: Send + Sync {
     fn source(&self) -> &'static str;
 
     fn parser(&self) -> &dyn SourceParser;
-
-    fn search_scopes(&self) -> &'static [SearchScope];
-
-    #[allow(dead_code)]
-    fn enrichment_scopes(&self) -> &'static [SearchScope];
 
     fn search<'a>(
         &'a self,
@@ -90,15 +84,10 @@ impl SourceRegistry {
             .find(|adapter| adapter.source() == source)
     }
 
-    pub(crate) fn search_adapters(&self, scope: SearchScope) -> Vec<&dyn SourceAdapter> {
+    pub(crate) fn search_adapters(&self) -> Vec<&dyn SourceAdapter> {
         self.adapters
             .iter()
             .map(|adapter| adapter.as_ref())
-            .filter(|adapter| {
-                scope == SearchScope::All
-                    || adapter.search_scopes().contains(&SearchScope::All)
-                    || adapter.search_scopes().contains(&scope)
-            })
             .collect()
     }
 }
@@ -119,14 +108,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn production_anime_search_has_four_primary_sources() {
+    fn production_discovery_searches_all_enabled_adapters() {
         let registry = SourceRegistry::production();
         let sources: Vec<&str> = registry
-            .search_adapters(SearchScope::Anime)
+            .search_adapters()
             .into_iter()
             .map(|adapter| adapter.source())
             .collect();
-        assert_eq!(sources, vec!["anilist", "jikan", "kitsu", "tvmaze"]);
+        assert_eq!(
+            sources,
+            vec![
+                "anilist",
+                "jikan",
+                "kitsu",
+                "tvmaze",
+                "musicbrainz",
+                "itunes"
+            ]
+        );
     }
 
     #[test]
@@ -143,31 +142,8 @@ mod tests {
     }
 
     #[test]
-    fn all_scope_returns_all_searchable_adapters() {
+    fn production_discovery_budget_matches_enabled_searchable_adapters() {
         let registry = SourceRegistry::production();
-        assert_eq!(registry.search_adapters(SearchScope::All).len(), 6);
-    }
-
-    #[test]
-    fn secondary_sources_are_not_in_anime_search() {
-        let registry = SourceRegistry::production();
-        let sources: Vec<&str> = registry
-            .search_adapters(SearchScope::Anime)
-            .into_iter()
-            .map(|adapter| adapter.source())
-            .collect();
-        assert!(!sources.contains(&"musicbrainz"));
-        assert!(!sources.contains(&"itunes"));
-    }
-
-    #[test]
-    fn music_scope_includes_music_sources() {
-        let registry = SourceRegistry::production();
-        let sources: Vec<&str> = registry
-            .search_adapters(SearchScope::Music)
-            .into_iter()
-            .map(|adapter| adapter.source())
-            .collect();
-        assert_eq!(sources, vec!["musicbrainz", "itunes"]);
+        assert_eq!(registry.search_adapters().len(), 6);
     }
 }

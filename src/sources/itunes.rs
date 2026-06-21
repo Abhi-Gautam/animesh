@@ -9,12 +9,9 @@ use crate::ingest::{
     AliasObservation, ExternalIdObservation, HttpMethod, ImageObservation, LinkObservation,
     RawSourcePayload, ReleaseEventObservation, SourceObservation, SourceParser, TimePrecision,
 };
-use crate::search::SearchScope;
 use crate::sources::{stable_hash, SourceAdapter, SourceFuture};
 
 const DEFAULT_BASE_URL: &str = "https://itunes.apple.com";
-const SEARCH_SCOPES: &[SearchScope] = &[SearchScope::Music, SearchScope::Film];
-const ENRICHMENT_SCOPES: &[SearchScope] = &[SearchScope::Music, SearchScope::Film];
 
 pub(crate) struct ItunesSource {
     client: Client,
@@ -50,14 +47,6 @@ impl SourceAdapter for ItunesSource {
 
     fn parser(&self) -> &dyn SourceParser {
         &self.parser
-    }
-
-    fn search_scopes(&self) -> &'static [SearchScope] {
-        SEARCH_SCOPES
-    }
-
-    fn enrichment_scopes(&self) -> &'static [SearchScope] {
-        ENRICHMENT_SCOPES
     }
 
     fn search<'a>(

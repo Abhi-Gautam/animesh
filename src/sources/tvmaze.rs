@@ -13,12 +13,9 @@ use crate::ingest::{
     AliasObservation, ExternalIdObservation, HttpMethod, ImageObservation, LinkObservation,
     RawSourcePayload, ReleaseEventObservation, SourceObservation, SourceParser, TimePrecision,
 };
-use crate::search::SearchScope;
 use crate::sources::{stable_hash, SourceAdapter, SourceFuture};
 
 const DEFAULT_BASE_URL: &str = "https://api.tvmaze.com";
-const ANIME_SEARCH_SCOPES: &[SearchScope] = &[SearchScope::Anime, SearchScope::Tv];
-const NO_ENRICHMENT_SCOPES: &[SearchScope] = &[];
 
 pub(crate) struct TvMazeSource {
     client: Client,
@@ -54,14 +51,6 @@ impl SourceAdapter for TvMazeSource {
 
     fn parser(&self) -> &dyn SourceParser {
         &self.parser
-    }
-
-    fn search_scopes(&self) -> &'static [SearchScope] {
-        ANIME_SEARCH_SCOPES
-    }
-
-    fn enrichment_scopes(&self) -> &'static [SearchScope] {
-        NO_ENRICHMENT_SCOPES
     }
 
     fn search<'a>(

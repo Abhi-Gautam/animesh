@@ -151,29 +151,6 @@ impl FromStr for CanonicalId {
     }
 }
 
-// Carry CanonicalId across the rusqlite boundary as a plain TEXT
-// column. The Db layer is the only call site; everything else uses the
-// typed form.
-impl rusqlite::ToSql for CanonicalId {
-    fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
-        Ok(rusqlite::types::ToSqlOutput::Borrowed(
-            rusqlite::types::ValueRef::Text(self.0.as_bytes()),
-        ))
-    }
-}
-
-impl rusqlite::types::FromSql for CanonicalId {
-    fn column_result(value: rusqlite::types::ValueRef<'_>) -> rusqlite::types::FromSqlResult<Self> {
-        let s = <String as rusqlite::types::FromSql>::column_result(value)?;
-        CanonicalId::parse(&s).map_err(|e| {
-            rusqlite::types::FromSqlError::Other(Box::new(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                e.to_string(),
-            )))
-        })
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -286,32 +263,6 @@ mod tests {
     fn display_round_trips_with_as_str() {
         let id = CanonicalId::new(ReleaseKind::Tv, "x").unwrap();
         assert_eq!(format!("{id}"), id.as_str());
-    }
-
-    #[test]
-    fn rusqlite_round_trip() {
-        let conn = rusqlite::Connection::open_in_memory().unwrap();
-        conn.execute_batch("CREATE TABLE t (id TEXT PRIMARY KEY)")
-            .unwrap();
-        let id = CanonicalId::new(ReleaseKind::Tv, "severance").unwrap();
-        conn.execute("INSERT INTO t VALUES (?1)", rusqlite::params![id])
-            .unwrap();
-        let back: CanonicalId = conn
-            .query_row("SELECT id FROM t", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(back, id);
-    }
-
-    #[test]
-    fn rusqlite_load_rejects_malformed_id_from_db() {
-        let conn = rusqlite::Connection::open_in_memory().unwrap();
-        conn.execute_batch("CREATE TABLE t (id TEXT PRIMARY KEY)")
-            .unwrap();
-        conn.execute("INSERT INTO t VALUES ('not-a-canonical-id')", [])
-            .unwrap();
-        let res: rusqlite::Result<CanonicalId> =
-            conn.query_row("SELECT id FROM t", [], |r| r.get(0));
-        assert!(res.is_err(), "FromSql must reject malformed id");
     }
 
     // ------------------------------------------------------------------

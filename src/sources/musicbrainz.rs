@@ -9,12 +9,9 @@ use crate::ingest::{
     AliasObservation, ExternalIdObservation, HttpMethod, LinkObservation, RawSourcePayload,
     SourceObservation, SourceParser,
 };
-use crate::search::SearchScope;
 use crate::sources::{stable_hash, SourceAdapter, SourceFuture};
 
 const DEFAULT_BASE_URL: &str = "https://musicbrainz.org/ws/2";
-const MUSIC_SEARCH_SCOPES: &[SearchScope] = &[SearchScope::Music];
-const MUSIC_ENRICHMENT_SCOPES: &[SearchScope] = &[SearchScope::Music];
 
 pub(crate) struct MusicBrainzSource {
     client: Client,
@@ -50,14 +47,6 @@ impl SourceAdapter for MusicBrainzSource {
 
     fn parser(&self) -> &dyn SourceParser {
         &self.parser
-    }
-
-    fn search_scopes(&self) -> &'static [SearchScope] {
-        MUSIC_SEARCH_SCOPES
-    }
-
-    fn enrichment_scopes(&self) -> &'static [SearchScope] {
-        MUSIC_ENRICHMENT_SCOPES
     }
 
     fn search<'a>(

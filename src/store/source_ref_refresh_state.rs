@@ -15,7 +15,10 @@ pub(crate) struct SourceRefRefreshState {
 }
 
 impl Db {
-    pub(crate) fn upsert_source_ref_refresh_state(&self, state: &SourceRefRefreshState) -> Result<()> {
+    pub(crate) fn upsert_source_ref_refresh_state(
+        &self,
+        state: &SourceRefRefreshState,
+    ) -> Result<()> {
         self.conn()
             .execute(
                 "INSERT INTO source_ref_refresh_state

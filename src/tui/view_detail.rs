@@ -49,7 +49,7 @@ pub(crate) fn render(f: &mut Frame, app: &App, area: Rect) {
             Constraint::Length(2), // progress
             Constraint::Length(3), // watch-on
             Constraint::Length(5), // refs (header + up to 4 source rows)
-            Constraint::Length(3), // verification provenance
+            Constraint::Length(3), // next schedule / verification provenance
             Constraint::Length(4), // episodes
             Constraint::Min(0),    // synopsis
         ])
@@ -59,7 +59,7 @@ pub(crate) fn render(f: &mut Frame, app: &App, area: Rect) {
     render_progress(f, theme, s, chunks[1]);
     render_watch_on(f, theme, s, chunks[2]);
     render_refs(f, theme, app, s, chunks[3]);
-    render_verification(f, theme, s, app.now, chunks[4]);
+    render_next(f, theme, s, app.now, chunks[4]);
     render_episodes(f, theme, s, chunks[5]);
     render_synopsis(f, theme, s, chunks[6]);
 }
@@ -260,19 +260,35 @@ fn render_refs(f: &mut Frame, theme: &Theme, app: &App, s: &crate::tui::model::S
     f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
 }
 
-/// VERIFICATION — when we last saw the source confirm playability on
-/// a streamer. Glyph + color shift with subscribed_match: ▶/playable
-/// means hit `g` and it works; ·/dim means the link exists but on a
-/// service the user doesn't subscribe to.
-fn render_verification(
-    f: &mut Frame,
-    theme: &Theme,
-    s: &crate::tui::model::Show,
-    now: i64,
-    area: Rect,
-) {
-    let mut lines: Vec<Line> = vec![section_label(theme, "VERIFICATION")];
-    if let (Some(streamer), Some(at)) = (s.verified_streamer(), s.verified_at()) {
+/// NEXT — the projected canonical schedule event. If the source has not
+/// produced schedule events yet, fall back to verification provenance so
+/// the pane still explains why an item may be playable.
+fn render_next(f: &mut Frame, theme: &Theme, s: &crate::tui::model::Show, now: i64, area: Rect) {
+    let mut lines: Vec<Line> = vec![section_label(theme, "NEXT")];
+    if let Some(ev) = &s.next_schedule_event {
+        let label = ev
+            .title
+            .clone()
+            .or_else(|| ev.episode.map(|ep| format!("Episode {ep}")))
+            .unwrap_or_else(|| ev.event_kind.clone());
+        let when = ev
+            .scheduled_at
+            .map(|at| crate::tui::view::relative_short(at, now))
+            .unwrap_or_else(|| "date tbd".into());
+        lines.push(Line::from(vec![
+            Span::styled("  🛈 ", theme.styles.info),
+            Span::styled(
+                label,
+                Style::default()
+                    .fg(theme.roles.fg_muted)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!(" · {when} · source {}", ev.source),
+                theme.styles.muted,
+            ),
+        ]));
+    } else if let (Some(streamer), Some(at)) = (s.verified_streamer(), s.verified_at()) {
         let glyph = if s.subscribed_match { "▶" } else { "·" };
         let color = if s.subscribed_match {
             theme.roles.playable
@@ -284,14 +300,6 @@ fn render_verification(
             Span::styled(streamer.to_lowercase(), Style::default().fg(color)),
             Span::styled(
                 format!("  · verified {}", crate::tui::view::relative_short(at, now)),
-                theme.styles.muted,
-            ),
-        ]));
-    } else if let Some(drop_at) = s.next_drop_at() {
-        lines.push(Line::from(vec![
-            Span::styled("  🛈 scheduled  ", theme.styles.info),
-            Span::styled(
-                crate::tui::view::relative_short(drop_at, now),
                 theme.styles.muted,
             ),
         ]));

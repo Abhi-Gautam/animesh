@@ -17,8 +17,7 @@ use errors::{classify, ExitKind};
 
 fn main() {
     // Multi-thread runtime so the TUI's synchronous run loop can
-    // `block_in_place` on async AniList calls (`:sync`, `:follow`)
-    // without deadlocking.
+    // `block_in_place` on async source calls without deadlocking.
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()

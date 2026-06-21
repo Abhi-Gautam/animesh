@@ -156,16 +156,13 @@ fn render_empty_state(f: &mut Frame, theme: &Theme, area: Rect) {
         Line::from(vec![
             key("a"),
             Span::styled(
-                "Search AniList and follow your first show",
+                "Discover from sources and follow your first release",
                 theme.styles.muted,
             ),
         ]),
         Line::from(vec![
             key(":"),
-            Span::styled(
-                "Command mode — try :follow 21  (One Piece)",
-                theme.styles.muted,
-            ),
+            Span::styled("Command mode — try :sync", theme.styles.muted),
         ]),
         Line::from(vec![
             key("?"),
@@ -287,8 +284,8 @@ fn render_row(
 }
 
 /// Middle-column descriptor for a row. Kind-aware so anime/TV show
-/// episode numbers, film shows "theatrical", music shows the cached
-/// release format (album/single/EP).
+/// episode numbers, film shows the next event title or "release", and
+/// music shows the next event title or event kind.
 fn kind_descriptor(s: &crate::tui::model::Show) -> String {
     use crate::ids::ReleaseKind::*;
     match s.canonical_id().kind() {
@@ -300,11 +297,12 @@ fn kind_descriptor(s: &crate::tui::model::Show) -> String {
                 format!("E{ep}")
             }
         }
-        Film => "theatrical".to_string(),
+        Film => s.next_event_title().unwrap_or("release").to_string(),
         MusicArtist => s
-            .format()
-            .map(|f| f.to_lowercase())
-            .unwrap_or_else(|| "release".to_string()),
+            .next_event_title()
+            .or_else(|| s.next_event_kind())
+            .unwrap_or("release")
+            .to_string(),
     }
 }
 
@@ -596,10 +594,7 @@ fn render_follow_palette(f: &mut Frame, app: &App, theme: &Theme, area: Rect) {
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(theme.styles.border_focused)
-        .title(Span::styled(
-            " a · follow new show ",
-            theme.styles.title_focused,
-        ))
+        .title(Span::styled(" a · discover ", theme.styles.title_focused))
         .style(theme.styles.popup);
     let inner = block.inner(rect);
     f.render_widget(block, rect);
@@ -644,7 +639,12 @@ fn render_follow_palette(f: &mut Frame, app: &App, theme: &Theme, area: Rect) {
                     Style::default().fg(theme.roles.fg)
                 };
                 let badge = Span::styled(
-                    format!("  {}:{}  {:?}", m.source, m.source_id, m.kind),
+                    format!(
+                        "  type:{}  source:{}:{}",
+                        m.kind.as_str(),
+                        m.source,
+                        m.source_id
+                    ),
                     theme.styles.dim,
                 );
                 lines.push(Line::from(vec![

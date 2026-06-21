@@ -118,7 +118,9 @@ impl Library {
         db.drop_canonical(canonical_id, self.now())
     }
 
-    pub(crate) fn canonical_id_for_source_candidate(candidate: &SourceCandidateResult) -> CanonicalId {
+    pub(crate) fn canonical_id_for_source_candidate(
+        candidate: &SourceCandidateResult,
+    ) -> CanonicalId {
         CanonicalId::legacy_from_source(candidate.kind, &candidate.source, &candidate.source_id)
     }
 
@@ -167,8 +169,9 @@ impl Library {
     /// prepared, cached query. Replaces the N+1 the TUI's `Shelf::load`
     /// used to do.
     pub(crate) fn load_resolved(&self) -> Result<Vec<ResolvedRelease>> {
+        let now = self.now();
         let db = self.lock_db()?;
-        db.load_resolved()
+        db.load_resolved(now)
     }
 
     #[cfg(test)]
@@ -346,7 +349,10 @@ impl Library {
     }
 
     #[allow(dead_code)]
-    pub(crate) fn upsert_source_ref_refresh_state(&self, state: &SourceRefRefreshState) -> Result<()> {
+    pub(crate) fn upsert_source_ref_refresh_state(
+        &self,
+        state: &SourceRefRefreshState,
+    ) -> Result<()> {
         let db = self.lock_db()?;
         db.upsert_source_ref_refresh_state(state)
     }
@@ -360,7 +366,10 @@ impl Library {
         db.get_source_ref_refresh_state(source, source_id)
     }
 
-    pub(crate) fn due_source_ref_refresh_states(&self, limit: u32) -> Result<Vec<SourceRefRefreshState>> {
+    pub(crate) fn due_source_ref_refresh_states(
+        &self,
+        limit: u32,
+    ) -> Result<Vec<SourceRefRefreshState>> {
         let db = self.lock_db()?;
         db.due_source_ref_refresh_states(self.now(), limit)
     }
@@ -438,6 +447,9 @@ impl Library {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ingest::{
+        HttpMethod, RawSourcePayload, ReleaseEventObservation, SourceObservation, TimePrecision,
+    };
     use crate::time::{AdvanceableClock, FixedClock};
 
     fn lib_at(t: i64) -> Library {
@@ -1037,5 +1049,123 @@ mod tests {
         // The window picks the highest-confidence ref.
         assert_eq!(resolved[0].primary_source.source, "anilist");
         assert!((resolved[0].primary_source.confidence - 0.95).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn load_resolved_returns_projected_canonical_schedule_event() {
+        let clock = AdvanceableClock::new(1_000);
+        let lib = Library::open_in_memory(Arc::new(clock.clone())).unwrap();
+        let cid = id("scheduled");
+        lib.follow_with_source(
+            &cid,
+            ReleaseKind::Tv,
+            "Scheduled",
+            "tvmaze",
+            "42",
+            None,
+            1.0,
+        )
+        .unwrap();
+
+        let raw = RawSourcePayload {
+            id: "raw:tvmaze:42".into(),
+            source: "tvmaze".into(),
+            endpoint: "show".into(),
+            method: HttpMethod::Get,
+            request_key: "tvmaze:show:42".into(),
+            request_hash: "req".into(),
+            request_json: None,
+            http_status: 200,
+            response_hash: "resp".into(),
+            response_json: "{}".into(),
+            fetched_at: 1_000,
+            expires_at: None,
+            created_at: 1_000,
+        };
+        lib.store_raw_source_payload(&raw).unwrap();
+
+        let observation = SourceObservation {
+            source: "tvmaze".into(),
+            source_id: "42".into(),
+            raw_payload_id: raw.id.clone(),
+            kind: ReleaseKind::Tv,
+            display_title: "Scheduled".into(),
+            raw_title: None,
+            description: None,
+            status: Some("Running".into()),
+            observed_at: 1_000,
+            source_updated_at: None,
+            aliases: vec![],
+            external_ids: vec![],
+            release_events: vec![
+                ReleaseEventObservation {
+                    id: "tvmaze:42:past".into(),
+                    event_kind: "episode".into(),
+                    title: Some("Past".into()),
+                    season: Some(1),
+                    episode: Some(1),
+                    local_date: None,
+                    local_time: None,
+                    source_timezone: Some("UTC".into()),
+                    scheduled_at: Some(900),
+                    precision: TimePrecision::Instant,
+                    confidence: 0.9,
+                    observed_at: 1_000,
+                },
+                ReleaseEventObservation {
+                    id: "tvmaze:42:soon".into(),
+                    event_kind: "episode".into(),
+                    title: Some("Soon".into()),
+                    season: Some(1),
+                    episode: Some(2),
+                    local_date: None,
+                    local_time: None,
+                    source_timezone: Some("UTC".into()),
+                    scheduled_at: Some(1_500),
+                    precision: TimePrecision::Instant,
+                    confidence: 0.9,
+                    observed_at: 1_000,
+                },
+                ReleaseEventObservation {
+                    id: "tvmaze:42:later".into(),
+                    event_kind: "episode".into(),
+                    title: Some("Later".into()),
+                    season: Some(1),
+                    episode: Some(3),
+                    local_date: None,
+                    local_time: None,
+                    source_timezone: Some("UTC".into()),
+                    scheduled_at: Some(3_000),
+                    precision: TimePrecision::Instant,
+                    confidence: 0.9,
+                    observed_at: 1_000,
+                },
+            ],
+            links: vec![],
+            images: vec![],
+        };
+        lib.store_source_observation(&observation).unwrap();
+        lib.project_canonical_schedule_events(&cid, "tvmaze", &observation)
+            .unwrap();
+
+        let resolved = lib.load_resolved().unwrap();
+        assert_eq!(resolved.len(), 1);
+        let ev = resolved[0]
+            .next_schedule_event
+            .as_ref()
+            .expect("next schedule event");
+        assert_eq!(ev.source, "tvmaze");
+        assert_eq!(ev.event_kind, "episode");
+        assert_eq!(ev.title.as_deref(), Some("Soon"));
+        assert_eq!(ev.season, Some(1));
+        assert_eq!(ev.episode, Some(2));
+        assert_eq!(ev.scheduled_at, Some(1_500));
+
+        clock.set(4_000);
+        let resolved = lib.load_resolved().unwrap();
+        let ev = resolved[0].next_schedule_event.as_ref().unwrap();
+        assert_eq!(ev.title.as_deref(), Some("Later"));
+        assert_eq!(ev.episode, Some(3));
+        assert_eq!(ev.scheduled_at, Some(3_000));
     }
 }

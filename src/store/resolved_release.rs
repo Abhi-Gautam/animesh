@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use rusqlite::params;
 
 use crate::ids::{CanonicalId, ReleaseKind};
 use crate::store::{
@@ -7,6 +8,17 @@ use crate::store::{
 };
 
 use super::Db;
+
+/// Source-agnostic schedule projection for TUI/read-model callers.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct CanonicalScheduleEventSummary {
+    pub event_kind: String,
+    pub title: Option<String>,
+    pub season: Option<i64>,
+    pub episode: Option<i64>,
+    pub scheduled_at: Option<i64>,
+    pub source: String,
+}
 
 /// One fully-resolved canonical the TUI can render directly. Produced by
 /// `Library::load_resolved` in a single store query — no per-row joins from
@@ -18,6 +30,7 @@ pub(crate) struct ResolvedRelease {
     /// has at least one attached ref, enforced by Library follow primitives.
     pub primary_source: SourceRef,
     pub cache: Option<CacheEntry>,
+    pub next_schedule_event: Option<CanonicalScheduleEventSummary>,
     pub last_completed: Option<Engagement>,
     pub last_verified: Option<Engagement>,
 }
@@ -49,6 +62,24 @@ last_engagement_by_event AS (\
         FROM engagement \
         WHERE event IN ('completed', 'verified')\
     ) WHERE rn = 1\
+), \
+next_schedule_event AS (\
+    SELECT canonical_id, event_kind, title, season, episode, scheduled_at, source \
+    FROM (\
+        SELECT canonical_id, event_kind, title, season, episode, scheduled_at, \
+               source, source_event_id, confidence, \
+               ROW_NUMBER() OVER ( \
+                   PARTITION BY canonical_id \
+                   ORDER BY \
+                       CASE WHEN scheduled_at >= ?1 THEN 0 ELSE 1 END ASC, \
+                       CASE WHEN scheduled_at >= ?1 THEN scheduled_at END ASC, \
+                       CASE WHEN scheduled_at IS NULL THEN 1 ELSE 0 END ASC, \
+                       scheduled_at DESC, \
+                       confidence DESC, source ASC, source_event_id ASC \
+               ) AS rn \
+        FROM canonical_schedule_event \
+        WHERE superseded_at IS NULL\
+    ) WHERE rn = 1\
 ) \
 SELECT \
     cr.id, cr.kind, cr.display_title, cr.cover_ascii, cr.cover_color, \
@@ -58,12 +89,15 @@ SELECT \
     mc.total_episodes, mc.format, mc.next_episode_number, mc.next_episode_airs_at, \
     mc.fetched_at, mc.expires_at, mc.cover_image_url, mc.description, \
     mc.score, mc.studios, mc.streaming_links_json, \
+    nse.event_kind, nse.title, nse.season, nse.episode, nse.scheduled_at, nse.source, \
     lc.id, lc.occurred_at, lc.meta, \
     lv.id, lv.occurred_at, lv.meta \
 FROM canonical_release cr \
 JOIN primary_sr psr ON psr.canonical_id = cr.id \
 LEFT JOIN metadata_cache mc \
     ON mc.source = psr.source AND mc.source_id = psr.source_id \
+LEFT JOIN next_schedule_event nse \
+    ON nse.canonical_id = cr.id \
 LEFT JOIN last_engagement_by_event lc \
     ON lc.canonical_id = cr.id AND lc.event = 'completed' \
 LEFT JOIN last_engagement_by_event lv \
@@ -72,13 +106,13 @@ WHERE cr.followed_at IS NOT NULL AND cr.dropped_at IS NULL \
 ORDER BY cr.followed_at DESC";
 
 impl Db {
-    pub(crate) fn load_resolved(&self) -> Result<Vec<ResolvedRelease>> {
+    pub(crate) fn load_resolved(&self, now: i64) -> Result<Vec<ResolvedRelease>> {
         let conn = self.conn();
         let mut stmt = conn
             .prepare_cached(LOAD_RESOLVED_SQL)
             .context("prepare load_resolved")?;
         let rows = stmt
-            .query_map([], map_resolved_row)
+            .query_map(params![now], map_resolved_row)
             .context("query load_resolved")?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
             .context("collect load_resolved rows")
@@ -143,13 +177,28 @@ fn map_resolved_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ResolvedRelease
         None
     };
 
-    let last_completed = engagement_from_join(row, 28, EngagementEvent::Completed, &cr_id)?;
-    let last_verified = engagement_from_join(row, 31, EngagementEvent::Verified, &cr_id)?;
+    let event_kind: Option<String> = row.get(28)?;
+    let next_schedule_event = if let Some(event_kind) = event_kind {
+        Some(CanonicalScheduleEventSummary {
+            event_kind,
+            title: row.get(29)?,
+            season: row.get(30)?,
+            episode: row.get(31)?,
+            scheduled_at: row.get(32)?,
+            source: row.get(33)?,
+        })
+    } else {
+        None
+    };
+
+    let last_completed = engagement_from_join(row, 34, EngagementEvent::Completed, &cr_id)?;
+    let last_verified = engagement_from_join(row, 37, EngagementEvent::Verified, &cr_id)?;
 
     Ok(ResolvedRelease {
         canonical,
         primary_source,
         cache,
+        next_schedule_event,
         last_completed,
         last_verified,
     })

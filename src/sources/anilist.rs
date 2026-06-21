@@ -12,12 +12,9 @@ use crate::ingest::{
     AliasObservation, ExternalIdObservation, HttpMethod, ImageObservation, LinkObservation,
     RawSourcePayload, ReleaseEventObservation, SourceObservation, SourceParser, TimePrecision,
 };
-use crate::search::SearchScope;
 use crate::sources::{stable_hash, SourceAdapter, SourceFuture};
 
 const DEFAULT_BASE_URL: &str = "https://graphql.anilist.co";
-const ANIME_SEARCH_SCOPES: &[SearchScope] = &[SearchScope::Anime];
-const NO_ENRICHMENT_SCOPES: &[SearchScope] = &[];
 
 pub(crate) struct AniListClient {
     client: Client,
@@ -72,7 +69,11 @@ impl AniListClient {
     }
 
     /// Raw search used by ingestion. Returns `(request_json, response_json)`.
-    pub(crate) async fn search_raw_json(&self, query: &str, per_page: u32) -> Result<(String, String)> {
+    pub(crate) async fn search_raw_json(
+        &self,
+        query: &str,
+        per_page: u32,
+    ) -> Result<(String, String)> {
         let body = r#"
             query ($search: String, $perPage: Int) {
               Page(perPage: $perPage) {
@@ -167,14 +168,6 @@ impl SourceAdapter for AniListSource {
 
     fn parser(&self) -> &dyn SourceParser {
         &self.parser
-    }
-
-    fn search_scopes(&self) -> &'static [SearchScope] {
-        ANIME_SEARCH_SCOPES
-    }
-
-    fn enrichment_scopes(&self) -> &'static [SearchScope] {
-        NO_ENRICHMENT_SCOPES
     }
 
     fn search<'a>(

@@ -8,7 +8,7 @@ It assumes the data lifecycle/request contract in `docs/DATA_LIFECYCLE.md`:
 ```text
 startup = 0 blocking requests
 typing = 0 requests
-Enter search = max 4 primary source requests
+Enter discovery = max 6 searchable source requests
 follow candidate = 1 selected-source detail ingest request
 sync = due followed source_refs only, bounded
 TUI reads local store
@@ -16,18 +16,13 @@ TUI reads local store
 
 ## Phase 0: ground rules
 
-Primary anime search sources:
+Searchable discovery sources:
 
 ```text
 AniList
 Jikan
 Kitsu
 TVMaze
-```
-
-Secondary enrichment sources:
-
-```text
 MusicBrainz
 iTunes
 ```
@@ -41,8 +36,8 @@ Startup:
 Typing:
   0 network requests
 
-Enter search:
-  max 4 primary source requests
+Enter discovery:
+  max 6 searchable source requests
 
 Follow candidate:
   1 selected-source ingest request
@@ -53,93 +48,67 @@ Manual sync:
 Periodic sync:
   max 5 due source_ref ingest requests per tick
 
-Secondary sources:
-  do not participate in broad anime-first search
+Discovery sources:
+  all enabled searchable adapters participate in bounded Enter discovery
+  candidates carry Type so the user chooses the right result
 ```
 
 ## Phase 1: source registry completeness
 
 ### Objective
 
-Make the source registry explicitly understand source roles and search scopes.
+Make the source registry expose searchable adapters without media/source scopes.
+The user searches once; candidate Type disambiguates results.
 
-Current adapter shape:
-
-```rust
-source()
-parser()
-search()
-ingest()
-```
-
-Add source scope metadata.
-
-Recommended first version:
-
-```rust
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SearchScope {
-    Anime,
-    Tv,
-    Music,
-    Film,
-    All,
-}
-```
-
-Extend `SourceAdapter`:
+Adapter shape:
 
 ```rust
 pub trait SourceAdapter {
     fn source(&self) -> &'static str;
     fn parser(&self) -> &dyn SourceParser;
 
-    fn search_scopes(&self) -> &'static [SearchScope];
-    fn enrichment_scopes(&self) -> &'static [SearchScope];
-
     fn search(...) -> SourceFuture<Vec<RawSourcePayload>>;
     fn ingest(...) -> SourceFuture<Option<RawSourcePayload>>;
 }
 ```
 
-Initial behavior:
+No `SearchScope`, `search_scopes`, or `enrichment_scopes` plumbing belongs in the
+adapter port.
+
+Initial discovery behavior:
 
 ```text
-Anime scope search sources:
+Enter discovery queries all enabled searchable adapters within budget:
   AniList
   Jikan
   Kitsu
   TVMaze
-
-Music scope search sources:
-  MusicBrainz later
-
-Anime enrichment sources:
-  none by default
-
-Music enrichment sources:
+  MusicBrainz
   iTunes
+
+Dropdown candidates show:
+  title + Type + source evidence
 ```
 
-### Registry filtering
+### Registry lookup
 
-Add:
+Add/keep:
 
 ```rust
-SourceRegistry::search_adapters(scope)
+SourceRegistry::search_adapters()
 SourceRegistry::adapter(source)
 ```
 
 Needed by:
 
-- Enter search
+- Enter discovery
 - follow-time ingest
 - sync/refresh
 
 Example:
 
 ```rust
-for adapter in registry.search_adapters(SearchScope::Anime) {
+for adapter in registry.search_adapters() {
     ...
 }
 ```
@@ -688,50 +657,50 @@ SourceRegistry::production() = vec![
     JikanSource,
     KitsuSource,
     TvMazeSource,
+    MusicBrainzSource,
+    ItunesSource,
 ]
 ```
 
 This preserves:
 
 ```text
-Enter search max = 4 requests
+Enter discovery max = 6 requests
 ```
 
-### Secondary sources later
+### Cross-media discovery sources
 
-Do not plug into anime search:
+MusicBrainz and iTunes participate in the same bounded discovery fan-out as the
+other searchable adapters. They are not exposed through separate user-facing
+search modes.
 
-```rust
-MusicBrainzSource
-ItunesSource
-```
-
-They should be registered as enrichment-capable only.
-
-## Phase 8: source role filtering
+## Phase 8: unified discovery routing
 
 Once adapters exist, enforce:
 
 ```rust
-registry.search_adapters(SearchScope::Anime)
+registry.search_adapters()
 ```
 
-Production anime search returns exactly:
+Production discovery returns exactly:
 
 ```text
 AniList
 Jikan
 Kitsu
 TVMaze
+MusicBrainz
+iTunes
 ```
 
-MusicBrainz/iTunes are excluded.
+Candidates expose Type (`ReleaseKind`) so the user can distinguish media kinds in
+the dropdown.
 
 Tests:
 
 ```rust
-production_anime_search_has_four_primary_sources()
-musicbrainz_and_itunes_not_in_anime_search()
+production_discovery_searches_all_enabled_adapters()
+production_discovery_budget_matches_enabled_searchable_adapters()
 ```
 
 ## Phase 9: UI integration
@@ -745,19 +714,17 @@ typing:
   local FTS only
 
 Enter:
-  online search via IngestSearchService with Anime scope
+  online discovery via IngestSearchService across enabled searchable adapters
 ```
 
-Update service call:
+Service call:
 
 ```rust
-refresh_candidates(
-    query,
-    SearchScope::Anime,
-    budget.max_enter_search_requests,
-    now,
-)
+refresh_candidates(query, limit, now)
 ```
+
+The service owns request budgeting and cache skips. The TUI never passes media or
+source scopes.
 
 ### Follow confirm
 
@@ -802,9 +769,9 @@ nothing due
 ### Request budget tests
 
 - typing does not call network
-- Enter search with 4 primary adapters makes max 4 adapter calls
+- Enter discovery with 6 searchable adapters makes max 6 adapter calls
 - cached search query skips adapter calls
-- MusicBrainz/iTunes excluded from anime search
+- candidates expose Type so the user can distinguish media kinds
 
 ### Follow ingest tests
 
@@ -857,9 +824,9 @@ are true.
 
 ```text
 typing = 0 requests
-Enter anime search = max 4 primary requests
+Enter discovery = max 6 searchable source requests
 search cache suppresses repeated requests
-results stored as source candidates
+results stored as source candidates with Type
 ```
 
 ### Follow
@@ -884,8 +851,8 @@ startup blocking max 0 requests
 ### Sources
 
 ```text
-AniList/Jikan/Kitsu/TVMaze primary anime adapters implemented
-MusicBrainz/iTunes remain secondary enrichment, not anime search
+AniList/Jikan/Kitsu/TVMaze/MusicBrainz/iTunes discovery adapters implemented
+candidate Type disambiguates media kind in the dropdown
 ```
 
 ### Store
@@ -900,7 +867,7 @@ canonical schedule projection powers product serving layer
 
 ## Recommended immediate implementation order
 
-1. Add `SearchScope` and registry filtering.
+1. Expose all enabled searchable adapters through `SourceRegistry::search_adapters()`.
 2. Add request budget constants.
 3. Enforce `source_search_cache` in `IngestSearchService`.
 4. Add `FollowIngestService`.
@@ -910,5 +877,5 @@ canonical schedule projection powers product serving layer
 8. Implement `RefreshService`.
 9. Replace `commands/sync.rs` with source-agnostic refresh service.
 10. Add Jikan/Kitsu/TVMaze adapters.
-11. Register primary anime sources.
-12. Add tests for request counts and startup zero-request behavior.
+11. Register all enabled discovery sources.
+12. Add tests for request counts, Type-visible candidates, and startup zero-request behavior.

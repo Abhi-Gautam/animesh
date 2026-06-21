@@ -286,7 +286,10 @@ impl Db {
 
     /// Every engagement event for one canonical, newest-first. Used by
     /// the detail pane and the LLM export.
-    pub(crate) fn engagement_for_canonical(&self, canonical_id: &CanonicalId) -> Result<Vec<Engagement>> {
+    pub(crate) fn engagement_for_canonical(
+        &self,
+        canonical_id: &CanonicalId,
+    ) -> Result<Vec<Engagement>> {
         let conn = self.conn();
         let mut stmt = conn
             .prepare_cached(

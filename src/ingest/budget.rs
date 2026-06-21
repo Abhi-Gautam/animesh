@@ -12,7 +12,7 @@ pub(crate) struct RequestBudget {
 impl Default for RequestBudget {
     fn default() -> Self {
         Self {
-            max_enter_search_requests: 4,
+            max_enter_search_requests: 6,
             max_follow_ingest_requests: 1,
             max_startup_background_requests: 10,
             max_periodic_requests: 5,

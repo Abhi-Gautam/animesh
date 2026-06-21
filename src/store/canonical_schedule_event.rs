@@ -129,7 +129,10 @@ impl Db {
     }
 }
 
-pub(crate) fn canonical_schedule_event_id(canonical_id: &CanonicalId, source_event_id: &str) -> String {
+pub(crate) fn canonical_schedule_event_id(
+    canonical_id: &CanonicalId,
+    source_event_id: &str,
+) -> String {
     format!(
         "canonical_schedule:{}:{}",
         canonical_id.as_str(),

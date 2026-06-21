@@ -20,8 +20,6 @@ pub(crate) enum Command {
     Doctor,
     Help,
     Quit,
-    /// `:follow 12345` — numeric AniList id only for now.
-    Follow(i64),
     /// `c` / `:context` — copy LLM context for current selection.
     CopyContext,
     /// `:subs add <name>` — subscribe to a streamer.
@@ -67,15 +65,9 @@ pub(crate) const SPECS: &[CommandSpec] = &[
         arg_hint: None,
     },
     CommandSpec {
-        name: "follow",
-        aliases: &["add", "track"],
-        description: "Follow a show by AniList id",
-        arg_hint: Some("<anilist-id>"),
-    },
-    CommandSpec {
         name: "sync",
         aliases: &["refresh"],
-        description: "Refresh all cached metadata from AniList",
+        description: "Refresh due followed sources",
         arg_hint: None,
     },
     CommandSpec {
@@ -150,7 +142,6 @@ impl std::fmt::Display for ParseError {
 /// Examples:
 /// - `"watched"` → `Watched`
 /// - `"w"` → `Watched` (alias)
-/// - `"follow 21"` → `Follow(21)`
 /// - `"q"` → `Quit`
 pub(crate) fn parse(query: &str) -> Result<Command, ParseError> {
     let trimmed = query.trim();
@@ -200,19 +191,6 @@ pub(crate) fn parse(query: &str) -> Result<Command, ParseError> {
                     reason: "usage: :subs [add|remove] <name>".to_string(),
                 }),
             }
-        }
-        "follow" => {
-            if rest.is_empty() {
-                return Err(ParseError::MissingArg {
-                    verb: "follow",
-                    hint: spec.arg_hint.unwrap_or("<arg>"),
-                });
-            }
-            let id: i64 = rest.parse().map_err(|_| ParseError::BadArg {
-                verb: "follow",
-                reason: format!("'{rest}' is not a numeric AniList id"),
-            })?;
-            Ok(Command::Follow(id))
         }
         _ => unreachable!("spec name not handled: {}", spec.name),
     }
@@ -309,29 +287,12 @@ mod tests {
     }
 
     #[test]
-    fn parse_follow_with_id() {
-        assert_eq!(parse("follow 21").unwrap(), Command::Follow(21));
-        assert_eq!(parse("add  154587").unwrap(), Command::Follow(154587));
-    }
-
-    #[test]
-    fn parse_follow_missing_id() {
-        assert!(matches!(
-            parse("follow"),
-            Err(ParseError::MissingArg { verb: "follow", .. })
-        ));
-    }
-
-    #[test]
-    fn parse_follow_non_numeric() {
-        match parse("follow frieren") {
-            Err(ParseError::BadArg {
-                verb: "follow",
-                reason,
-            }) => {
-                assert!(reason.contains("frieren"));
-            }
-            other => panic!("expected BadArg, got {other:?}"),
+    fn parse_rejects_retired_direct_follow_verbs() {
+        for query in ["follow 21", "add 154587", "track frieren"] {
+            assert!(
+                matches!(parse(query), Err(ParseError::UnknownVerb(_))),
+                "{query:?} should not be a command; use discovery palette"
+            );
         }
     }
 
@@ -411,11 +372,11 @@ mod tests {
             format!(
                 "{}",
                 ParseError::MissingArg {
-                    verb: "follow",
-                    hint: "<anilist-id>"
+                    verb: "subs",
+                    hint: "[add|remove] <name>"
                 }
             ),
-            ":follow needs <anilist-id>",
+            ":subs needs [add|remove] <name>",
         );
     }
 }

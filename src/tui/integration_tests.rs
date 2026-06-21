@@ -11,7 +11,10 @@ use std::sync::Arc;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::ids::{CanonicalId, ReleaseKind};
-use crate::ingest::{AliasObservation, HttpMethod, RawSourcePayload, SourceObservation};
+use crate::ingest::{
+    AliasObservation, HttpMethod, RawSourcePayload, ReleaseEventObservation, SourceObservation,
+    TimePrecision,
+};
 use crate::library::Library as Facade;
 use crate::sources::SourceRegistry;
 use crate::store::{CacheEntry, EngagementEvent, EngagementMeta};
@@ -510,6 +513,94 @@ fn copy_context_builds_well_formed_json() {
     assert!(!refs.is_empty(), "follow attaches a source_ref");
     assert_eq!(refs[0]["source"], "anilist");
     assert_eq!(refs[0]["source_id"], "1");
+}
+
+#[test]
+fn shelf_load_uses_canonical_schedule_event_not_metadata_cache_schedule() {
+    let now = 1_700_000_000;
+    let facade = Arc::new(Facade::open_in_memory(Arc::new(FixedClock(now))).unwrap());
+    let cid = follow_anime(&facade, "stale", "Frieren");
+
+    facade
+        .upsert_cache(&CacheEntry {
+            source: "anilist".into(),
+            source_id: "stale".into(),
+            display_title: Some("Frieren".into()),
+            title_english: Some("Frieren".into()),
+            title_native: None,
+            status: Some("RELEASING".into()),
+            total_episodes: Some(12),
+            format: Some("TV".into()),
+            next_episode_number: Some(99),
+            next_episode_airs_at: Some(now + 60),
+            fetched_at: now,
+            expires_at: now + 6 * 3600,
+            cover_image_url: None,
+            description: None,
+            score: None,
+            studios: None,
+            streaming_links_json: None,
+        })
+        .unwrap();
+
+    let raw = RawSourcePayload {
+        id: "raw:anilist:stale".into(),
+        source: "anilist".into(),
+        endpoint: "media".into(),
+        method: HttpMethod::Get,
+        request_key: "anilist:media:stale".into(),
+        request_hash: "req".into(),
+        request_json: None,
+        http_status: 200,
+        response_hash: "resp".into(),
+        response_json: "{}".into(),
+        fetched_at: now,
+        expires_at: None,
+        created_at: now,
+    };
+    facade.store_raw_source_payload(&raw).unwrap();
+
+    let observation = SourceObservation {
+        source: "anilist".into(),
+        source_id: "stale".into(),
+        raw_payload_id: raw.id.clone(),
+        kind: ReleaseKind::Anime,
+        display_title: "Frieren".into(),
+        raw_title: Some("Frieren".into()),
+        description: None,
+        status: Some("RELEASING".into()),
+        observed_at: now,
+        source_updated_at: None,
+        aliases: vec![],
+        external_ids: vec![],
+        release_events: vec![ReleaseEventObservation {
+            id: "anilist:stale:episode:4".into(),
+            event_kind: "episode".into(),
+            title: Some("Episode 4".into()),
+            season: Some(1),
+            episode: Some(4),
+            local_date: None,
+            local_time: None,
+            source_timezone: Some("UTC".into()),
+            scheduled_at: Some(now + 3_600),
+            precision: TimePrecision::Instant,
+            confidence: 0.95,
+            observed_at: now,
+        }],
+        links: vec![],
+        images: vec![],
+    };
+    facade.store_source_observation(&observation).unwrap();
+    facade
+        .project_canonical_schedule_events(&cid, "anilist", &observation)
+        .unwrap();
+
+    let shelf = Shelf::load(&facade, now, Windows::DEFAULT, &Subs::default()).unwrap();
+    let show = shelf.shows.first().expect("one show");
+    assert_eq!(show.next_episode(), Some(4));
+    assert_eq!(show.airs_at(), Some(now + 3_600));
+    assert_eq!(show.next_drop_at(), Some(now + 3_600));
+    assert_eq!(show.pane, Some(crate::tui::pane::Pane::Dropping));
 }
 
 #[test]

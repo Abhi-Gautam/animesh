@@ -14,8 +14,8 @@ use serde::Deserialize;
 use crate::ids::CanonicalId;
 use crate::library::Library as Facade;
 use crate::store::{
-    CacheEntry, CanonicalRelease, Engagement, EngagementEvent, EngagementMeta, EngagementSource,
-    SourceRef,
+    CacheEntry, CanonicalRelease, CanonicalScheduleEventSummary, Engagement, EngagementEvent,
+    EngagementMeta, EngagementSource, SourceRef,
 };
 use crate::tui::pane::{bucket, BucketInputs, Pane, Windows};
 
@@ -29,6 +29,7 @@ pub(crate) struct Show {
     /// source_ref by `follow_with_source`'s invariant.
     pub primary_source: SourceRef,
     pub cache: Option<CacheEntry>,
+    pub next_schedule_event: Option<CanonicalScheduleEventSummary>,
     /// Most recent `Completed` engagement event for this canonical.
     /// `seen` derives from its `meta.seen` JSON.
     pub last_completed: Option<Engagement>,
@@ -80,6 +81,7 @@ impl Show {
             canonical: r.canonical,
             primary_source: r.primary_source,
             cache: r.cache,
+            next_schedule_event: r.next_schedule_event,
             last_completed: r.last_completed,
             last_verified: r.last_verified,
             subscribed_match,
@@ -102,11 +104,21 @@ impl Show {
     }
 
     pub(crate) fn next_episode(&self) -> Option<i64> {
-        self.cache.as_ref().and_then(|c| c.next_episode())
+        self.next_schedule_event.as_ref().and_then(|e| e.episode)
     }
 
     pub(crate) fn airs_at(&self) -> Option<i64> {
-        self.cache.as_ref().and_then(|c| c.next_episode_airs_at())
+        self.next_schedule_event
+            .as_ref()
+            .and_then(|e| e.scheduled_at)
+    }
+
+    pub(crate) fn next_event_title(&self) -> Option<&str> {
+        self.next_schedule_event.as_ref()?.title.as_deref()
+    }
+
+    pub(crate) fn next_event_kind(&self) -> Option<&str> {
+        Some(self.next_schedule_event.as_ref()?.event_kind.as_str())
     }
 
     pub(crate) fn display_title(&self) -> &str {
@@ -157,12 +169,11 @@ impl Show {
         Some(self.last_verified.as_ref()?.occurred_at)
     }
 
-    /// First future air/release time across cache fields. Today only
-    /// `next_episode_airs_at` is populated; this is the seam where music
-    /// and film release-date fields will plug in later without changing
-    /// callers.
+    /// Projected canonical schedule time across all release kinds.
     pub(crate) fn next_drop_at(&self) -> Option<i64> {
-        self.cache.as_ref().and_then(|c| c.next_episode_airs_at())
+        self.next_schedule_event
+            .as_ref()
+            .and_then(|e| e.scheduled_at)
     }
 
     pub(crate) fn fully_done(&self) -> bool {
@@ -197,7 +208,12 @@ impl Shelf {
 
     /// Re-derive each show's `pane` from current state. Call after
     /// the user mutates progress (e.g. `w` key) or on tick.
-    pub(crate) fn recompute_panes(&mut self, now: i64, windows: Windows, subs: &crate::tui::subs::Subs) {
+    pub(crate) fn recompute_panes(
+        &mut self,
+        now: i64,
+        windows: Windows,
+        subs: &crate::tui::subs::Subs,
+    ) {
         for s in &mut self.shows {
             s.subscribed_match = s
                 .verified_streamer()

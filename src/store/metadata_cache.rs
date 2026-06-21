@@ -131,14 +131,6 @@ impl CacheEntry {
         self.total_episodes
     }
 
-    pub(crate) fn next_episode(&self) -> Option<i64> {
-        self.next_episode_number
-    }
-
-    pub(crate) fn next_episode_airs_at(&self) -> Option<i64> {
-        self.next_episode_airs_at
-    }
-
     #[cfg(test)]
     fn from_row(row: &Row<'_>) -> rusqlite::Result<Self> {
         Ok(Self {

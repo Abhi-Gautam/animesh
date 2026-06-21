@@ -12,7 +12,6 @@ use crate::ingest::RawSourcePayload;
 use crate::library::Library;
 use crate::search::query::normalize_query_key;
 use crate::search::source_candidate::SourceCandidateResult;
-use crate::search::SearchScope;
 use crate::sources::SourceRegistry;
 use crate::store::{SourceParseError, SourceSearchCacheEntry};
 
@@ -26,7 +25,7 @@ impl<'a> IngestSearchService<'a> {
         Self { library, sources }
     }
 
-    /// Query all plugged sources, ingest whatever succeeds, then return local
+    /// Query all searchable plugged sources, ingest whatever succeeds, then return local
     /// FTS results for the same query. Source failures are isolated so one bad
     /// adapter does not prevent candidates from other adapters surfacing.
     pub(crate) async fn refresh_candidates(
@@ -35,28 +34,11 @@ impl<'a> IngestSearchService<'a> {
         limit: u32,
         now: i64,
     ) -> Result<Vec<SourceCandidateResult>> {
-        self.refresh_candidates_in_scope(
-            query,
-            SearchScope::Anime,
-            limit,
-            RequestBudget::default().max_enter_search_requests,
-            now,
-        )
-        .await
-    }
-
-    pub(crate) async fn refresh_candidates_in_scope(
-        &self,
-        query: &str,
-        scope: SearchScope,
-        limit: u32,
-        max_requests: usize,
-        now: i64,
-    ) -> Result<Vec<SourceCandidateResult>> {
         let mut failures = Vec::new();
         let query_key = normalize_query_key(query);
         let mut requests = 0usize;
-        for source in self.sources.search_adapters(scope) {
+        let max_requests = RequestBudget::default().max_enter_search_requests;
+        for source in self.sources.search_adapters() {
             let cache = self
                 .library
                 .get_source_search_cache(source.source(), &query_key)
@@ -148,9 +130,142 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use crate::ids::ReleaseKind;
+    use crate::ingest::{HttpMethod, SourceObservation, SourceParser};
     use crate::sources::anilist::{AniListClient, AniListSource};
-    use crate::sources::SourceRegistry;
+    use crate::sources::{SourceAdapter, SourceFuture, SourceRegistry};
     use crate::time::FixedClock;
+
+    struct TestParser {
+        kind: ReleaseKind,
+    }
+
+    impl SourceParser for TestParser {
+        fn source(&self) -> &'static str {
+            "test"
+        }
+
+        fn parse_search(&self, payload: &RawSourcePayload) -> Result<Vec<SourceObservation>> {
+            Ok(vec![SourceObservation {
+                source: payload.source.clone(),
+                source_id: payload.request_key.clone(),
+                raw_payload_id: payload.id.clone(),
+                kind: self.kind,
+                display_title: format!("Needle {}", payload.source),
+                raw_title: None,
+                description: None,
+                status: None,
+                observed_at: payload.fetched_at,
+                source_updated_at: None,
+                aliases: vec![],
+                external_ids: vec![],
+                release_events: vec![],
+                links: vec![],
+                images: vec![],
+            }])
+        }
+
+        fn parse_fetch(&self, _payload: &RawSourcePayload) -> Result<Option<SourceObservation>> {
+            Ok(None)
+        }
+    }
+
+    struct TestAdapter {
+        source: &'static str,
+        parser: TestParser,
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl TestAdapter {
+        fn new(source: &'static str, kind: ReleaseKind, calls: Arc<AtomicUsize>) -> Self {
+            Self {
+                source,
+                parser: TestParser { kind },
+                calls,
+            }
+        }
+    }
+
+    impl SourceAdapter for TestAdapter {
+        fn source(&self) -> &'static str {
+            self.source
+        }
+
+        fn parser(&self) -> &dyn SourceParser {
+            &self.parser
+        }
+
+        fn search<'a>(
+            &'a self,
+            _query: &'a str,
+            _limit: u32,
+            now: i64,
+        ) -> SourceFuture<'a, Vec<RawSourcePayload>> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let source = self.source.to_string();
+            Box::pin(async move {
+                Ok(vec![RawSourcePayload {
+                    id: format!("raw:{source}:needle"),
+                    source: source.clone(),
+                    endpoint: "search".into(),
+                    method: HttpMethod::Get,
+                    request_key: format!("{source}:needle"),
+                    request_hash: format!("req-{source}"),
+                    request_json: None,
+                    http_status: 200,
+                    response_hash: format!("resp-{source}"),
+                    response_json: "{}".into(),
+                    fetched_at: now,
+                    expires_at: None,
+                    created_at: now,
+                }])
+            })
+        }
+
+        fn ingest<'a>(
+            &'a self,
+            _source_id: &'a str,
+            _now: i64,
+        ) -> SourceFuture<'a, Option<RawSourcePayload>> {
+            Box::pin(async { Ok(None) })
+        }
+    }
+
+    #[tokio::test]
+    async fn refresh_candidates_queries_plugged_adapters_up_to_global_budget_and_returns_types() {
+        let library = Library::open_in_memory(Arc::new(FixedClock(1_000))).unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let registry = SourceRegistry::new(vec![
+            Box::new(TestAdapter::new("s1", ReleaseKind::Anime, calls.clone())),
+            Box::new(TestAdapter::new("s2", ReleaseKind::Tv, calls.clone())),
+            Box::new(TestAdapter::new("s3", ReleaseKind::Film, calls.clone())),
+            Box::new(TestAdapter::new(
+                "s4",
+                ReleaseKind::MusicArtist,
+                calls.clone(),
+            )),
+            Box::new(TestAdapter::new("s5", ReleaseKind::Anime, calls.clone())),
+            Box::new(TestAdapter::new("s6", ReleaseKind::Tv, calls.clone())),
+            Box::new(TestAdapter::new("s7", ReleaseKind::Film, calls.clone())),
+        ]);
+        let service = IngestSearchService::new(&library, &registry);
+
+        let hits = service
+            .refresh_candidates("needle", 20, 1_000)
+            .await
+            .unwrap();
+
+        assert_eq!(calls.load(Ordering::SeqCst), 6, "global budget is 6");
+        assert_eq!(hits.len(), 6);
+        let kinds: Vec<ReleaseKind> = hits.iter().map(|hit| hit.kind).collect();
+        assert!(kinds.contains(&ReleaseKind::Anime));
+        assert!(kinds.contains(&ReleaseKind::Tv));
+        assert!(kinds.contains(&ReleaseKind::Film));
+        assert!(kinds.contains(&ReleaseKind::MusicArtist));
+        assert!(hits.iter().all(|hit| !hit.source.is_empty()));
+    }
 
     #[tokio::test]
     async fn refresh_candidates_uses_plugged_sources_and_returns_local_hits() {

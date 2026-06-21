@@ -88,6 +88,7 @@ mod tests {
                 confidence: 1.0,
             },
             cache: None,
+            next_schedule_event: None,
             last_completed: None,
             last_verified: None,
             subscribed_match: false,

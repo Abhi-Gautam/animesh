@@ -21,59 +21,40 @@ budgeted, and routed through source adapters.
 
 ## 2. Source classes
 
-Not every source has the same job. Sources are classified by when they may be
-queried.
+All enabled searchable sources are peers in one bounded discovery fan-out when
+the user presses Enter in the discovery/follow palette.
 
-### 2.1 Primary search sources
-
-Primary search sources are allowed to run during explicit user discovery search
-when the user presses Enter in the follow/search bar.
-
-Initial anime-first primary search sources:
+Initial searchable sources:
 
 ```text
 AniList
 Jikan
 Kitsu
 TVMaze
+MusicBrainz
+iTunes
 ```
 
 Therefore:
 
 ```text
-Enter search = max 4 requests
+Enter discovery = max 6 requests
 ```
 
-One request per enabled primary search source.
-
-### 2.2 Secondary enrichment sources
-
-Secondary sources do **not** participate in broad discovery search by default.
-They only enrich known/followed entities during follow-time ingest, source-ref
-linking, canonical resolution, or sync.
-
-Initial secondary enrichment sources:
-
-```text
-MusicBrainz
-iTunes
-```
+One request per enabled searchable source, subject to `source_search_cache` skips.
 
 Rationale:
 
-- They are valuable for cross-media enrichment.
-- They can expand known entities once the app has intent/context.
-- They should not add request cost or noisy results to anime-first search.
+- The user searches once and selects from candidates.
+- Candidates carry `ReleaseKind`/Type, so the dropdown disambiguates anime, TV,
+  film, and music results without source-specific commands or modes.
+- Request cost is controlled by global discovery budget, per-source search cache,
+  and adapter ordering/priority if needed later.
 
-Later, when the app has a media mode/search scope, they can become primary for
-that mode:
+Do not model user-facing media/search scopes. If noisy results become a problem,
+add a local result filter by candidate Type; do not route the TUI to source groups.
 
-```text
-music mode/search scope → MusicBrainz + iTunes primary
-anime mode/search scope → AniList + Jikan + Kitsu + TVMaze primary
-```
-
-### 2.3 Source adapter port
+### 2.1 Source adapter port
 
 Each source exposes exactly two online operations:
 
@@ -504,15 +485,7 @@ known episode events.
 
 ### 10.5 MusicBrainz
 
-Default class:
-
-```text
-secondary enrichment source
-```
-
-Not included in anime-first Enter search.
-
-When enabled for music/cross-media enrichment:
+MusicBrainz is an enabled searchable discovery source for artist candidates.
 
 Artist search:
 
@@ -540,15 +513,7 @@ MusicBrainz requires a meaningful User-Agent and <= 1 request/sec.
 
 ### 10.6 iTunes
 
-Default class:
-
-```text
-secondary enrichment source
-```
-
-Not included in anime-first Enter search.
-
-When enabled for music/film/cross-media scope:
+iTunes is an enabled searchable discovery source.
 
 Search:
 
@@ -580,7 +545,7 @@ User types query
   reads: source_candidate_fts
 
 User presses Enter
-  requests: up to enabled primary source count, initial max 4
+  requests: up to enabled searchable source count, initial max 6
   writes:
     raw_source_payload
     source_observation
@@ -663,10 +628,9 @@ User runs :sync
 Typing:
   0 requests
 
-Enter search:
-  max 4 requests
-  primary sources: AniList, Jikan, Kitsu, TVMaze
-  secondary sources: MusicBrainz, iTunes
+Enter discovery:
+  max 6 requests
+  searchable sources: AniList, Jikan, Kitsu, TVMaze, MusicBrainz, iTunes
   search cache TTL: 24h
 
 Follow:
@@ -719,9 +683,7 @@ Recommended order:
    - Jikan
    - Kitsu
    - TVMaze
-8. Add secondary enrichment adapters when enrichment flows exist:
-   - MusicBrainz
-   - iTunes
+8. Add cross-media discovery/detail adapters as needed; all discovery-capable adapters participate in the same bounded Enter discovery fan-out.
 
 ## 14. Non-goals for this phase
 

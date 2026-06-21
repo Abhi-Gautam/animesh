@@ -2,7 +2,7 @@
 //!
 //! All user-invocable verbs flow through `App::dispatch(Command)`. The
 //! keymap (`w`, `s`, `d`, `g`, `q`, `?`) and the `:` palette both call
-//! it, so they can never drift apart. Async verbs (`:sync`, `:follow`)
+//! it, so they can never drift apart. Async verbs such as `:sync`
 //! `block_in_place` on the current tokio runtime — main constructs a
 //! multi-thread runtime so this is sound.
 //!
@@ -39,7 +39,7 @@ pub(crate) enum Overlay {
     Command,
     /// `/` — fuzzy jump to a followed show.
     Search,
-    /// `a` — AniList picker to follow a new show.
+    /// `a` — source candidate picker to follow a new release.
     Follow,
     /// `t` / `:theme` — theme picker with live preview.
     Theme,
@@ -199,7 +199,6 @@ impl App {
             Command::Quit => {
                 self.quit = true;
             }
-            Command::Follow(id) => self.do_follow(id),
             Command::Sync => self.do_sync(),
             Command::Doctor => self.do_doctor(),
         }
@@ -242,16 +241,14 @@ impl App {
         };
         let canonical_id = s.canonical_id().clone();
         let title = s.display_title().to_string();
-        let source_id = s.source_id().to_string();
         match self.facade.drop_canonical(&canonical_id) {
             Ok(true) => {
                 self.shelf
                     .shows
                     .retain(|sh| sh.canonical.id != canonical_id);
                 self.refresh_buckets();
-                self.toasts.push(format!(
-                    "✗ Dropped {title} — undo with `:follow {source_id}`"
-                ));
+                self.toasts
+                    .push(format!("✗ Dropped {title} — use `a` to rediscover"));
             }
             Ok(false) => self.toasts.push("nothing to drop"),
             Err(e) => self.toasts.push(format!("error: {e}")),
@@ -384,11 +381,6 @@ impl App {
             None => self.open_theme_picker(),
             Some(id) => self.apply_theme_id(id, true),
         }
-    }
-
-    fn do_follow(&mut self, _id: i64) {
-        self.toasts
-            .push("direct :follow id is retired — press `a`, search candidates, then Enter");
     }
 
     fn do_sync(&mut self) {

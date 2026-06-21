@@ -120,7 +120,11 @@ impl Db {
         Ok(outcome)
     }
 
-    pub(crate) fn find_source_ref(&self, source: &str, source_id: &str) -> Result<Option<SourceRef>> {
+    pub(crate) fn find_source_ref(
+        &self,
+        source: &str,
+        source_id: &str,
+    ) -> Result<Option<SourceRef>> {
         self.conn()
             .query_row(
                 "SELECT * FROM source_ref WHERE source = ?1 AND source_id = ?2",
@@ -133,7 +137,10 @@ impl Db {
 
     /// List every (source, source_id) attached to a canonical. Useful
     /// for the LLM context export and for the canonical detail pane.
-    pub(crate) fn source_refs_for_canonical(&self, canonical_id: &CanonicalId) -> Result<Vec<SourceRef>> {
+    pub(crate) fn source_refs_for_canonical(
+        &self,
+        canonical_id: &CanonicalId,
+    ) -> Result<Vec<SourceRef>> {
         let conn = self.conn();
         let mut stmt = conn
             .prepare_cached(
