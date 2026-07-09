@@ -5,7 +5,7 @@
 //! - [`NextAiring`] schedule (optional)
 
 use anyhow::{Context, Result};
-use turso::{Connection, Value};
+use turso::Connection;
 
 use crate::models::{AnimeDetail, NextAiring, SearchHit};
 
@@ -35,88 +35,67 @@ impl From<&AnimeDetail> for Entry {
 }
 
 /// Insert or refresh a watchlist row.
-///
-/// Returns `true` when this was a new insert, `false` when an existing row
-/// was updated.
 pub(crate) async fn upsert(conn: &Connection, entry: &Entry) -> Result<bool> {
     let now = chrono::Utc::now().to_rfc3339();
     let hit = &entry.hit;
-    let existed = exists(conn, hit.id).await?;
 
     let (next_episode, next_airing_at) = match entry.next {
         Some(n) => (Some(n.episode), Some(n.airing_at)),
         None => (None, None),
     };
 
-    conn.execute(
-        "INSERT INTO watchlist (
-            anilist_id, title, title_english, title_romaji, title_native,
-            status, format, episodes, season_year,
-            next_episode, next_airing_at,
-            added_at, updated_at
-         ) VALUES (
-            ?1, ?2, ?3, ?4, ?5,
-            ?6, ?7, ?8, ?9,
-            ?10, ?11,
-            ?12, ?13
-         )
-         ON CONFLICT(anilist_id) DO UPDATE SET
-            title          = excluded.title,
-            title_english  = excluded.title_english,
-            title_romaji   = excluded.title_romaji,
-            title_native   = excluded.title_native,
-            status         = excluded.status,
-            format         = excluded.format,
-            episodes       = excluded.episodes,
-            season_year    = excluded.season_year,
-            next_episode   = excluded.next_episode,
-            next_airing_at = excluded.next_airing_at,
-            updated_at     = excluded.updated_at",
-        turso::params![
-            hit.id,
-            hit.title.as_str(),
-            opt_str(&hit.title_english),
-            opt_str(&hit.title_romaji),
-            opt_str(&hit.title_native),
-            opt_str(&hit.status),
-            opt_str(&hit.format),
-            opt_i64(hit.episodes),
-            opt_i64(hit.season_year),
-            opt_i64(next_episode),
-            opt_i64(next_airing_at),
-            now.as_str(),
-            now.as_str(),
-        ],
-    )
-    .await
-    .context("upsert watchlist row")?;
-
-    Ok(!existed)
-}
-
-async fn exists(conn: &Connection, anilist_id: i64) -> Result<bool> {
     let mut rows = conn
         .query(
-            "SELECT 1 FROM watchlist WHERE anilist_id = ?1 LIMIT 1",
-            turso::params![anilist_id],
+            "INSERT INTO watchlist (
+                anilist_id, title, title_english, title_romaji, title_native,
+                status, format, episodes, season_year,
+                next_episode, next_airing_at,
+                added_at, updated_at
+             ) VALUES (
+                ?1, ?2, ?3, ?4, ?5,
+                ?6, ?7, ?8, ?9,
+                ?10, ?11,
+                ?12, ?13
+             )
+             ON CONFLICT(anilist_id) DO UPDATE SET
+                title          = excluded.title,
+                title_english  = excluded.title_english,
+                title_romaji   = excluded.title_romaji,
+                title_native   = excluded.title_native,
+                status         = excluded.status,
+                format         = excluded.format,
+                episodes       = excluded.episodes,
+                season_year    = excluded.season_year,
+                next_episode   = excluded.next_episode,
+                next_airing_at = excluded.next_airing_at,
+                updated_at     = excluded.updated_at
+             RETURNING added_at = updated_at AS inserted",
+            turso::params![
+                hit.id,
+                hit.title.as_str(),
+                hit.title_english.clone(),
+                hit.title_romaji.clone(),
+                hit.title_native.clone(),
+                hit.status.clone(),
+                hit.format.clone(),
+                hit.episodes,
+                hit.season_year,
+                next_episode,
+                next_airing_at,
+                now.as_str(),
+                now.as_str(),
+            ],
         )
         .await
-        .context("query watchlist existence")?;
-    Ok(rows.next().await.context("read existence row")?.is_some())
-}
+        .context("upsert watchlist row")?;
 
-fn opt_str(v: &Option<String>) -> Value {
-    match v {
-        Some(s) => Value::Text(s.clone()),
-        None => Value::Null,
-    }
-}
-
-fn opt_i64(v: Option<i64>) -> Value {
-    match v {
-        Some(n) => Value::Integer(n),
-        None => Value::Null,
-    }
+    let row = rows
+        .next()
+        .await
+        .context("read upsert result row")?
+        .context("upsert returned no row")?;
+    let inserted = *row.get_value(0)?.as_integer().context("inserted flag")?;
+    Ok(inserted != 0)
 }
 
 #[cfg(test)]
@@ -124,16 +103,8 @@ mod tests {
     use super::*;
     use crate::db;
     use crate::models::{NextAiring, SearchHit};
-    use std::path::PathBuf;
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    fn temp_db_path() -> PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        std::env::temp_dir().join(format!("animesh-watchlist-test-{nanos}.db"))
-    }
+    use tempfile::TempDir;
+    use turso::Value;
 
     fn sample_hit(id: i64, title: &str) -> SearchHit {
         SearchHit {
@@ -151,10 +122,10 @@ mod tests {
 
     #[tokio::test]
     async fn upsert_stores_next_airing() {
-        let path = temp_db_path();
-        let _ = std::fs::remove_file(&path);
-
-        let conn = db::open_path(&path).await.expect("open");
+        let dir = TempDir::new().expect("tempdir");
+        let conn = db::open_path(&dir.path().join("animesh.db"))
+            .await
+            .expect("open");
         let entry = Entry {
             hit: sample_hit(21, "One Piece"),
             next: Some(NextAiring {
@@ -181,16 +152,14 @@ mod tests {
             *row.get_value(2).unwrap().as_integer().unwrap(),
             1_783_865_760
         );
-
-        let _ = std::fs::remove_file(&path);
     }
 
     #[tokio::test]
     async fn upsert_allows_null_next_airing() {
-        let path = temp_db_path();
-        let _ = std::fs::remove_file(&path);
-
-        let conn = db::open_path(&path).await.expect("open");
+        let dir = TempDir::new().expect("tempdir");
+        let conn = db::open_path(&dir.path().join("animesh.db"))
+            .await
+            .expect("open");
         let entry = Entry {
             hit: SearchHit {
                 id: 11061,
@@ -218,7 +187,5 @@ mod tests {
         let row = rows.next().await.unwrap().expect("row");
         assert!(matches!(row.get_value(0).unwrap(), Value::Null));
         assert!(matches!(row.get_value(1).unwrap(), Value::Null));
-
-        let _ = std::fs::remove_file(&path);
     }
 }

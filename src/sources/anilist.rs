@@ -1,10 +1,13 @@
 //! AniList GraphQL client — search + media-by-id.
 
+use std::time::Duration;
+
 use anyhow::{anyhow, Context, Result};
 use reqwest::Client;
 use serde::Deserialize;
 
 const DEFAULT_BASE_URL: &str = "https://graphql.anilist.co";
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub(crate) struct AniListClient {
     client: Client,
@@ -17,13 +20,18 @@ impl AniListClient {
     }
 
     pub(crate) fn with_base_url(base_url: String) -> Self {
-        Self {
-            client: Client::new(),
-            base_url,
-        }
+        let client = Client::builder()
+            .timeout(REQUEST_TIMEOUT)
+            .user_agent(concat!("animesh/", env!("CARGO_PKG_VERSION")))
+            .build()
+            .expect("build reqwest client");
+        Self { client, base_url }
     }
 
-    async fn post_graphql(&self, query: &str, variables: serde_json::Value) -> Result<String> {
+    async fn post_graphql<T>(&self, query: &str, variables: serde_json::Value) -> Result<T>
+    where
+        T: for<'de> Deserialize<'de>,
+    {
         let request = serde_json::json!({ "query": query, "variables": variables });
         let resp = self
             .client
@@ -34,10 +42,19 @@ impl AniListClient {
             .context("POST to AniList")?;
         let status = resp.status();
         let response_json = resp.text().await.context("read AniList response body")?;
-        if !status.is_success() {
-            return Err(anyhow!("AniList HTTP {status}: {response_json}"));
+
+        // Body may not even be a GraphQL envelope (e.g. a plain-text rate-limit
+        // page) — fall through to the raw status+body error in that case.
+        if let Ok(envelope) = serde_json::from_str::<GraphQlResponse<T>>(&response_json) {
+            if let Some(data) = envelope.data {
+                return Ok(data);
+            }
+            if let Some(err) = envelope.errors.first() {
+                return Err(anyhow!("AniList error: {}", err.message));
+            }
         }
-        Ok(response_json)
+
+        Err(anyhow!("AniList HTTP {status}: {response_json}"))
     }
 
     /// Search anime by free-form query.
@@ -57,10 +74,8 @@ impl AniListClient {
             }
         "#;
         let variables = serde_json::json!({ "search": query, "perPage": per_page });
-        let json = self.post_graphql(body, variables).await?;
-        let resp: GraphQlResponse<PageMedia> =
-            serde_json::from_str(&json).context("deserialize AniList search response")?;
-        Ok(resp.data.page.media)
+        let resp: PageMedia = self.post_graphql(body, variables).await?;
+        Ok(resp.page.media)
     }
 
     /// Fetch a single anime by AniList media id.
@@ -85,10 +100,8 @@ impl AniListClient {
             }
         "#;
         let variables = serde_json::json!({ "id": id });
-        let json = self.post_graphql(body, variables).await?;
-        let resp: GraphQlResponse<MediaData> =
-            serde_json::from_str(&json).context("deserialize AniList media response")?;
-        Ok(resp.data.media)
+        let resp: MediaData = self.post_graphql(body, variables).await?;
+        Ok(resp.media)
     }
 }
 
@@ -104,7 +117,14 @@ impl Default for AniListClient {
 
 #[derive(Debug, Deserialize)]
 struct GraphQlResponse<T> {
-    data: T,
+    data: Option<T>,
+    #[serde(default)]
+    errors: Vec<GraphQlError>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GraphQlError {
+    message: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -266,11 +286,13 @@ mod tests {
 
     #[tokio::test]
     async fn media_not_found_returns_none() {
+        // Real AniList behavior for an unknown id: HTTP 404, but the body
+        // still carries a parseable `data.Media: null` alongside `errors`.
         let mut server = mockito::Server::new_async().await;
-        let body = r#"{ "data": { "Media": null } }"#;
+        let body = r#"{"errors":[{"message":"Not Found.","status":404,"locations":[{"line":1,"column":9}]}],"data":{"Media":null}}"#;
         let _m = server
             .mock("POST", "/")
-            .with_status(200)
+            .with_status(404)
             .with_body(body)
             .create_async()
             .await;
@@ -294,6 +316,26 @@ mod tests {
         let err = client.search("one piece", 10).await.unwrap_err();
         let msg = format!("{err:#}");
         assert!(msg.contains("429"), "expected 429 in error, got: {msg}");
+    }
+
+    #[tokio::test]
+    async fn graphql_error_with_null_data_surfaces_message() {
+        let mut server = mockito::Server::new_async().await;
+        let body = r#"{"data":null,"errors":[{"message":"Validation error"}]}"#;
+        let _m = server
+            .mock("POST", "/")
+            .with_status(200)
+            .with_body(body)
+            .create_async()
+            .await;
+
+        let client = AniListClient::with_base_url(server.url());
+        let err = client.search("one piece", 10).await.unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("Validation error"),
+            "expected GraphQL error message, got: {msg}"
+        );
     }
 
     #[test]

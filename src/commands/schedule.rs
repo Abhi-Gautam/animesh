@@ -6,12 +6,11 @@ use crate::models::AnimeDetail;
 use crate::sources::AniListClient;
 
 /// Fetch anime + next airing by AniList id (no I/O printing).
-pub(crate) async fn run(id: i64) -> Result<AnimeDetail> {
+pub(crate) async fn run(client: &AniListClient, id: i64) -> Result<AnimeDetail> {
     if id <= 0 {
         bail!("AniList id must be a positive integer, got {id}");
     }
 
-    let client = AniListClient::new();
     let media = client
         .media(id)
         .await
@@ -22,9 +21,9 @@ pub(crate) async fn run(id: i64) -> Result<AnimeDetail> {
 }
 
 /// Parse a raw CLI id string, then [`run`].
-pub(crate) async fn run_str(id_raw: &str) -> Result<AnimeDetail> {
+pub(crate) async fn run_str(client: &AniListClient, id_raw: &str) -> Result<AnimeDetail> {
     let id: i64 = id_raw
         .parse()
         .context("schedule expects a numeric AniList id")?;
-    run(id).await
+    run(client, id).await
 }

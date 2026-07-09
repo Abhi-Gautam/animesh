@@ -8,8 +8,7 @@ use crate::sources::AniListClient;
 const PER_PAGE: u32 = 10;
 
 /// Search AniList and return structured hits (no I/O printing).
-pub(crate) async fn run(query: &str) -> Result<Vec<SearchHit>> {
-    let client = AniListClient::new();
+pub(crate) async fn run(client: &AniListClient, query: &str) -> Result<Vec<SearchHit>> {
     let results = client
         .search(query, PER_PAGE)
         .await

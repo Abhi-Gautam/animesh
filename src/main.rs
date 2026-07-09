@@ -15,10 +15,9 @@ mod sources;
 use anyhow::Result;
 
 use models::{AnimeDetail, SearchHit, WatchlistMutation};
+use sources::AniListClient;
 
-fn usage() -> ! {
-    eprintln!(
-        "\
+const USAGE: &str = "\
 animesh — personal anime release radar (CLI slice)
 
 Usage:
@@ -29,8 +28,10 @@ Usage:
 Examples:
   animesh search \"one piece\"
   animesh schedule 21
-  animesh watchlist 21"
-    );
+  animesh watchlist 21";
+
+fn usage_error() -> ! {
+    eprintln!("{USAGE}");
     std::process::exit(1);
 }
 
@@ -39,35 +40,41 @@ async fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
     let cmd = match args.next() {
         Some(c) => c,
-        None => usage(),
+        None => usage_error(),
     };
+
+    let client = AniListClient::new();
 
     match cmd.as_str() {
         "search" => {
-            let query = args.next().unwrap_or_else(|| usage());
+            let query = args.next().unwrap_or_else(|| usage_error());
             if query.trim().is_empty() {
-                usage();
+                usage_error();
             }
-            let hits = commands::search::run(&query).await?;
+            let hits = commands::search::run(&client, &query).await?;
             print_search(&query, &hits);
             Ok(())
         }
         "schedule" => {
-            let id = args.next().unwrap_or_else(|| usage());
-            let detail = commands::schedule::run_str(&id).await?;
+            let id = args.next().unwrap_or_else(|| usage_error());
+            let detail = commands::schedule::run_str(&client, &id).await?;
             print_detail(&detail);
             Ok(())
         }
         "watchlist" => {
-            let id = args.next().unwrap_or_else(|| usage());
-            let mutation = commands::watchlist::run_str(&id).await?;
+            let id = args.next().unwrap_or_else(|| usage_error());
+            let conn = db::open_default().await?;
+            let mutation = commands::watchlist::run_str(&client, &conn, &id).await?;
             print_watchlist(&mutation);
             Ok(())
         }
-        "-h" | "--help" | "help" => usage(),
+        "-h" | "--help" | "help" => {
+            println!("{USAGE}");
+            Ok(())
+        }
         other => {
             eprintln!("unknown command: {other}\n");
-            usage();
+            usage_error();
         }
     }
 }

@@ -39,8 +39,8 @@ pub(crate) async fn open_path(path: &Path) -> Result<Connection> {
         .build()
         .await
         .with_context(|| format!("open Turso database at {}", path.display()))?;
-    let conn = db.connect().context("connect to Turso database")?;
-    migrate(&conn).await?;
+    let mut conn = db.connect().context("connect to Turso database")?;
+    migrate(&mut conn).await?;
     Ok(conn)
 }
 
@@ -54,7 +54,7 @@ fn default_db_path() -> Result<PathBuf> {
     Ok(dirs.data_dir().join("animesh.db"))
 }
 
-async fn migrate(conn: &Connection) -> Result<()> {
+async fn migrate(conn: &mut Connection) -> Result<()> {
     conn.execute(
         "CREATE TABLE IF NOT EXISTS schema_migrations (
             version    INTEGER PRIMARY KEY NOT NULL,
@@ -70,20 +70,32 @@ async fn migrate(conn: &Connection) -> Result<()> {
             continue;
         }
 
+        // Whole migration (statements + bookkeeping row) commits atomically,
+        // so a mid-migration crash never leaves a half-applied schema behind
+        // for the next startup to collide with.
+        let tx = conn
+            .transaction()
+            .await
+            .with_context(|| format!("begin transaction for migration {version}"))?;
+
         // Turso/SQLite: run one statement at a time.
         for stmt in split_sql_statements(sql) {
-            conn.execute(stmt, ())
+            tx.execute(stmt, ())
                 .await
                 .with_context(|| format!("apply migration {version}: {stmt}"))?;
         }
 
         let applied_at = chrono::Utc::now().to_rfc3339();
-        conn.execute(
+        tx.execute(
             "INSERT INTO schema_migrations (version, applied_at) VALUES (?1, ?2)",
             turso::params![version, applied_at.as_str()],
         )
         .await
         .with_context(|| format!("record migration {version}"))?;
+
+        tx.commit()
+            .await
+            .with_context(|| format!("commit migration {version}"))?;
     }
 
     Ok(())
