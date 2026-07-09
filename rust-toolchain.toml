@@ -3,5 +3,5 @@
 # which ignores this file — it exists so CI (and a future rustup setup) are
 # reproducible. Bump `channel` deliberately, not incidentally.
 [toolchain]
-channel = "1.88.0"
+channel = "1.96.1"
 components = ["clippy", "rustfmt"]
