@@ -3,11 +3,11 @@ name = "animesh"
 version = "0.5.0"
 edition = "2021"
 authors = ["Abhishek Gautam"]
-description = "Interactive TUI for tracking anime — local-first, AniList-backed"
+description = "Search anime on AniList from the command line"
 license = "MIT"
 repository = "https://github.com/Abhi-Gautam/com.git"
-keywords = ["anime", "tui", "ratatui", "anilist"]
-categories = ["command-line-utilities", "multimedia"]
+keywords = ["anime", "anilist"]
+categories = ["command-line-utilities"]
 
 [dependencies]
 chrono = "0.4"
@@ -16,38 +16,19 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1.0", features = ["full"] }
 anyhow = "1.0"
-crossterm = "0.27"
-rusqlite = { version = "0.31", features = ["bundled"] }
-refinery = { version = "0.8", features = ["rusqlite"] }
-directories = "5"
-ratatui = "0.28"
-nucleo = "0.5"
-open = "5"
-image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
-url = { version = "2", features = ["serde"] }
-arboard = "3"
 
 [dev-dependencies]
-proptest = "1"
 mockito = "1"
-tempfile = "3"
 
 [profile.release]
 strip = true
 lto = "thin"
 codegen-units = 1
 
-# Lint policy lives here so it applies to every target and is enforced
-# identically in CI. Everything is `warn` on purpose: the local inner loop
-# never blocks on lints during in-flight work. CI runs `clippy -- -D warnings`
-# to escalate these to hard errors at the merge gate.
 [lints.rust]
 unused = "warn"
-# Items in this binary should be `pub(crate)` unless genuinely re-exported.
-# Adopted via a one-shot `cargo clippy --fix` cleanup pass.
 unreachable_pub = "warn"
 
 [lints.clippy]
-# High-signal, zero-false-positive guards against leftover debugging scaffolding.
 todo = "warn"
 dbg_macro = "warn"

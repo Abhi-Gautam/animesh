@@ -4,25 +4,22 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-animesh is a personal release radar — anime first, but the substrate is cross-media (anime + TV + music). Single-user, Mac-local, all-Rust, SQLite-backed. The product story lives in `manifesto.md`; read it before making architectural decisions.
+animesh is a personal release radar — anime first, but the substrate is cross-media (anime + TV + music). Single-user, Mac-local, all-Rust, SQLite-backed.
 
 ## Architecture
 
-### The Library facade is the only mutation chokepoint
+### Product architecture north star
 
-`src/library/mod.rs` is the *single* place that answers "is this followed?" and the only thing above `store/` allowed to mutate state. TUI handlers, the sync loop, and CLI shims are thin marshalling — they parse input, call `Library`, render output. Everything below `Library` (sources, store) does only what `Library` asks.
+animesh is not fundamentally a TUI app. It is a local-first personal data intelligence engine: external world → ingestion → durable evidence → normalized observations → canonical user graph → schedules/events/relationships → serving read models → many surfaces. The TUI is only one serving surface; future surfaces include daemon notifications, timelines, graph visualizations, recommendations, APIs, and dashboards.
 
-When adding a feature, the question is almost never "where does this code go" — it's "what's the smallest `Library` primitive that lets the caller express this." Add the primitive; the caller becomes trivial.
+Think in data-platform layers:
 
-### Layering rules 
+- Bronze: raw external evidence
+- Silver: normalized source facts
+- Gold: canonical user graph and projected facts 
+- Serving: Library read models consumed by TUI/daemon/API/visualizations
 
-- `store/` is the **only** module that imports `rusqlite`. Driver swap (rusqlite → turso) is meant to be a one-module rewrite.
-- `sources/` is the **only** place `reqwest` appears. Each source owns its own rate-limiting + retry. No shared `Source` trait yet — factor one out when the second adapter needs it.
-- `Library` does **not** canonicalize titles. The canonicalization pipeline (`ingest/` + `search/`) decides that.
-
-### Error discipline
-
-`errors.rs` defines three exit kinds: `User=1`, `Durable=2`, `Network=3`. Wrap intentional user/network errors in `UserError` / `NetworkError`;
+Core engine capabilities are: discover → follow → ingest → normalize → canonicalize → project schedules/events → sync/refresh → resolve read models → user feedback → health/explainability.
 
 ## Project conventions
 
