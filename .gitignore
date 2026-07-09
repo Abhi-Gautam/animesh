@@ -17,4 +17,4 @@ Cargo.lock
 **/*.snap.new
 
 # Local scratch / harvested sample data (source-lake outputs etc.)
-/scratchpad/
+/source-lake/

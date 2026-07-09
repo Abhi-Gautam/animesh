@@ -1,4 +1,4 @@
-//! AniList search client — the only source adapter that survived the trim.
+//! AniList GraphQL client — search + media-by-id.
 
 use anyhow::{anyhow, Context, Result};
 use reqwest::Client;
@@ -23,24 +23,8 @@ impl AniListClient {
         }
     }
 
-    /// Search anime by free-form query. Returns raw JSON response.
-    pub(crate) async fn search_raw(&self, query: &str, per_page: u32) -> Result<String> {
-        let body = r#"
-            query ($search: String, $perPage: Int) {
-              Page(perPage: $perPage) {
-                media(search: $search, type: ANIME, sort: SEARCH_MATCH) {
-                  id
-                  title { romaji english native }
-                  status
-                  episodes
-                  format
-                  nextAiringEpisode { episode airingAt }
-                }
-              }
-            }
-        "#;
-        let variables = serde_json::json!({ "search": query, "perPage": per_page });
-        let request = serde_json::json!({ "query": body, "variables": variables });
+    async fn post_graphql(&self, query: &str, variables: serde_json::Value) -> Result<String> {
+        let request = serde_json::json!({ "query": query, "variables": variables });
         let resp = self
             .client
             .post(&self.base_url)
@@ -56,12 +40,55 @@ impl AniListClient {
         Ok(response_json)
     }
 
-    /// Search and deserialize into structured results.
+    /// Search anime by free-form query.
     pub(crate) async fn search(&self, query: &str, per_page: u32) -> Result<Vec<Media>> {
-        let json = self.search_raw(query, per_page).await?;
+        let body = r#"
+            query ($search: String, $perPage: Int) {
+              Page(perPage: $perPage) {
+                media(search: $search, type: ANIME, sort: SEARCH_MATCH) {
+                  id
+                  title { romaji english native }
+                  status
+                  episodes
+                  format
+                  seasonYear
+                }
+              }
+            }
+        "#;
+        let variables = serde_json::json!({ "search": query, "perPage": per_page });
+        let json = self.post_graphql(body, variables).await?;
         let resp: GraphQlResponse<PageMedia> =
             serde_json::from_str(&json).context("deserialize AniList search response")?;
         Ok(resp.data.page.media)
+    }
+
+    /// Fetch a single anime by AniList media id.
+    ///
+    /// Returns `Ok(None)` when AniList has no anime with that id.
+    pub(crate) async fn media(&self, id: i64) -> Result<Option<Media>> {
+        let body = r#"
+            query ($id: Int) {
+              Media(id: $id, type: ANIME) {
+                id
+                title { romaji english native }
+                status
+                episodes
+                format
+                seasonYear
+                nextAiringEpisode {
+                  episode
+                  airingAt
+                  timeUntilAiring
+                }
+              }
+            }
+        "#;
+        let variables = serde_json::json!({ "id": id });
+        let json = self.post_graphql(body, variables).await?;
+        let resp: GraphQlResponse<MediaData> =
+            serde_json::from_str(&json).context("deserialize AniList media response")?;
+        Ok(resp.data.media)
     }
 }
 
@@ -72,7 +99,7 @@ impl Default for AniListClient {
 }
 
 // ---------------------------------------------------------------------------
-// Response shapes — minimal, only what search returns.
+// Response shapes
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Deserialize)]
@@ -91,13 +118,22 @@ struct MediaPage {
     media: Vec<Media>,
 }
 
+#[derive(Debug, Deserialize)]
+struct MediaData {
+    #[serde(rename = "Media")]
+    media: Option<Media>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct Media {
     pub id: i64,
     pub title: MediaTitle,
     pub status: Option<String>,
     pub format: Option<String>,
-    #[serde(rename = "nextAiringEpisode")]
+    pub episodes: Option<i64>,
+    #[serde(rename = "seasonYear")]
+    pub season_year: Option<i64>,
+    #[serde(rename = "nextAiringEpisode", default)]
     pub next_airing_episode: Option<NextAiringEpisode>,
 }
 
@@ -113,6 +149,8 @@ pub(crate) struct NextAiringEpisode {
     pub episode: i64,
     #[serde(rename = "airingAt")]
     pub airing_at: i64,
+    #[serde(rename = "timeUntilAiring")]
+    pub time_until_airing: Option<i64>,
 }
 
 impl Media {
@@ -139,9 +177,9 @@ mod tests {
                 "Page": {
                     "media": [
                         {"id": 21, "title": {"romaji": "ONE PIECE", "english": "One Piece", "native": "ワンピース"},
-                         "status": "RELEASING", "episodes": null, "format": "TV", "nextAiringEpisode": {"episode": 1100, "airingAt": 1700000000}},
+                         "status": "RELEASING", "episodes": null, "format": "TV", "seasonYear": 1999},
                         {"id": 11061, "title": {"romaji": "Hunter x Hunter", "english": "Hunter x Hunter (2011)", "native": "ハンター×ハンター"},
-                         "status": "FINISHED", "episodes": 148, "format": "TV", "nextAiringEpisode": null}
+                         "status": "FINISHED", "episodes": 148, "format": "TV", "seasonYear": 2011}
                     ]
                 }
             }
@@ -160,6 +198,86 @@ mod tests {
         assert_eq!(results[0].id, 21);
         assert_eq!(results[0].display_title(), "One Piece");
         assert_eq!(results[1].id, 11061);
+        assert_eq!(results[1].episodes, Some(148));
+    }
+
+    #[tokio::test]
+    async fn media_parses_next_airing() {
+        let mut server = mockito::Server::new_async().await;
+        let body = r#"{
+            "data": {
+                "Media": {
+                    "id": 21,
+                    "title": {"romaji": "ONE PIECE", "english": "One Piece", "native": "ワンピース"},
+                    "status": "RELEASING",
+                    "episodes": null,
+                    "format": "TV",
+                    "seasonYear": 1999,
+                    "nextAiringEpisode": {"episode": 1169, "airingAt": 1783865760, "timeUntilAiring": 250000}
+                }
+            }
+        }"#;
+        let _m = server
+            .mock("POST", "/")
+            .with_status(200)
+            .with_body(body)
+            .create_async()
+            .await;
+
+        let client = AniListClient::with_base_url(server.url());
+        let media = client.media(21).await.unwrap().expect("media present");
+        assert_eq!(media.id, 21);
+        assert_eq!(media.display_title(), "One Piece");
+        let next = media.next_airing_episode.expect("next airing");
+        assert_eq!(next.episode, 1169);
+        assert_eq!(next.airing_at, 1783865760);
+        assert_eq!(next.time_until_airing, Some(250000));
+    }
+
+    #[tokio::test]
+    async fn media_parses_finished_no_next() {
+        let mut server = mockito::Server::new_async().await;
+        let body = r#"{
+            "data": {
+                "Media": {
+                    "id": 11061,
+                    "title": {"romaji": "Hunter x Hunter", "english": "Hunter x Hunter (2011)", "native": null},
+                    "status": "FINISHED",
+                    "episodes": 148,
+                    "format": "TV",
+                    "seasonYear": 2011,
+                    "nextAiringEpisode": null
+                }
+            }
+        }"#;
+        let _m = server
+            .mock("POST", "/")
+            .with_status(200)
+            .with_body(body)
+            .create_async()
+            .await;
+
+        let client = AniListClient::with_base_url(server.url());
+        let media = client.media(11061).await.unwrap().expect("media present");
+        assert_eq!(media.status.as_deref(), Some("FINISHED"));
+        assert_eq!(media.episodes, Some(148));
+        assert!(media.next_airing_episode.is_none());
+    }
+
+    #[tokio::test]
+    async fn media_not_found_returns_none() {
+        let mut server = mockito::Server::new_async().await;
+        let body = r#"{ "data": { "Media": null } }"#;
+        let _m = server
+            .mock("POST", "/")
+            .with_status(200)
+            .with_body(body)
+            .create_async()
+            .await;
+
+        let client = AniListClient::with_base_url(server.url());
+        let media = client.media(999999999).await.unwrap();
+        assert!(media.is_none());
     }
 
     #[tokio::test]
@@ -189,6 +307,8 @@ mod tests {
             },
             status: None,
             format: None,
+            episodes: None,
+            season_year: None,
             next_airing_episode: None,
         };
         assert_eq!(m.display_title(), "English");
@@ -205,6 +325,8 @@ mod tests {
             },
             status: None,
             format: None,
+            episodes: None,
+            season_year: None,
             next_airing_episode: None,
         };
         assert_eq!(m.display_title(), "Romaji");
@@ -221,6 +343,8 @@ mod tests {
             },
             status: None,
             format: None,
+            episodes: None,
+            season_year: None,
             next_airing_episode: None,
         };
         assert_eq!(m.display_title(), "ネイティブ");
@@ -237,6 +361,8 @@ mod tests {
             },
             status: None,
             format: None,
+            episodes: None,
+            season_year: None,
             next_airing_episode: None,
         };
         assert_eq!(m.display_title(), "(untitled)");
