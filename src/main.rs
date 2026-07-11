@@ -7,8 +7,10 @@
 //!   cargo run -- schedule 21
 //!   cargo run -- watchlist 21
 
+mod api;
 mod commands;
 mod db;
+mod ipc;
 mod models;
 mod sources;
 
@@ -62,18 +64,22 @@ async fn main() -> Result<()> {
             Ok(())
         }
         "watchlist" => {
-            let id = args.next().unwrap_or_else(|| usage_error());
-            let conn = db::open_default().await?;
-            let mutation = commands::watchlist::run_str(&client, &conn, &id).await?;
-            print_watchlist(&mutation);
+            let id: i64 = args
+                .next()
+                .unwrap_or_else(|| usage_error())
+                .parse()
+                .expect("watchlist expects a numeric AniList id");
+            match ipc::request(&api::Request::Watchlist { id }).await? {
+                api::Reply::Watchlist(m) => print_watchlist(&m),
+                api::Reply::Error(e) => {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                }
+                _ => unreachable!("unexpected reply for watchlist"),
+            }
             Ok(())
         }
-        "daemon" => {
-            let conn = db::open_default().await?;
-            let changed = std::sync::Arc::new(tokio::sync::Notify::new());
-            println!("animesh notifier daemon started (Ctrl-C to stop)");
-            commands::notifier::run(&conn, changed).await
-        }
+        "daemon" => commands::daemon::run().await,
         "dev-airing" => {
             let id: i64 = args
                 .next()
@@ -90,9 +96,22 @@ async fn main() -> Result<()> {
                 .unwrap_or_else(|| usage_error())
                 .parse()
                 .expect("dev-airing <anilist_id> <episode> <secs_from_now>");
-            let conn = db::open_default().await?;
-            let airing_at = commands::dev::airing(&conn, id, episode, secs).await?;
-            println!("dev-airing: id={id} ep.{episode} airs_in={secs}s (airing_at={airing_at})");
+            match ipc::request(&api::Request::DevAiring {
+                id,
+                episode,
+                secs_from_now: secs,
+            })
+            .await?
+            {
+                api::Reply::DevAiring { airing_at } => {
+                    println!("dev-airing: id={id} ep.{episode} airs_in={secs}s (airing_at={airing_at})")
+                }
+                api::Reply::Error(e) => {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                }
+                _ => unreachable!("unexpected reply for dev-airing"),
+            }
             Ok(())
         }
         "-h" | "--help" | "help" => {
