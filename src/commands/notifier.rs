@@ -20,20 +20,15 @@ use turso::Connection;
 
 use crate::db::notifications::{self, Due};
 
-/// Run the notifier loop forever. `changed` is poked by command handlers after
-/// any watchlist mutation.
 pub(crate) async fn run(conn: &Connection, changed: Arc<Notify>) -> Result<()> {
     loop {
         match notifications::next_due(conn).await? {
             Some(due) => wait_and_fire(conn, due, &changed).await?,
-            // Nothing scheduled — park until the watchlist changes.
             None => changed.notified().await,
         }
     }
 }
 
-/// Sleep until `due` airs, then fire — unless a watchlist change wakes us first
-/// so [`run`] can recompute (a shifted schedule or a nearer airing).
 async fn wait_and_fire(conn: &Connection, due: Due, changed: &Notify) -> Result<()> {
     let now = chrono::Utc::now().timestamp();
     let wait = due.airing_at.saturating_sub(now).max(0) as u64;
@@ -45,18 +40,12 @@ async fn wait_and_fire(conn: &Connection, due: Due, changed: &Notify) -> Result<
                 .await
                 .context("record sent notification")?;
         }
-        // Watchlist changed mid-wait — fall through; run() recomputes next_due.
         _ = changed.notified() => {}
     }
 
     Ok(())
 }
 
-/// Deliver the notification for a due airing.
-///
-/// TODO(surface): notification surface undecided — swap this stub for the real
-/// delivery. Prints (and flushes, since a daemon's stdout is block-buffered when
-/// not a TTY) so the loop is observable during testing.
 fn dispatch(due: &Due) -> Result<()> {
     let at = chrono::DateTime::from_timestamp(due.airing_at, 0)
         .map(|d| d.format("%Y-%m-%d %H:%M:%SZ").to_string())

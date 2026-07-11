@@ -26,15 +26,3 @@ pub(crate) async fn run(
 
     Ok(WatchlistMutation { inserted, detail })
 }
-
-/// Parse a raw CLI id string, then [`run`].
-pub(crate) async fn run_str(
-    client: &AniListClient,
-    conn: &Connection,
-    id_raw: &str,
-) -> Result<WatchlistMutation> {
-    let id: i64 = id_raw
-        .parse()
-        .context("watchlist expects a numeric AniList id")?;
-    run(client, conn, id).await
-}

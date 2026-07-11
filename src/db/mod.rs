@@ -9,4 +9,6 @@ pub(crate) mod migrations;
 pub(crate) mod notifications;
 pub(crate) mod watchlist;
 
-pub(crate) use connection::{open_default, open_path};
+pub(crate) use connection::open_database;
+#[cfg_attr(not(test), allow(unused_imports))]
+pub(crate) use connection::open_path;

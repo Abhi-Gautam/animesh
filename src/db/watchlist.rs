@@ -34,9 +34,10 @@ impl From<&AnimeDetail> for Entry {
     }
 }
 
-/// Insert or refresh a watchlist row.
+/// Insert or refresh a watchlist row. Returns `true` if the row was newly
+/// inserted, `false` if an existing row was updated.
 pub(crate) async fn upsert(conn: &Connection, entry: &Entry) -> Result<bool> {
-    let now = chrono::Utc::now().to_rfc3339();
+    let now = chrono::Utc::now().timestamp(); // unix seconds UTC
     let hit = &entry.hit;
 
     let (next_episode, next_airing_at) = match entry.next {
@@ -44,9 +45,10 @@ pub(crate) async fn upsert(conn: &Connection, entry: &Entry) -> Result<bool> {
         None => (None, None),
     };
 
-    let mut rows = conn
-        .query(
-            "INSERT INTO watchlist (
+    let inserted = !row_exists(conn, hit.id).await?;
+
+    conn.execute(
+        "INSERT INTO watchlist (
                 anilist_id, title, title_english, title_romaji, title_native,
                 status, format, episodes, season_year,
                 next_episode, next_airing_at,
@@ -68,34 +70,39 @@ pub(crate) async fn upsert(conn: &Connection, entry: &Entry) -> Result<bool> {
                 season_year    = excluded.season_year,
                 next_episode   = excluded.next_episode,
                 next_airing_at = excluded.next_airing_at,
-                updated_at     = excluded.updated_at
-             RETURNING added_at = updated_at AS inserted",
-            turso::params![
-                hit.id,
-                hit.title.as_str(),
-                hit.title_english.clone(),
-                hit.title_romaji.clone(),
-                hit.title_native.clone(),
-                hit.status.clone(),
-                hit.format.clone(),
-                hit.episodes,
-                hit.season_year,
-                next_episode,
-                next_airing_at,
-                now.as_str(),
-                now.as_str(),
-            ],
+                updated_at     = excluded.updated_at",
+        turso::params![
+            hit.id,
+            hit.title.as_str(),
+            hit.title_english.clone(),
+            hit.title_romaji.clone(),
+            hit.title_native.clone(),
+            hit.status.clone(),
+            hit.format.clone(),
+            hit.episodes,
+            hit.season_year,
+            next_episode,
+            next_airing_at,
+            now,
+            now,
+        ],
+    )
+    .await
+    .context("upsert watchlist row")?;
+
+    Ok(inserted)
+}
+
+/// Whether a watchlist row already exists for `anilist_id`.
+async fn row_exists(conn: &Connection, anilist_id: i64) -> Result<bool> {
+    let mut rows = conn
+        .query(
+            "SELECT 1 FROM watchlist WHERE anilist_id = ?1 LIMIT 1",
+            turso::params![anilist_id],
         )
         .await
-        .context("upsert watchlist row")?;
-
-    let row = rows
-        .next()
-        .await
-        .context("read upsert result row")?
-        .context("upsert returned no row")?;
-    let inserted = *row.get_value(0)?.as_integer().context("inserted flag")?;
-    Ok(inserted != 0)
+        .context("check watchlist row existence")?;
+    Ok(rows.next().await.context("read existence row")?.is_some())
 }
 
 #[cfg(test)]

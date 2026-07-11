@@ -11,8 +11,8 @@ CREATE TABLE watchlist (
     format        TEXT,
     episodes      INTEGER,
     season_year   INTEGER,
-    added_at      TEXT    NOT NULL,
-    updated_at    TEXT    NOT NULL
+    added_at      INTEGER NOT NULL,
+    updated_at    INTEGER NOT NULL
 );
 
 CREATE INDEX idx_watchlist_status ON watchlist (status);

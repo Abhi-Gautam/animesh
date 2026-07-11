@@ -17,7 +17,7 @@ pub(crate) async fn migrate(conn: &mut Connection) -> Result<()> {
     conn.execute(
         "CREATE TABLE IF NOT EXISTS schema_migrations (
             version    INTEGER PRIMARY KEY NOT NULL,
-            applied_at TEXT    NOT NULL
+            applied_at INTEGER NOT NULL
         )",
         (),
     )
@@ -40,10 +40,10 @@ pub(crate) async fn migrate(conn: &mut Connection) -> Result<()> {
                 .with_context(|| format!("apply migration {version}: {stmt}"))?;
         }
 
-        let applied_at = chrono::Utc::now().to_rfc3339();
+        let applied_at = chrono::Utc::now().timestamp();
         tx.execute(
             "INSERT INTO schema_migrations (version, applied_at) VALUES (?1, ?2)",
-            turso::params![version, applied_at.as_str()],
+            turso::params![version, applied_at],
         )
         .await
         .with_context(|| format!("record migration {version}"))?;

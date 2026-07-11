@@ -8,10 +8,12 @@
 //! - [`AnimeDetail`] — `SearchHit` + `NextAiring` (schedule view)
 //! - watchlist [`crate::db::watchlist::Entry`] — same composition, persistence boundary
 
+use serde::{Deserialize, Serialize};
+
 use crate::sources::anilist::{Media, NextAiringEpisode};
 
 /// One search hit (discovery / identity fields).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct SearchHit {
     pub id: i64,
     pub title: String,
@@ -41,7 +43,7 @@ impl From<Media> for SearchHit {
 }
 
 /// Next scheduled episode (from AniList `nextAiringEpisode`).
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub(crate) struct NextAiring {
     pub episode: i64,
     pub airing_at: i64,
@@ -59,7 +61,7 @@ impl From<NextAiringEpisode> for NextAiring {
 }
 
 /// Schedule/detail view: identity ([`SearchHit`]) + optional next airing.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct AnimeDetail {
     pub hit: SearchHit,
     pub next: Option<NextAiring>,
@@ -76,7 +78,7 @@ impl From<Media> for AnimeDetail {
 }
 
 /// Result of adding/updating a watchlist row.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct WatchlistMutation {
     pub inserted: bool,
     pub detail: AnimeDetail,
