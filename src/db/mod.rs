@@ -2,6 +2,7 @@
 //!
 //! Table-specific repositories live in submodules (e.g. [`watchlist`]).
 
+pub(crate) mod notifications;
 pub(crate) mod watchlist;
 
 use std::path::{Path, PathBuf};
@@ -16,6 +17,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
         2,
         include_str!("../../migrations/002_watchlist_next_airing.sql"),
     ),
+    (3, include_str!("../../migrations/003_notifications.sql")),
 ];
 
 /// Open the default app database and apply pending migrations.

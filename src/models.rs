@@ -44,7 +44,6 @@ impl From<Media> for SearchHit {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct NextAiring {
     pub episode: i64,
-    /// Unix seconds UTC.
     pub airing_at: i64,
     pub time_until_airing: Option<i64>,
 }
@@ -79,7 +78,6 @@ impl From<Media> for AnimeDetail {
 /// Result of adding/updating a watchlist row.
 #[derive(Debug, Clone)]
 pub(crate) struct WatchlistMutation {
-    /// `true` if newly inserted; `false` if an existing row was refreshed.
     pub inserted: bool,
     pub detail: AnimeDetail,
 }

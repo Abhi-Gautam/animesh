@@ -68,6 +68,33 @@ async fn main() -> Result<()> {
             print_watchlist(&mutation);
             Ok(())
         }
+        "daemon" => {
+            let conn = db::open_default().await?;
+            let changed = std::sync::Arc::new(tokio::sync::Notify::new());
+            println!("animesh notifier daemon started (Ctrl-C to stop)");
+            commands::notifier::run(&conn, changed).await
+        }
+        "dev-airing" => {
+            let id: i64 = args
+                .next()
+                .unwrap_or_else(|| usage_error())
+                .parse()
+                .expect("dev-airing <anilist_id> <episode> <secs_from_now>");
+            let episode: i64 = args
+                .next()
+                .unwrap_or_else(|| usage_error())
+                .parse()
+                .expect("dev-airing <anilist_id> <episode> <secs_from_now>");
+            let secs: i64 = args
+                .next()
+                .unwrap_or_else(|| usage_error())
+                .parse()
+                .expect("dev-airing <anilist_id> <episode> <secs_from_now>");
+            let conn = db::open_default().await?;
+            let airing_at = commands::dev::airing(&conn, id, episode, secs).await?;
+            println!("dev-airing: id={id} ep.{episode} airs_in={secs}s (airing_at={airing_at})");
+            Ok(())
+        }
         "-h" | "--help" | "help" => {
             println!("{USAGE}");
             Ok(())
