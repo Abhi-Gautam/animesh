@@ -166,6 +166,11 @@ impl MenuBar {
 
         let target = MenuTarget::new(mtm, commands, model.clone());
         let menu = NSMenu::new(mtm);
+        // Animesh decides what is clickable, not AppKit. Left on, autoenabling
+        // re-validates every item against the target when the menu opens and
+        // greys out anything it cannot confirm — which silently overrides the
+        // enablement set here.
+        menu.setAutoenablesItems(false);
         menu.setDelegate(Some(ProtocolObject::from_ref(&*target)));
         // Populated once so the menu is correct even if it is opened before the
         // first delegate callback lands.
@@ -209,6 +214,16 @@ fn populate(menu: &NSMenu, target: &MenuTarget, model: &MenuModel, mtm: MainThre
     }
     menu.addItem(&NSMenuItem::separatorItem(mtm));
     add_action(menu, target, "Quit Animesh", sel!(quit:), "q", mtm);
+
+    tracing::debug!(
+        items = menu.numberOfItems(),
+        titles = %(0..menu.numberOfItems())
+            .filter_map(|i| menu.itemAtIndex(i))
+            .map(|item| format!("[{}]", item.title()))
+            .collect::<Vec<_>>()
+            .join(" "),
+        "menu populated"
+    );
 }
 
 /// A non-clickable line. Disabled rather than absent so the layout is stable.
@@ -234,6 +249,7 @@ fn add_action(
         item.setTarget(Some(target));
         item.setKeyEquivalent(&NSString::from_str(key));
     }
+    item.setEnabled(true);
     menu.addItem(&item);
 }
 
