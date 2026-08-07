@@ -23,7 +23,9 @@ const UPCOMING_SQL: &str = "
     JOIN media m         ON m.media_id = re.media_id
     JOIN source_media sm ON sm.source_media_id = re.source_media_id
     LEFT JOIN source_refresh_state rs ON rs.source_media_id = re.source_media_id
-    WHERE re.state = 'scheduled' AND re.scheduled_at >= ?1
+    WHERE re.state IN ('scheduled', 'elapsed')
+      AND re.scheduled_at >= ?1 - ?3
+      AND (re.state = 'scheduled' OR re.scheduled_at < ?1)
     ORDER BY re.scheduled_at ASC,
              re.media_id ASC,
              (re.sequence_number IS NULL) ASC,
@@ -55,14 +57,23 @@ fn freshness(
     }
 }
 
+/// Serves upcoming releases plus anything that aired within `lookback_secs`.
+///
+/// Pass `0` for a strictly-future view. The CLI passes
+/// [`AIRED_VISIBILITY_SECS`] so an episode stays visible through the window
+/// where the owner is asking whether it dropped.
+///
+/// `elapsed` events are included only when genuinely in the past — an elapsed
+/// row with a future airtime would mean corrupt state, not a recent airing.
 pub fn upcoming(
     conn: &Connection,
     now: UnixTimestamp,
     limit: u32,
+    lookback_secs: i64,
 ) -> Result<Vec<UpcomingRelease>, StoreError> {
     let mut stmt = conn.prepare(UPCOMING_SQL)?;
     let rows = stmt
-        .query_map(rusqlite::params![now.get(), limit], |row| {
+        .query_map(rusqlite::params![now.get(), limit, lookback_secs], |row| {
             Ok((
                 row.get::<_, i64>(0)?,
                 row.get::<_, String>(1)?,
@@ -113,6 +124,7 @@ pub fn upcoming(
                 schedule_revision: revision,
                 last_success_at: last_success.map(ts).transpose()?,
                 freshness: freshness(now, refresh_after, retry_after),
+                aired: scheduled_at <= now.get(),
             })
         })
         .collect()
@@ -277,7 +289,7 @@ mod tests {
         let mut world = World::new();
         world.add(21, "One Piece", 5, 5_000, FollowState::Active);
 
-        let rows = upcoming(&world.conn, at(1_000), 50).expect("query");
+        let rows = upcoming(&world.conn, at(1_000), 50, 0).expect("query");
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].display_title.as_str(), "One Piece");
         assert_eq!(rows[0].episode, Some(ep(5)));
@@ -288,7 +300,7 @@ mod tests {
     fn dropped_follows_are_excluded() {
         let mut world = World::new();
         world.add(21, "One Piece", 5, 5_000, FollowState::Dropped);
-        assert!(upcoming(&world.conn, at(1_000), 50)
+        assert!(upcoming(&world.conn, at(1_000), 50, 0)
             .expect("query")
             .is_empty());
     }
@@ -297,12 +309,14 @@ mod tests {
     fn events_in_the_past_are_excluded() {
         let mut world = World::new();
         world.add(21, "One Piece", 5, 5_000, FollowState::Active);
-        assert!(upcoming(&world.conn, at(5_001), 50)
+        assert!(upcoming(&world.conn, at(5_001), 50, 0)
             .expect("query")
             .is_empty());
         // Exactly at airtime the episode is still returned: it is airing now.
         assert_eq!(
-            upcoming(&world.conn, at(5_000), 50).expect("query").len(),
+            upcoming(&world.conn, at(5_000), 50, 0)
+                .expect("query")
+                .len(),
             1
         );
     }
@@ -319,7 +333,10 @@ mod tests {
                 FollowState::Active,
             );
         }
-        assert_eq!(upcoming(&world.conn, at(1_000), 3).expect("query").len(), 3);
+        assert_eq!(
+            upcoming(&world.conn, at(1_000), 3, 0).expect("query").len(),
+            3
+        );
     }
 
     #[test]
@@ -330,7 +347,7 @@ mod tests {
         world.add(21, "A", 2, 5_000, FollowState::Active);
         world.add(25, "B", 1, 5_000, FollowState::Active);
 
-        let from_sql = upcoming(&world.conn, at(0), 50).expect("query");
+        let from_sql = upcoming(&world.conn, at(0), 50, 0).expect("query");
         let mut sorted = from_sql.clone();
         sorted.sort();
 
@@ -345,7 +362,7 @@ mod tests {
     fn a_never_refreshed_row_reads_as_stale() {
         let mut world = World::new();
         world.add(21, "One Piece", 5, 5_000, FollowState::Active);
-        let rows = upcoming(&world.conn, at(1_000), 50).expect("query");
+        let rows = upcoming(&world.conn, at(1_000), 50, 0).expect("query");
         assert_eq!(rows[0].freshness, Freshness::Stale);
     }
 
@@ -357,7 +374,7 @@ mod tests {
         graph::record_refresh_success(&tx, source_media_id, at(500), at(4_000)).expect("success");
         tx.commit().expect("commit");
 
-        let rows = upcoming(&world.conn, at(1_000), 50).expect("query");
+        let rows = upcoming(&world.conn, at(1_000), 50, 0).expect("query");
         assert_eq!(rows[0].freshness, Freshness::Fresh);
         assert_eq!(rows[0].last_success_at, Some(at(500)));
     }
@@ -373,7 +390,7 @@ mod tests {
             .expect("failure");
         tx.commit().expect("commit");
 
-        let rows = upcoming(&world.conn, at(1_000), 50).expect("query");
+        let rows = upcoming(&world.conn, at(1_000), 50, 0).expect("query");
         assert_eq!(rows[0].freshness, Freshness::BackingOff);
     }
 
@@ -415,7 +432,7 @@ mod tests {
             RefreshCounts::default()
         );
         assert_eq!(last_success(&world.conn).expect("read"), None);
-        assert!(upcoming(&world.conn, at(1_000), 50)
+        assert!(upcoming(&world.conn, at(1_000), 50, 0)
             .expect("query")
             .is_empty());
     }

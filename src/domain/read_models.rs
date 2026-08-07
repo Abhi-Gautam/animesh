@@ -14,6 +14,14 @@ pub const DEFAULT_UPCOMING_LIMIT: u32 = 50;
 /// Hard ceiling on the upcoming read model, enforced server-side.
 pub const MAX_UPCOMING_LIMIT: u32 = 500;
 
+/// How long an episode stays visible after its airtime.
+///
+/// Plan 001's original serving query dropped a row the instant its airtime
+/// passed, which blanked the app during exactly the window the owner is asking
+/// "did it drop yet?" — and never once reported that an episode had aired.
+/// Rows inside this band are returned with [`UpcomingRelease::aired`] set.
+pub const AIRED_VISIBILITY_SECS: i64 = 24 * 60 * 60;
+
 /// How current the source data behind a row is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -38,6 +46,9 @@ pub struct UpcomingRelease {
     pub schedule_revision: i64,
     pub last_success_at: Option<UnixTimestamp>,
     pub freshness: Freshness,
+    /// Its airtime has passed. Still inside [`AIRED_VISIBILITY_SECS`], so it is
+    /// shown rather than hidden.
+    pub aired: bool,
 }
 
 impl UpcomingRelease {
@@ -280,6 +291,7 @@ mod tests {
             schedule_revision: 1,
             last_success_at: None,
             freshness: Freshness::Fresh,
+            aired: false,
         }
     }
 

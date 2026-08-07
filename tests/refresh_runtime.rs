@@ -146,14 +146,19 @@ async fn a_due_title_refreshes_and_advances_its_episode() {
     let pass = world.library.refresh_due(10).await.expect("refresh");
     assert_eq!(pass.applied, 1, "{pass:?}");
 
+    // Both rows serve: episode 5 aired two hours ago and stays visible inside
+    // the 24h window, episode 6 is the newly scheduled one.
     let upcoming = world.library.upcoming(None).await.expect("upcoming");
-    assert_eq!(
-        upcoming.len(),
-        1,
-        "the advanced episode should be scheduled"
-    );
-    assert_eq!(upcoming[0].episode.map(|e| e.get()), Some(6));
-    assert_eq!(upcoming[0].freshness, Freshness::Fresh);
+    assert_eq!(upcoming.len(), 2, "{upcoming:#?}");
+
+    let aired = &upcoming[0];
+    assert_eq!(aired.episode.map(|e| e.get()), Some(5));
+    assert!(aired.aired, "the elapsed episode should be marked as aired");
+
+    let next = &upcoming[1];
+    assert_eq!(next.episode.map(|e| e.get()), Some(6));
+    assert!(!next.aired);
+    assert_eq!(next.freshness, Freshness::Fresh);
 }
 
 #[tokio::test]
@@ -400,7 +405,10 @@ async fn the_scheduler_refreshes_what_is_due() {
     for _ in 0..40 {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         let upcoming = world.library.upcoming(None).await.expect("upcoming");
-        if upcoming.first().and_then(|u| u.episode).map(|e| e.get()) == Some(6) {
+        if upcoming
+            .iter()
+            .any(|u| u.episode.map(|e| e.get()) == Some(6))
+        {
             advanced = true;
             break;
         }
@@ -426,4 +434,96 @@ async fn the_scheduler_stops_on_shutdown() {
     shutdown_tx.send(true).expect("signal");
     let stopped = tokio::time::timeout(std::time::Duration::from_secs(2), scheduler).await;
     assert!(stopped.is_ok(), "the scheduler did not stop on shutdown");
+}
+
+#[tokio::test]
+async fn an_aired_episode_stays_visible_and_creates_no_new_notification_intent() {
+    // The point of the 24h window: the row survives its airtime so the owner
+    // can still ask "did it drop". It must not also re-arm a notification.
+    let mut server = mockito::Server::new_async().await;
+    server
+        .mock("POST", "/")
+        .with_status(200)
+        .with_body(detail_body(21, "One Piece", Some((5, NOW + 3_600))))
+        .create_async()
+        .await;
+
+    let world = world(server.url()).await;
+    world.library.follow(id(21)).await.expect("follow");
+    let plan_before = world.library.plan_generation();
+
+    // Past the airtime, before any refresh has retired the event.
+    world.clock.advance(5_400);
+
+    let upcoming = world.library.upcoming(None).await.expect("upcoming");
+    assert_eq!(upcoming.len(), 1, "the aired episode vanished");
+    assert!(upcoming[0].aired, "it should be marked as aired");
+    assert_eq!(upcoming[0].episode.map(|e| e.get()), Some(5));
+
+    // Reading must not change desired notification state.
+    assert_eq!(world.library.plan_generation(), plan_before);
+}
+
+#[tokio::test]
+async fn an_episode_older_than_the_window_falls_off() {
+    let mut server = mockito::Server::new_async().await;
+    server
+        .mock("POST", "/")
+        .with_status(200)
+        .with_body(detail_body(21, "One Piece", Some((5, NOW + 3_600))))
+        .create_async()
+        .await;
+
+    let world = world(server.url()).await;
+    world.library.follow(id(21)).await.expect("follow");
+
+    // Just inside the window.
+    world.clock.advance(3_600 + 23 * 3_600);
+    assert_eq!(
+        world.library.upcoming(None).await.expect("upcoming").len(),
+        1
+    );
+
+    // Past it.
+    world.clock.advance(2 * 3_600);
+    assert!(world
+        .library
+        .upcoming(None)
+        .await
+        .expect("upcoming")
+        .is_empty());
+}
+
+#[tokio::test]
+async fn health_reports_only_genuinely_future_episodes() {
+    // The menu's "next up" must not show something that already aired.
+    let mut server = mockito::Server::new_async().await;
+    server
+        .mock("POST", "/")
+        .with_status(200)
+        .with_body(detail_body(21, "One Piece", Some((5, NOW + 3_600))))
+        .create_async()
+        .await;
+
+    let world = world(server.url()).await;
+    world.library.follow(id(21)).await.expect("follow");
+    assert!(world
+        .library
+        .health()
+        .await
+        .expect("health")
+        .earliest_upcoming
+        .is_some());
+
+    world.clock.advance(5_400);
+    let health = world.library.health().await.expect("health");
+    assert!(
+        health.earliest_upcoming.is_none(),
+        "health surfaced an already-aired episode"
+    );
+    // But the serving view still has it.
+    assert_eq!(
+        world.library.upcoming(None).await.expect("upcoming").len(),
+        1
+    );
 }

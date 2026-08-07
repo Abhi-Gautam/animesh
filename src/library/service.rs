@@ -14,7 +14,7 @@ use crate::domain::notification::OsIdentifier;
 use crate::domain::read_models::{
     AuthorizationState, BootstrapState, FollowOutcome, FollowResult, FollowSummary, Freshness,
     HealthSnapshot, NotificationCounts, RefreshAccepted, RefreshDisposition, UpcomingRelease,
-    DEFAULT_UPCOMING_LIMIT,
+    AIRED_VISIBILITY_SECS, DEFAULT_UPCOMING_LIMIT,
 };
 use crate::domain::release::FollowState;
 use crate::domain::time::{JitterSource, WallClock};
@@ -396,7 +396,7 @@ impl Library {
         let limit = limit.unwrap_or(DEFAULT_UPCOMING_LIMIT);
         Ok(self
             .store
-            .read(move |conn| read_models::upcoming(conn, now, limit))
+            .read(move |conn| read_models::upcoming(conn, now, limit, AIRED_VISIBILITY_SECS))
             .await?)
     }
 
@@ -409,7 +409,7 @@ impl Library {
         Ok(self
             .store
             .read(move |conn| {
-                let earliest = read_models::upcoming(conn, now, 1)?.into_iter().next();
+                let earliest = read_models::upcoming(conn, now, 1, 0)?.into_iter().next();
                 Ok(HealthSnapshot {
                     process_version: crate::PROCESS_VERSION.to_owned(),
                     schema_version,
@@ -937,8 +937,12 @@ fn summaries(
     conn: &rusqlite::Connection,
     now: UnixTimestamp,
 ) -> Result<Vec<FollowSummary>, StoreError> {
-    let upcoming =
-        read_models::upcoming(conn, now, crate::domain::read_models::MAX_UPCOMING_LIMIT)?;
+    let upcoming = read_models::upcoming(
+        conn,
+        now,
+        crate::domain::read_models::MAX_UPCOMING_LIMIT,
+        AIRED_VISIBILITY_SECS,
+    )?;
 
     let mut stmt = conn.prepare(
         "SELECT f.media_id, sm.source_id, m.display_title, f.state,
