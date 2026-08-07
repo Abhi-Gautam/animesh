@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>dev.animesh.agent</string>
+
+    <!-- Bundle-relative, so the agent follows the app wherever it is installed
+         and never depends on an absolute path or on shell PATH. -->
+    <key>BundleProgram</key>
+    <string>Contents/MacOS/Animesh</string>
+
+    <!-- Restarts on crash as well as at login. This is the single registration
+         that makes a separate daemon unnecessary. -->
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Tells the scheduler this is not user-interactive work, so it is
+         throttled behind whatever the owner is actually doing. -->
+    <key>ProcessType</key>
+    <string>Background</string>
+
+    <key>AssociatedBundleIdentifiers</key>
+    <array>
+        <string>dev.animesh.app</string>
+    </array>
+</dict>
+</plist>

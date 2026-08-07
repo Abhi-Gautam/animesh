@@ -1,0 +1,8 @@
+[alias]
+xtask = "run --package xtask --"
+
+[env]
+# Info.plist claims LSMinimumSystemVersion 13.0; without this rustc emits an
+# LC_BUILD_VERSION of 11.0 and the two disagree. `xtask verify` fails on the
+# mismatch, so this keeps every build honest rather than only xtask's.
+MACOSX_DEPLOYMENT_TARGET = "13.0"
