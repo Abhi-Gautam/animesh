@@ -312,6 +312,73 @@ pub fn record_refresh_failure(
     Ok(())
 }
 
+/// One active follow that is due for a refresh.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DueRow {
+    pub source_media_id: SourceMediaId,
+    pub anilist_id: AniListId,
+    pub media_id: MediaId,
+}
+
+/// Active follows whose refresh deadline has passed, soonest first.
+///
+/// A `LEFT JOIN` so a follow that has never been refreshed is due immediately
+/// rather than invisible: an inner join would silently never refresh anything
+/// created before its first success row exists.
+pub fn due_for_refresh(
+    conn: &Connection,
+    now: UnixTimestamp,
+    limit: u32,
+) -> Result<Vec<DueRow>, StoreError> {
+    let mut stmt = conn.prepare(
+        "SELECT sm.source_media_id, sm.source_id, sm.media_id
+         FROM source_media sm
+         JOIN follows f ON f.media_id = sm.media_id AND f.state = 'active'
+         LEFT JOIN source_refresh_state rs ON rs.source_media_id = sm.source_media_id
+         WHERE (rs.refresh_after IS NULL OR rs.refresh_after <= ?1)
+           AND (rs.retry_after IS NULL OR rs.retry_after <= ?1)
+         ORDER BY COALESCE(rs.refresh_after, 0) ASC, sm.source_media_id ASC
+         LIMIT ?2",
+    )?;
+    let rows = stmt
+        .query_map(rusqlite::params![now.get(), limit], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    rows.into_iter()
+        .map(|(smid, sid, mid)| {
+            let bad = |e: String| StoreError::Integrity(e);
+            Ok(DueRow {
+                source_media_id: SourceMediaId::new(smid).map_err(|e| bad(e.to_string()))?,
+                anilist_id: AniListId::new(sid).map_err(|e| bad(e.to_string()))?,
+                media_id: MediaId::new(mid).map_err(|e| bad(e.to_string()))?,
+            })
+        })
+        .collect()
+}
+
+/// The earliest moment any active follow becomes due.
+///
+/// Drives the scheduler's sleep. `None` means nothing is scheduled at all,
+/// which is what lets the loop block on a signal instead of polling.
+pub fn earliest_due(conn: &Connection) -> Result<Option<UnixTimestamp>, StoreError> {
+    conn.query_row(
+        "SELECT min(COALESCE(MAX(rs.refresh_after, COALESCE(rs.retry_after, 0)), 0))
+         FROM source_media sm
+         JOIN follows f ON f.media_id = sm.media_id AND f.state = 'active'
+         LEFT JOIN source_refresh_state rs ON rs.source_media_id = sm.source_media_id",
+        [],
+        |row| row.get::<_, Option<i64>>(0),
+    )?
+    .map(ts)
+    .transpose()
+}
+
 /// Increments and returns the request generation to stamp on an in-flight call.
 ///
 /// A response whose generation no longer matches may still be stored as

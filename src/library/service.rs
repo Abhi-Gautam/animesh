@@ -21,7 +21,10 @@ use crate::domain::time::{JitterSource, WallClock};
 use crate::error::{AppError, ErrorCode};
 use crate::ipc::protocol::PROTOCOL_VERSION;
 use crate::sources::anilist::client::{AniListClient, FetchOutcome, RawResponse};
-use crate::sources::anilist::{decode_detail, decode_search, queries, DetailDecode, SearchDecode};
+use crate::sources::anilist::parser::ItemResult;
+use crate::sources::anilist::{
+    decode_batch, decode_detail, decode_search, queries, BatchDecode, DetailDecode, SearchDecode,
+};
 use crate::store::connection::{Store, StoreError};
 use crate::store::{graph, read_models, releases};
 
@@ -430,8 +433,263 @@ impl Library {
             .await?)
     }
 
-    /// Placeholder until V2 owns the scheduler; reports truthfully rather than
-    /// claiming a run started.
+    // -----------------------------------------------------------------------
+    // Refresh
+    // -----------------------------------------------------------------------
+
+    /// Runs one refresh pass over whatever is due.
+    ///
+    /// Returns immediately with nothing done when the source is throttled or
+    /// nothing is due — an idle library must make no request and no write.
+    pub async fn refresh_due(&self, budget: u32) -> Result<RefreshPass, AppError> {
+        let now = self.now();
+
+        if self.check_source_available(now).await.is_err() {
+            return Ok(RefreshPass::throttled());
+        }
+
+        let due = self
+            .store
+            .read(move |conn| graph::due_for_refresh(conn, now, budget))
+            .await?;
+
+        if due.is_empty() {
+            return Ok(RefreshPass::default());
+        }
+
+        // Claim before fetching. A response whose generation no longer matches
+        // may still become evidence but must not replace projection.
+        let claims = self.claim_all(&due, now).await?;
+        let ids: Vec<AniListId> = due.iter().map(|row| row.anilist_id).collect();
+
+        let response = self
+            .source
+            .post(
+                &queries::batch(),
+                serde_json::json!({
+                    "ids": ids.iter().map(|i| i.get()).collect::<Vec<_>>(),
+                    "perPage": ids.len(),
+                }),
+                now,
+            )
+            .await;
+        self.record_source_rate_state(&response, now).await?;
+
+        let fingerprint = format!("id_in={}", ids.len());
+        let evidence = OwnedFetch::from_response(&response, "batch", &fingerprint)
+            .stamped(now, response.duration_ms);
+
+        let Some(body) = response.body.clone() else {
+            return self
+                .fail_all(&due, &claims, now, response.outcome.as_str())
+                .await;
+        };
+
+        match decode_batch(&ids, &body) {
+            BatchDecode::Items(items) => {
+                self.apply_items(&due, &claims, items, evidence, now).await
+            }
+            // Integrity, decode, and GraphQL failures all preserve projection.
+            BatchDecode::Integrity(error) => {
+                self.fail_all(&due, &claims, now, &format!("integrity:{error}"))
+                    .await
+            }
+            BatchDecode::Decode(_) => self.fail_all(&due, &claims, now, "decode").await,
+            BatchDecode::GraphQl(_) => self.fail_all(&due, &claims, now, "graphql").await,
+        }
+    }
+
+    async fn claim_all(
+        &self,
+        due: &[graph::DueRow],
+        now: UnixTimestamp,
+    ) -> Result<Vec<i64>, AppError> {
+        let ids: Vec<crate::domain::ids::SourceMediaId> =
+            due.iter().map(|row| row.source_media_id).collect();
+        Ok(self
+            .store
+            .write(move |tx| {
+                ids.iter()
+                    .map(|id| graph::claim_generation(tx, *id, now))
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .await?)
+    }
+
+    /// Applies each valid item in its own short transaction.
+    ///
+    /// Per item rather than per batch so one malformed or stale entry cannot
+    /// abort the unrelated shows beside it.
+    async fn apply_items(
+        &self,
+        due: &[graph::DueRow],
+        claims: &[i64],
+        items: std::collections::BTreeMap<AniListId, ItemResult>,
+        evidence: OwnedFetch,
+        now: UnixTimestamp,
+    ) -> Result<RefreshPass, AppError> {
+        let evidence = Arc::new(evidence);
+        let mut pass = RefreshPass::default();
+
+        for (row, generation) in due.iter().zip(claims.iter().copied()) {
+            let Some(result) = items.get(&row.anilist_id) else {
+                continue;
+            };
+
+            match result {
+                ItemResult::Observed(observation) => {
+                    let observation = (**observation).clone();
+                    let row = *row;
+                    let evidence = Arc::clone(&evidence);
+                    let installation = self.installation;
+                    let jitter = Arc::clone(&self.jitter);
+
+                    let applied = self
+                        .store
+                        .write(move |tx| {
+                            // Both rechecks happen inside the transaction: a
+                            // drop or a newer claim that raced the fetch must
+                            // win over this response.
+                            if !graph::generation_is_current(tx, row.source_media_id, generation)? {
+                                graph::insert_fetch(tx, &evidence.as_record())?;
+                                return Ok(false);
+                            }
+                            let follow = graph::follow_state(tx, row.media_id)?;
+                            let follow = follow.unwrap_or(FollowState::Dropped);
+
+                            let fetch_id = graph::insert_fetch(tx, &evidence.as_record())?;
+                            let observation_id = graph::insert_observation(
+                                tx,
+                                row.source_media_id,
+                                fetch_id,
+                                &observation,
+                                now,
+                            )?;
+                            graph::set_current_observation(
+                                tx,
+                                row.source_media_id,
+                                observation_id,
+                                now,
+                            )?;
+                            graph::set_display_title(
+                                tx,
+                                row.media_id,
+                                &observation.display_title,
+                                now,
+                            )?;
+
+                            let refresh_after = reducers::next_refresh_after(
+                                observation.status,
+                                observation.next_airing.map(|n| n.airing_at),
+                                0,
+                                now,
+                                row.source_media_id.get(),
+                                jitter.as_ref(),
+                            );
+                            graph::record_refresh_success(
+                                tx,
+                                row.source_media_id,
+                                now,
+                                refresh_after,
+                            )?;
+
+                            let source_row = graph::SourceMediaRow {
+                                source_media_id: row.source_media_id,
+                                anilist_id: row.anilist_id,
+                                media_id: row.media_id,
+                                current_observation_id: Some(observation_id),
+                            };
+                            project(
+                                tx,
+                                &source_row,
+                                observation_id,
+                                &observation,
+                                installation,
+                                follow,
+                                now,
+                            )?;
+                            Ok(true)
+                        })
+                        .await?;
+
+                    if applied {
+                        pass.applied += 1;
+                    } else {
+                        pass.stale += 1;
+                    }
+                }
+
+                // An omitted or invalid item preserves everything and only
+                // records the failure, so the schedule survives a bad response.
+                ItemResult::Missing => {
+                    self.record_item_failure(row, generation, now, "missing")
+                        .await?;
+                    pass.failed += 1;
+                }
+                ItemResult::Invalid(error) => {
+                    self.record_item_failure(row, generation, now, &format!("item:{error}"))
+                        .await?;
+                    pass.failed += 1;
+                }
+            }
+        }
+
+        if pass.applied > 0 {
+            self.bump_data();
+            self.bump_plan();
+        }
+        Ok(pass)
+    }
+
+    async fn record_item_failure(
+        &self,
+        row: &graph::DueRow,
+        generation: i64,
+        now: UnixTimestamp,
+        code: &str,
+    ) -> Result<(), AppError> {
+        let row = *row;
+        let code = code.to_owned();
+        self.store
+            .write(move |tx| {
+                if !graph::generation_is_current(tx, row.source_media_id, generation)? {
+                    return Ok(());
+                }
+                let failures = graph::refresh_state(tx, row.source_media_id)?
+                    .map_or(0, |s| s.consecutive_failures);
+                let backoff = reducers::failure_backoff_secs(failures + 1);
+                graph::record_refresh_failure(
+                    tx,
+                    row.source_media_id,
+                    now,
+                    &code,
+                    now.saturating_add_secs(backoff),
+                )
+            })
+            .await?;
+        Ok(())
+    }
+
+    async fn fail_all(
+        &self,
+        due: &[graph::DueRow],
+        claims: &[i64],
+        now: UnixTimestamp,
+        code: &str,
+    ) -> Result<RefreshPass, AppError> {
+        let mut pass = RefreshPass::default();
+        for (row, generation) in due.iter().zip(claims.iter().copied()) {
+            self.record_item_failure(row, generation, now, code).await?;
+            pass.failed += 1;
+        }
+        Ok(pass)
+    }
+
+    /// The earliest moment any active follow becomes due, for the scheduler.
+    pub async fn earliest_due(&self) -> Result<Option<UnixTimestamp>, AppError> {
+        Ok(self.store.read(graph::earliest_due).await?)
+    }
+
     pub async fn trigger_refresh(&self) -> Result<RefreshAccepted, AppError> {
         Ok(RefreshAccepted {
             disposition: RefreshDisposition::Started,
@@ -528,6 +786,31 @@ impl Library {
 
     fn bump_plan(&self) {
         self.plan_generation.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+/// What one refresh pass did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RefreshPass {
+    pub applied: u32,
+    /// Responses that arrived after a newer claim superseded them.
+    pub stale: u32,
+    pub failed: u32,
+    /// True when the pass did nothing because the source is throttled.
+    pub throttled: bool,
+}
+
+impl RefreshPass {
+    fn throttled() -> Self {
+        Self {
+            throttled: true,
+            ..Self::default()
+        }
+    }
+
+    /// Whether the pass touched the source at all.
+    pub const fn did_work(&self) -> bool {
+        self.applied > 0 || self.stale > 0 || self.failed > 0
     }
 }
 
