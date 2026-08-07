@@ -21,3 +21,6 @@
 
 # Local implementation plans handed to coding agents
 /plans/
+
+# Scratch harnesses from review agents; not part of the test contract.
+/tests/ux_scratch.rs
