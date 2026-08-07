@@ -1,8 +1,8 @@
 # Ignore build outputs
 /target/
 
-# Ignore Cargo lock file (optional)
-Cargo.lock
+# Cargo.lock is tracked: this is an application, not a library, and CI builds
+# with --locked.
 .DS_Store
 
 # Ignore backups and temporary files

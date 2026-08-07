@@ -1,0 +1,5 @@
+# Plan 001 section 3 bans panicking constructs on user and environment paths.
+# Test code is neither: an `expect` in a test is the assertion.
+allow-expect-in-tests = true
+allow-unwrap-in-tests = true
+allow-panic-in-tests = true

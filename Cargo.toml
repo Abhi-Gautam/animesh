@@ -2,30 +2,72 @@
 name = "animesh"
 version = "0.5.0"
 edition = "2021"
+rust-version = "1.96"
 authors = ["Abhishek Gautam"]
-description = "Search anime on AniList from the command line"
+description = "Personal release radar for anime — menu-bar app and CLI"
 license = "MIT"
 repository = "https://github.com/Abhi-Gautam/com.git"
 keywords = ["anime", "anilist"]
 categories = ["command-line-utilities"]
+publish = false
+
+[lib]
+name = "animesh"
+path = "src/lib.rs"
+
+# The CLI. Thin IPC client; never opens the database.
+[[bin]]
+name = "animesh"
+path = "src/bin/animesh.rs"
+
+# The menu-bar app, which owns the database, the AniList client, and the engine.
+#
+# The bundled executable is `Contents/MacOS/Animesh`, but the cargo bin cannot be
+# named `Animesh`: macOS filesystems are case-insensitive by default, so it would
+# collide with the `animesh` CLI in `target/<profile>/`. xtask renames it during
+# bundling.
+[[bin]]
+name = "animesh-app"
+path = "src/bin/app.rs"
+
+[features]
+default = []
+# Compiles in fixture sources, synthetic event injection, a manual clock, a fake
+# notification center, and path overrides. CI asserts release builds never
+# enable this.
+test-harness = []
 
 [dependencies]
-chrono = "0.4"
-reqwest = { version = "0.11", features = ["json"] }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-tokio = { version = "1.0", features = ["full"] }
-tokio-util = { version = "0.7", features = ["codec"] }
-futures = "0.3"
-bytes = "1"
-interprocess = { version = "2", features = ["tokio"] }
-anyhow = "1.0"
-turso = "0.4.4"
+chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
+clap = { version = "4", features = ["derive"] }
 directories = "6"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+rusqlite = { version = "0.37", features = ["bundled"] }
+rustix = { version = "1", features = ["fs", "process"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", default-features = false, features = [
+    "rt",
+    "net",
+    "sync",
+    "time",
+    "signal",
+    "macros",
+    "io-util",
+] }
+tokio-util = { version = "0.7", default-features = false, features = ["codec"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = [
+    "fmt",
+    "env-filter",
+    "ansi",
+] }
+uuid = { version = "1", features = ["v4", "serde"] }
 
 [dev-dependencies]
 mockito = "1"
-tempfile = "3.27.0"
+tempfile = "3"
 
 [profile.release]
 strip = true
@@ -34,8 +76,13 @@ codegen-units = 1
 
 [lints.rust]
 unused = "warn"
-unreachable_pub = "warn"
+missing_debug_implementations = "warn"
 
 [lints.clippy]
 todo = "warn"
 dbg_macro = "warn"
+# Plan 001 section 3: no panicking constructs on user or environment paths.
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+unreachable = "warn"
