@@ -16,6 +16,7 @@
 pub mod domain;
 pub mod error;
 pub mod paths;
+pub mod sources;
 
 /// Version reported over IPC and in the health snapshot.
 pub const PROCESS_VERSION: &str = env!("CARGO_PKG_VERSION");
