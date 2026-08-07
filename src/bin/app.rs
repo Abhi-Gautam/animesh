@@ -61,10 +61,20 @@ fn main() -> ExitCode {
     tracing::info!("status item installed");
 
     // Opened at launch for now. Once the menu owns it, this becomes an action.
-    match MainWindow::open(mtm, window_state) {
-        Ok(_window) => tracing::info!("window opened"),
-        Err(error) => tracing::error!(error = %error, "cannot open the window"),
-    }
+    //
+    // Held until the run loop exits. Dropping a webview unregisters its protocol
+    // handler and takes it out of the view hierarchy, which leaves the window on
+    // screen — AppKit retains it once ordered in — and empty.
+    let _window = match MainWindow::open(mtm, window_state) {
+        Ok(window) => {
+            tracing::info!("window opened");
+            Some(window)
+        }
+        Err(error) => {
+            tracing::error!(error = %error, "cannot open the window");
+            None
+        }
+    };
 
     // Never returns under normal operation. The engine thread exits the process
     // once it has released the socket and closed the database, which keeps

@@ -25,6 +25,14 @@ use super::view_model::WindowState;
 
 const INDEX_HTML: &str = include_str!("../../../ui/index.html");
 
+/// The page's origin.
+///
+/// A host is part of the origin, so it has to be spelled the same here and in
+/// every request the page makes; `animesh://snapshot` is a different origin
+/// from `animesh://localhost` and would be refused. The page therefore asks
+/// with relative paths, and this is the only place the origin is written.
+const ORIGIN: &str = "animesh://localhost";
+
 /// Wraps an `NSWindow` so wry can find the view to attach to.
 struct WindowTarget(Retained<NSWindow>);
 
@@ -84,25 +92,20 @@ impl MainWindow {
 
         let target = WindowTarget(window);
         let webview = WebViewBuilder::new()
-            .with_html(INDEX_HTML)
-            // A custom protocol rather than a message channel: the page asks and
-            // is answered on the same thread, so no snapshot has to be pushed
-            // across the engine/AppKit boundary to keep the view current.
-            .with_custom_protocol("animesh".to_owned(), move |_id, _request| {
-                let body = state.snapshot_json();
+            .with_url(ORIGIN)
+            .with_custom_protocol("animesh".to_owned(), move |_id, request| {
+                let (kind, body) = match request.uri().path() {
+                    "/snapshot" => ("application/json", state.snapshot_json()),
+                    _ => ("text/html", INDEX_HTML.to_owned()),
+                };
                 HttpResponse::builder()
-                    .header(header::CONTENT_TYPE, "application/json")
-                    // The page is the only caller and has no network origin.
+                    .header(header::CONTENT_TYPE, kind)
                     .header(header::CACHE_CONTROL, "no-store")
                     .body(std::borrow::Cow::Owned(body.into_bytes()))
                     .unwrap_or_else(|_| HttpResponse::new(std::borrow::Cow::Owned(b"{}".to_vec())))
             })
             .build(&target)
             .map_err(|e| format!("cannot create the webview: {e}"))?;
-
-        // Opened automatically while the page is being brought up: a blank
-        // window reports nothing on its own, and the console names the failure.
-        webview.open_devtools();
 
         show_window(mtm, &target.0);
 
