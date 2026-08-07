@@ -4,6 +4,8 @@
 //! makes that a hard gate: with nothing due there must be no wake, no request,
 //! and no write.
 
+pub mod bootstrap;
+
 use std::sync::Arc;
 use std::time::Duration;
 
