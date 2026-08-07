@@ -10,6 +10,7 @@ use std::time::Duration;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::watch;
 
+use crate::domain::ids::UnixTimestamp;
 use crate::domain::read_models::{HealthSnapshot, UpcomingRelease};
 use crate::engine::reconciler::{NotificationSurface, Reconciler};
 use crate::engine::WakeHandle;
@@ -121,13 +122,13 @@ async fn republish(library: &Library, state: &MenuState) {
         }
     };
     let upcoming = library.upcoming(Some(MENU_ROWS)).await.unwrap_or_default();
-    state.publish(model(&health, &upcoming));
+    state.publish(model(&health, &upcoming, library.now()));
 }
 
-fn model(health: &HealthSnapshot, upcoming: &[UpcomingRelease]) -> MenuModel {
+fn model(health: &HealthSnapshot, upcoming: &[UpcomingRelease], now: UnixTimestamp) -> MenuModel {
     MenuModel {
         summary: summary(health),
-        rows: upcoming.iter().map(row).collect(),
+        rows: upcoming.iter().map(|release| row(release, now)).collect(),
         // Only the first reason: a menu that lists every problem at once is a
         // log, and the owner acts on one thing at a time.
         attention: health
@@ -146,17 +147,27 @@ fn summary(health: &HealthSnapshot) -> String {
     }
 }
 
-fn row(release: &UpcomingRelease) -> MenuRow {
+/// A glance, not a record.
+///
+/// Relative rather than an absolute timestamp: the menu is read to answer "has
+/// it dropped yet", and the wall-clock date with a UTC offset makes the reader
+/// do the subtraction the app already knows how to do.
+fn row(release: &UpcomingRelease, now: UnixTimestamp) -> MenuRow {
+    use crate::cli::render::{when, Whenish};
+
     let episode = release
         .episode
-        .map_or_else(|| "next episode".to_owned(), |e| format!("Episode {e}"));
-    let when = crate::cli::render::local_time(release.scheduled_at);
+        .map_or_else(|| "next ep".to_owned(), |e| format!("Ep {e}"));
+
+    let timing = match when(now, release.scheduled_at) {
+        Whenish::Aired(ago) => format!("dropped {ago} ago"),
+        Whenish::Now => "dropping now".to_owned(),
+        Whenish::Within(left) => format!("dropping in {left}"),
+        Whenish::Weekday(named) | Whenish::Date(named) => format!("dropping {named}"),
+    };
+
     MenuRow {
         title: release.display_title.as_str().to_owned(),
-        detail: if release.aired {
-            format!("{episode} aired {when}")
-        } else {
-            format!("{episode} {when}")
-        },
+        detail: format!("{episode} · {timing}"),
     }
 }

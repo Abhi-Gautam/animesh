@@ -54,30 +54,58 @@ fn compact(seconds: i64) -> String {
     }
 }
 
-/// When something happens, phrased the way a person holds it.
+/// How far away an airtime is, before anyone phrases it.
 ///
-/// Past its airtime it says how long ago, because "now" would be an
-/// instruction to go watch something that has not necessarily posted yet.
-/// Beyond tomorrow it names the weekday: nobody thinks in "2d 2h".
-pub fn relative(from: UnixTimestamp, to: UnixTimestamp) -> String {
+/// Separated from the wording so the CLI and the menu can share one decision
+/// about which scale to use and still read naturally in their own voice. The
+/// alternative — one of them matching on the other's strings — makes a phrasing
+/// change silently break a surface.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Whenish {
+    /// Already aired, this long ago.
+    Aired(String),
+    Now,
+    /// Sooner than a day away.
+    Within(String),
+    /// This week; named rather than counted, because nobody thinks in "2d 2h".
+    Weekday(String),
+    Date(String),
+}
+
+/// Past its airtime this reports how long ago rather than "now", because "now"
+/// reads as an instruction to go watch something that has not necessarily
+/// posted yet.
+pub fn when(from: UnixTimestamp, to: UnixTimestamp) -> Whenish {
     let seconds = from.seconds_until(to);
 
     if seconds < 0 {
-        return format!("aired {} ago", compact(-seconds));
+        return Whenish::Aired(compact(-seconds));
     }
     if seconds < 60 {
-        return "airing now".to_owned();
+        return Whenish::Now;
     }
     if seconds < 24 * 3600 {
-        return format!("in {}", compact(seconds));
+        return Whenish::Within(compact(seconds));
     }
 
     match Local.timestamp_opt(to.get(), 0).single() {
         Some(local) if seconds < 7 * 24 * 3600 => {
-            local.format("%A %H:%M").to_string().to_lowercase()
+            Whenish::Weekday(local.format("%A %H:%M").to_string().to_lowercase())
         }
-        Some(local) => local.format("%a %d %b").to_string(),
-        None => format!("in {}", compact(seconds)),
+        Some(local) => Whenish::Date(local.format("%a %d %b").to_string()),
+        // A DST boundary makes the local wall time ambiguous; the elapsed
+        // count is still exactly true.
+        None => Whenish::Within(compact(seconds)),
+    }
+}
+
+/// When something happens, phrased the way a person holds it.
+pub fn relative(from: UnixTimestamp, to: UnixTimestamp) -> String {
+    match when(from, to) {
+        Whenish::Aired(ago) => format!("aired {ago} ago"),
+        Whenish::Now => "airing now".to_owned(),
+        Whenish::Within(left) => format!("in {left}"),
+        Whenish::Weekday(named) | Whenish::Date(named) => named,
     }
 }
 
