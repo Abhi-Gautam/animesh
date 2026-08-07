@@ -19,6 +19,7 @@ pub mod ipc;
 pub mod library;
 pub mod paths;
 pub mod sources;
+pub mod store;
 
 /// Version reported over IPC and in the health snapshot.
 pub const PROCESS_VERSION: &str = env!("CARGO_PKG_VERSION");
