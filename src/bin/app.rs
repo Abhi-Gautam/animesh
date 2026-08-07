@@ -15,6 +15,8 @@ use std::process::ExitCode;
 use animesh::engine::bootstrap;
 use animesh::paths::AppPaths;
 use animesh::platform::macos::menu_bar::{self, MenuBar, MenuState};
+use animesh::platform::macos::view_model::WindowState;
+use animesh::platform::macos::window::MainWindow;
 use objc2_foundation::MainThreadMarker;
 use tokio::sync::{mpsc, watch};
 
@@ -30,12 +32,14 @@ fn main() -> ExitCode {
     };
 
     let state = MenuState::new();
+    let window_state = WindowState::new();
     let (commands_tx, commands_rx) = mpsc::unbounded_channel();
 
     let engine_state = state.clone();
+    let engine_window = window_state.clone();
     let engine = std::thread::Builder::new()
         .name("animesh-engine".to_owned())
-        .spawn(move || engine_thread(paths, engine_state, commands_rx));
+        .spawn(move || engine_thread(paths, engine_state, engine_window, commands_rx));
 
     let engine = match engine {
         Ok(handle) => handle,
@@ -56,6 +60,12 @@ fn main() -> ExitCode {
     let _menu = MenuBar::install(mtm, commands_tx, state);
     tracing::info!("status item installed");
 
+    // Opened at launch for now. Once the menu owns it, this becomes an action.
+    match MainWindow::open(mtm, window_state) {
+        Ok(_window) => tracing::info!("window opened"),
+        Err(error) => tracing::error!(error = %error, "cannot open the window"),
+    }
+
     // Never returns under normal operation. The engine thread exits the process
     // once it has released the socket and closed the database, which keeps
     // every AppKit call on this thread and needs no cross-thread wake-up.
@@ -73,6 +83,7 @@ fn join(engine: std::thread::JoinHandle<ExitCode>) -> ExitCode {
 fn engine_thread(
     paths: AppPaths,
     state: MenuState,
+    window: WindowState,
     commands: mpsc::UnboundedReceiver<menu_bar::MenuCommand>,
 ) -> ExitCode {
     // Current-thread on purpose: this is one thread doing one thing, and a work
@@ -98,6 +109,7 @@ fn engine_thread(
                 library,
                 wake,
                 surface_state,
+                window,
                 commands,
                 shutdown_tx,
             ));

@@ -1,0 +1,249 @@
+<meta charset="utf-8">
+<title>Animesh</title>
+<style>
+  /* ---------------------------------------------------------------
+     Tokens. One sheet, so the window and any later surface share a
+     system instead of each inventing one.
+     --------------------------------------------------------------- */
+  :root {
+    --bg:            #f6f6f7;
+    --surface:       #ffffff;
+    --surface-sunk:  #f0f0f2;
+    --line:          #e2e2e6;
+    --ink:           #16161a;
+    --ink-soft:      #6b6b76;
+    --ink-faint:     #9a9aa4;
+    --accent:        #6a5cff;
+
+    --airing:        #2fbf71;
+    --hiatus:        #e5a13a;
+    --finished:      #9a9aa4;
+    --soon:          #e5484d;
+
+    --gap:      16px;
+    --radius:   10px;
+    --font: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg:           #171719;
+      --surface:      #1f1f23;
+      --surface-sunk: #141416;
+      --line:         #2e2e34;
+      --ink:          #f2f2f4;
+      --ink-soft:     #a2a2ac;
+      --ink-faint:    #6e6e78;
+      --accent:       #8f84ff;
+    }
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: var(--font);
+    background: var(--bg);
+    color: var(--ink);
+    font-size: 13px;
+    line-height: 1.45;
+    -webkit-user-select: none;
+    /* Room for the transparent title bar the window draws over. */
+    padding: 38px var(--gap) var(--gap);
+  }
+
+  h2 {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: .07em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    margin-bottom: 8px;
+  }
+
+  section { margin-bottom: 26px; }
+
+  /* --- tonight ------------------------------------------------- */
+
+  .tonight  { display: flex; flex-direction: column; gap: 8px; }
+
+  .hero {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 14px 16px;
+  }
+  .hero .name { font-size: 15px; font-weight: 600; flex: 1; }
+  .hero .ep   { color: var(--ink-soft); }
+  .hero .when { font-variant-numeric: tabular-nums; font-weight: 600; }
+  .hero.soon .when { color: var(--soon); }
+  .hero.aired .when { color: var(--ink-faint); }
+
+  .empty {
+    color: var(--ink-faint);
+    background: var(--surface-sunk);
+    border: 1px dashed var(--line);
+    border-radius: var(--radius);
+    padding: 18px;
+    text-align: center;
+  }
+
+  /* --- week ---------------------------------------------------- */
+
+  .week { display: grid; grid-template-columns: repeat(7, 1fr); gap: 8px; }
+
+  .day {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 10px;
+    min-height: 84px;
+  }
+  .day .label {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: .06em;
+    color: var(--ink-faint);
+    margin-bottom: 6px;
+  }
+  .day.today { border-color: var(--accent); }
+  .day.today .label { color: var(--accent); }
+  .day .pill {
+    font-size: 11px;
+    color: var(--ink-soft);
+    margin-bottom: 4px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* --- following ----------------------------------------------- */
+
+  .rows {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    overflow: hidden;
+  }
+  .row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--line);
+  }
+  .row:last-child { border-bottom: 0; }
+
+  .dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+  .dot.releasing        { background: var(--airing); }
+  .dot.hiatus           { background: var(--hiatus); }
+  .dot.finished,
+  .dot.cancelled,
+  .dot.unknown          { background: var(--finished); }
+  .dot.not_yet_released { background: var(--accent); }
+
+  .row .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row .ep   { color: var(--ink-soft); font-variant-numeric: tabular-nums; }
+  .row .when { color: var(--ink-soft); font-variant-numeric: tabular-nums; min-width: 150px; text-align: right; }
+  .row .bell { color: var(--ink-faint); font-size: 11px; min-width: 14px; }
+
+  .banner {
+    background: var(--surface);
+    border: 1px solid var(--hiatus);
+    border-left-width: 3px;
+    border-radius: var(--radius);
+    padding: 10px 14px;
+    color: var(--ink-soft);
+    margin-bottom: var(--gap);
+  }
+</style>
+
+<div id="app"></div>
+
+<script>
+  const $ = (html) => { const t = document.createElement('template'); t.innerHTML = html.trim(); return t.content.firstChild; };
+  const esc = (s) => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+  const WEEK = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+
+  function render(model) {
+    const app = document.getElementById('app');
+    app.innerHTML = '';
+
+    if (model.attention) {
+      app.appendChild($(`<div class="banner">${esc(model.attention)}</div>`));
+    }
+
+    // Tonight — the question this app exists to answer.
+    const tonight = document.createElement('section');
+    tonight.innerHTML = '<h2>Tonight</h2>';
+    const list = $('<div class="tonight"></div>');
+    if (!model.tonight || model.tonight.length === 0) {
+      list.appendChild($('<div class="empty">Nothing airing today.</div>'));
+    } else {
+      for (const t of model.tonight) {
+        const cls = t.aired ? 'hero aired' : 'hero soon';
+        list.appendChild($(`<div class="${cls}">
+          <span class="name">${esc(t.title)}</span>
+          <span class="ep">${t.episode ? 'Ep ' + t.episode : ''}</span>
+          <span class="when">${esc(t.timing)}</span>
+        </div>`));
+      }
+    }
+    tonight.appendChild(list);
+    app.appendChild(tonight);
+
+    // This week.
+    const week = document.createElement('section');
+    week.innerHTML = '<h2>This week</h2>';
+    const grid = $('<div class="week"></div>');
+    const todayName = WEEK[new Date().getDay()];
+    for (let i = 0; i < 7; i++) {
+      const name = WEEK[(new Date().getDay() + i) % 7];
+      const cell = $(`<div class="day ${name === todayName ? 'today' : ''}">
+        <div class="label">${name.slice(0, 3)}</div></div>`);
+      for (const t of (model.upcoming || []).filter(t => t.day === name)) {
+        cell.appendChild($(`<div class="pill">${esc(t.title)}</div>`));
+      }
+      grid.appendChild(cell);
+    }
+    week.appendChild(grid);
+    app.appendChild(week);
+
+    // Following.
+    const following = document.createElement('section');
+    following.innerHTML = `<h2>Following ${model.following || 0}</h2>`;
+    const rows = $('<div class="rows"></div>');
+    if (!model.upcoming || model.upcoming.length === 0) {
+      rows.appendChild($('<div class="row"><span class="name">Nothing followed yet.</span></div>'));
+    } else {
+      for (const t of model.upcoming) {
+        rows.appendChild($(`<div class="row">
+          <span class="dot ${esc(t.status)}"></span>
+          <span class="name">${esc(t.title)}</span>
+          <span class="ep">${t.episode ? 'Ep ' + t.episode : ''}</span>
+          <span class="when">${esc(t.timing)}</span>
+          <span class="bell">${t.notified ? '●' : ''}</span>
+        </div>`));
+      }
+    }
+    following.appendChild(rows);
+    app.appendChild(following);
+  }
+
+  async function refresh() {
+    try {
+      const res = await fetch('animesh://snapshot');
+      render(await res.json());
+    } catch (e) {
+      document.getElementById('app').innerHTML =
+        '<div class="empty">Waiting for the engine…</div>';
+    }
+  }
+
+  refresh();
+  // Countdowns go stale on their own; nothing else here changes fast.
+  setInterval(refresh, 30000);
+</script>
