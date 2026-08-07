@@ -690,9 +690,19 @@ impl Library {
         Ok(self.store.read(graph::earliest_due).await?)
     }
 
+    /// Runs a refresh pass now and reports what it did.
+    ///
+    /// Synchronous rather than a signal to the scheduler: the caller is a person
+    /// who typed `animesh refresh` and is waiting, and telling them "started"
+    /// while doing nothing is worse than making them wait for a bounded pass.
     pub async fn trigger_refresh(&self) -> Result<RefreshAccepted, AppError> {
+        let pass = self.refresh_due(crate::engine::REFRESH_BATCH).await?;
         Ok(RefreshAccepted {
-            disposition: RefreshDisposition::Started,
+            disposition: if pass.throttled {
+                RefreshDisposition::AlreadyRunning
+            } else {
+                RefreshDisposition::Started
+            },
             accepted_at: self.now(),
             data_revision: self.data_revision(),
         })

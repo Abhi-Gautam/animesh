@@ -1,7 +1,7 @@
 //! Human-readable output.
 //!
 //! Stdout is data; stderr is diagnostics. Nothing here formats for machines —
-//! Plan 001 ships no stable JSON surface, and pretending otherwise would freeze
+//! There is no stable JSON surface yet, and pretending otherwise would freeze
 //! a contract nobody has designed.
 
 use chrono::{Local, TimeZone};
@@ -14,9 +14,8 @@ use crate::domain::read_models::{
 
 /// Formats an absolute instant in the viewer's local timezone, naming the zone.
 ///
-/// The zone is not decoration. Section 16 requires it, and an anime schedule
-/// without one is exactly the thing that gets misread when travelling or when
-/// pasted somewhere else.
+/// The zone is not decoration. An airtime without one is exactly the thing that
+/// gets misread when travelling, or when pasted somewhere else.
 pub fn local_time(at: UnixTimestamp) -> String {
     match Local.timestamp_opt(at.get(), 0).single() {
         Some(local) => local.format("%a %d %b %Y %H:%M %Z").to_string(),
@@ -329,7 +328,7 @@ mod tests {
 
     #[test]
     fn local_time_names_the_zone() {
-        // Section 16 requires it; a bare 22:27 is what gets misread.
+        // A bare 22:27 is what gets misread.
         let text = local_time(at(1_700_000_000));
         let last = text.split_whitespace().last().unwrap_or_default();
         assert!(!last.is_empty() && last != "22:27", "no zone in {text:?}");
@@ -345,7 +344,7 @@ mod tests {
 
     #[test]
     fn stale_rows_are_marked_rather_than_hidden() {
-        // Section 16: stale rows still print, with the staleness visible.
+        // Stale rows still print, with the staleness visible.
         assert_eq!(freshness_note(Freshness::Fresh), "");
         assert!(freshness_note(Freshness::Stale).contains("stale"));
         assert!(freshness_note(Freshness::BackingOff).contains("retrying"));

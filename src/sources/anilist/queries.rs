@@ -13,9 +13,9 @@ pub const MAX_BATCH_IDS: usize = 50;
 
 /// Fields shared by every media selection.
 ///
-/// `timeUntilAiring` is deliberately absent: section 8 forbids persisting it,
-/// and presentation derives relative duration from `airingAt` and the injected
-/// clock. Requesting it would only create a second, drifting source of truth.
+/// `timeUntilAiring` is deliberately absent. Presentation derives the relative
+/// duration from `airingAt` and the injected clock; storing the source's own
+/// countdown would only create a second, drifting truth.
 const MEDIA_FIELDS: &str = "
     id
     title { romaji english native }
@@ -97,7 +97,7 @@ mod tests {
 
     #[test]
     fn no_query_requests_time_until_airing() {
-        // Section 8: never persisted, so never fetched.
+        // Never persisted, so never fetched.
         for query in [detail(), batch(), search()] {
             assert!(
                 !query.contains("timeUntilAiring"),

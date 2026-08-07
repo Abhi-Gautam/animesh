@@ -27,7 +27,7 @@ fn main() -> ExitCode {
         }
     };
 
-    // Current-thread, per section 18: when the menu bar lands this runtime
+    // Current-thread on purpose: when the menu bar lands this runtime
     // moves onto one named worker thread and the primordial thread goes to
     // NSApplication. A multi-thread pool here would have to be undone then.
     let runtime = match tokio::runtime::Builder::new_current_thread()
@@ -96,8 +96,8 @@ async fn await_signals(shutdown: watch::Sender<bool>) {
 fn init_tracing() {
     use tracing_subscriber::EnvFilter;
 
-    // Default logs omit queries, titles, and payloads; section 19 keeps those
-    // out of the default sink deliberately.
+    // Default logs omit queries, titles, and payloads. What the owner watches
+    // is not something to leave lying in a log file.
     let filter =
         EnvFilter::try_from_env("ANIMESH_LOG").unwrap_or_else(|_| EnvFilter::new("animesh=info"));
     tracing_subscriber::fmt()

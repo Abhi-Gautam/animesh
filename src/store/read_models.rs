@@ -11,7 +11,7 @@ use crate::domain::read_models::{Freshness, RefreshCounts, UpcomingRelease};
 
 /// The one `SELECT` behind both `animesh next` and the menu summary.
 ///
-/// The `ORDER BY` reproduces the frozen total order from section 8. A test
+/// The `ORDER BY` reproduces the frozen total order. A test
 /// compares it against the Rust implementation, because a read model whose
 /// order depends on which layer produced it is not a read model.
 const UPCOMING_SQL: &str = "

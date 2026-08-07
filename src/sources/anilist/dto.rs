@@ -7,7 +7,7 @@
 //! That permissiveness is deliberate. GraphQL nulls any field it could not
 //! resolve and reports the reason in `errors`, so a strict struct would fail to
 //! deserialize the whole page and take every healthy sibling item down with the
-//! one that failed. Section 12 requires the opposite: accept the valid items,
+//! one that failed. The opposite is what is needed: accept the valid items and
 //! classify the invalid ones individually.
 
 use serde::Deserialize;

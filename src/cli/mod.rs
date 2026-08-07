@@ -86,10 +86,11 @@ async fn execute(cli: Cli) -> Result<String, AppError> {
             match response {
                 Response::TriggerRefresh(accepted) => Ok(match accepted.disposition {
                     crate::domain::read_models::RefreshDisposition::Started => {
-                        "Refresh started.".to_owned()
+                        "Refreshed. Run 'animesh next' to see the schedule.".to_owned()
                     }
                     crate::domain::read_models::RefreshDisposition::AlreadyRunning => {
-                        "A refresh is already running.".to_owned()
+                        "Skipped: AniList is rate limiting. It will resume automatically."
+                            .to_owned()
                     }
                 }),
                 other => Err(mismatched(&other)),

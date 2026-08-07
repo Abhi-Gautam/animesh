@@ -63,9 +63,8 @@ pub enum ItemResult {
     Observed(Box<MediaObservation>),
     /// Requested but absent from the response.
     ///
-    /// Explicitly distinct from an observation carrying no schedule: section 12
-    /// requires omission to preserve the existing projection, while an explicit
-    /// null withdraws it.
+    /// Explicitly distinct from an observation carrying no schedule. Omission
+    /// preserves the existing projection; an explicit null withdraws it.
     Missing,
     Invalid(ItemError),
 }

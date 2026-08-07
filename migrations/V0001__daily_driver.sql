@@ -1,4 +1,4 @@
--- Plan 001 section 9. Immutable after release: any change is V0002.
+-- Immutable after release: any change is V0002.
 --
 -- The layering is Bronze (source_fetches), Silver (source_observations), Gold
 -- (media, source_media, follows, release_events, notification_jobs). Constraints
@@ -27,7 +27,7 @@ CREATE TABLE media (
 -- pay for a second table and a conditional foreign key.
 --
 -- body_json is nullable so a future retention sweep can null old bodies without
--- a migration. No such sweep ships in Plan 001.
+-- a migration. No such sweep ships yet.
 CREATE TABLE source_fetches (
     fetch_id             INTEGER PRIMARY KEY,
     attempt_uuid         TEXT NOT NULL UNIQUE,
@@ -56,7 +56,7 @@ CREATE INDEX idx_source_fetches_time ON source_fetches(completed_at DESC);
 
 -- source_id is an integer, not a zero-padded text key with a GLOB check. A
 -- non-numeric source would be a deliberate migration, not a cost paid up front
--- for a generic schema that section 2 lists as a non-goal.
+-- for a generic schema that is explicitly a non-goal.
 CREATE TABLE source_media (
     source_media_id        INTEGER PRIMARY KEY,
     source                 TEXT NOT NULL CHECK (source = 'anilist'),

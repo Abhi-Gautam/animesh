@@ -89,7 +89,9 @@ impl ErrorCode {
     }
 }
 
-/// The CLI's four exit statuses, frozen by section 15.
+/// The CLI's four exit statuses.
+///
+/// Frozen: scripts branch on these numbers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(i32)]
 pub enum ExitCategory {
@@ -111,8 +113,7 @@ impl ExitCategory {
 /// An error with a stable code and a human-readable message.
 ///
 /// Deliberately does not carry a source chain: this type crosses the IPC
-/// boundary, and section 15 keeps raw chains in the log rather than shipping
-/// internal detail to a client.
+/// boundary, and raw chains belong in the log rather than in a client's hands.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
 #[error("{code}: {message}", code = self.code.as_str())]
 pub struct AppError {

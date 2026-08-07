@@ -1,8 +1,7 @@
 //! The supervised runtime: the refresh scheduler and its wake signals.
 //!
-//! The loop blocks on a deadline or a signal, never on a tick. Section 22
-//! makes that a hard gate: with nothing due there must be no wake, no request,
-//! and no write.
+//! The loop blocks on a deadline or a signal, never on a tick. That is a hard
+//! requirement: with nothing due there must be no wake, no request, no write.
 
 pub mod bootstrap;
 

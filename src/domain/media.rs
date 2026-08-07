@@ -20,8 +20,7 @@ pub const MAX_RAW_LEN: usize = 64;
 /// Normalized release status.
 ///
 /// `Unknown` is a real, expected value rather than an error: a source may add a
-/// status at any time, and section 12 requires ingestion to keep working when
-/// it does. The unrecognized original is preserved alongside in `status_raw`.
+/// status at any time, and ingestion has to keep working when it does. The unrecognized original is preserved alongside in `status_raw`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MediaStatus {
@@ -79,8 +78,8 @@ impl MediaStatus {
 
     /// Whether the title may still produce new episodes.
     ///
-    /// Section 12 treats unknown and null as active-but-uncertain, so they
-    /// refresh on the active cadence rather than the 7-day terminal cadence.
+    /// Unknown and null are active-but-uncertain, so they refresh on the active
+    /// cadence rather than the 7-day terminal one.
     pub const fn may_still_air(self) -> bool {
         match self {
             Self::Releasing | Self::NotYetReleased | Self::Hiatus | Self::Unknown => true,
@@ -136,7 +135,7 @@ pub struct MediaObservation {
     pub status: MediaStatus,
     /// Original source status when it did not normalize, for diagnostics.
     pub status_raw: Option<BoundedText>,
-    /// Original source format string; not normalized in Plan 001.
+    /// Original source format string; not normalized.
     pub format_raw: Option<BoundedText>,
     pub episode_count: Option<EpisodeNumber>,
     pub season_year: Option<i32>,
@@ -229,7 +228,7 @@ mod tests {
 
     #[test]
     fn unknown_and_missing_status_normalize_without_failing() {
-        // Section 12: an invented source status must not crash ingestion.
+        // An invented source status must not crash ingestion.
         assert_eq!(
             MediaStatus::normalize(Some("ASCENDED")),
             MediaStatus::Unknown

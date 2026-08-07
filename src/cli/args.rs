@@ -1,4 +1,4 @@
-//! The `animesh` command surface, frozen by plan section 16.
+//! The `animesh` command surface.
 
 use clap::{Parser, Subcommand};
 

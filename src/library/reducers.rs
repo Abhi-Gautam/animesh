@@ -1,4 +1,4 @@
-//! The pure transition functions from plan section 10.
+//! The pure transition functions.
 //!
 //! No I/O, no clock, no storage: every input is passed in and every output is a
 //! decision the caller writes. Follow and refresh call the same reducers, so
@@ -446,7 +446,7 @@ mod tests {
         }
     }
 
-    // --- Section 10, observation -> release event, row by row ---
+    // --- Observation -> release event, case by case ---
 
     #[test]
     fn no_event_plus_a_schedule_inserts() {
@@ -642,7 +642,7 @@ mod tests {
         );
     }
 
-    // --- Section 10, follow ---
+    // --- Follow ---
 
     #[test]
     fn an_unseen_id_must_be_validated_by_the_source() {
@@ -722,7 +722,7 @@ mod tests {
         );
     }
 
-    // --- Section 14, refresh cadence ---
+    // --- Refresh cadence ---
 
     use crate::domain::media::MediaStatus;
     use crate::domain::time::NoJitter;
@@ -865,7 +865,7 @@ mod tests {
         assert_eq!(failure_backoff_secs(500), 6 * 3600);
     }
 
-    // --- Section 10, notification job ---
+    // --- Notification job ---
 
     fn notification_inputs<'a>(
         follow: FollowState,

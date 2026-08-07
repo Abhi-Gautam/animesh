@@ -1,6 +1,6 @@
 //! Validated identifier and timestamp newtypes.
 //!
-//! Plan 001 section 8 freezes these ranges. Every value that crosses a trust
+//! These ranges are frozen. Every value that crosses a trust
 //! boundary — AniList payloads, IPC frames, CLI arguments, SQLite rows — is
 //! parsed into one of these types, so downstream code never re-validates and
 //! an out-of-range value cannot be represented at all.
@@ -152,8 +152,8 @@ bounded_id! {
 
 /// A nonnegative Unix timestamp in UTC seconds that `chrono` can represent.
 ///
-/// Section 8 requires both directions: a source may hand us any nonnegative
-/// integer, and every current wall-clock instant must round-trip. Values that
+/// Both directions matter: a source may hand us any nonnegative integer, and
+/// every current wall-clock instant must round-trip. Values that
 /// are nonnegative but outside `chrono`'s range are rejected here rather than
 /// panicking at the point of formatting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -222,9 +222,8 @@ impl fmt::Display for UnixTimestamp {
 
 /// An external data source.
 ///
-/// Plan 001 ships AniList only. The enum exists because the stored encoding
-/// must be explicit and fallibly decoded, not because a second source is
-/// planned in this milestone.
+/// AniList is the only source. The enum exists because the stored encoding must
+/// be explicit and fallibly decoded, not because a second source is planned.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Source {

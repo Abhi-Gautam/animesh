@@ -1,4 +1,4 @@
-//! The composition root, in plan section 19's order.
+//! The composition root.
 //!
 //! Paths, then the singleton lock, then the socket, then the database. The lock
 //! comes before the socket and before the database so a second instance can

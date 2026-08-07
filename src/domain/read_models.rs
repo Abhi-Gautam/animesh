@@ -16,8 +16,7 @@ pub const MAX_UPCOMING_LIMIT: u32 = 500;
 
 /// How long an episode stays visible after its airtime.
 ///
-/// Plan 001's original serving query dropped a row the instant its airtime
-/// passed, which blanked the app during exactly the window the owner is asking
+/// The original serving query dropped a row the instant its airtime passed, which blanked the app during exactly the window the owner is asking
 /// "did it drop yet?" — and never once reported that an episode had aired.
 /// Rows inside this band are returned with [`UpcomingRelease::aired`] set.
 pub const AIRED_VISIBILITY_SECS: i64 = 24 * 60 * 60;
@@ -52,7 +51,7 @@ pub struct UpcomingRelease {
 }
 
 impl UpcomingRelease {
-    /// The frozen total order from section 8.
+    /// The frozen total order.
     ///
     /// Implemented here as well as in SQL so a test can prove the two agree.
     /// A read model whose order depends on which layer produced it is not a
@@ -244,7 +243,7 @@ impl AuthorizationState {
     }
 }
 
-/// The full status surface, frozen by section 8.
+/// The full status surface.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HealthSnapshot {
     pub process_version: String,

@@ -1,8 +1,8 @@
 //! AniList transport.
 //!
-//! Returns a classified result rather than `Result`: section 12 requires every
-//! response occurrence to become Bronze evidence, including the failures, so a
-//! transport error is data here rather than an early return.
+//! Returns a classified result rather than `Result`. Every response occurrence
+//! becomes evidence, including the failures, so a transport error is data here
+//! rather than an early return.
 
 use std::time::{Duration, Instant};
 

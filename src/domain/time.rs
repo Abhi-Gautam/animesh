@@ -1,9 +1,8 @@
 //! Clock and jitter ports.
 //!
-//! Nothing in the engine reads the system clock directly. Plan 001 section 23
-//! requires a fake wall clock that can jump independently of Tokio's monotonic
-//! time, because schedule correctness depends on absolute instants while sleeps
-//! depend on elapsed time, and tests must move those two independently.
+//! Nothing in the engine reads the system clock directly. Schedule correctness
+//! depends on absolute instants while sleeps depend on elapsed time, so a fake
+//! wall clock has to jump independently of Tokio's monotonic time.
 
 use std::fmt;
 use std::sync::atomic::{AtomicI64, Ordering};

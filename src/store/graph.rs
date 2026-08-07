@@ -899,7 +899,7 @@ mod tests {
 
     #[test]
     fn a_failure_preserves_the_previous_success() {
-        // Section 3: failure changes only durable failure state.
+        // A failure changes only durable failure state.
         let mut conn = db();
         let tx = conn.transaction().expect("begin");
         let row = create_media(&tx, id(21), &title("One Piece"), at(100)).expect("create");
