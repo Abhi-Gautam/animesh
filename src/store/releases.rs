@@ -10,6 +10,7 @@ use crate::domain::ids::{
 use crate::domain::notification::{
     NativeRequest, NotificationJobState, NotificationKey, OsIdentifier,
 };
+use crate::domain::read_models::{AuthorizationState, NotificationCounts};
 use crate::domain::release::{
     source_event_key, ReleaseEvent, ReleaseEventState, MAX_EVENT_KEY_LEN,
 };
@@ -496,6 +497,7 @@ pub fn mark_failed(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlanRow {
     pub key: NotificationKey,
+    pub release_event_id: ReleaseEventId,
     pub os_identifier: OsIdentifier,
     pub desired_revision: i64,
     pub desired_request_json: String,
@@ -517,8 +519,8 @@ impl PlanRow {
 /// reported as deferred rather than dropped.
 pub fn plan(conn: &Connection, limit: u32) -> Result<Vec<PlanRow>, StoreError> {
     let mut stmt = conn.prepare(
-        "SELECT notification_key, os_identifier, desired_revision, desired_request_json,
-                desired_at, state, retry_after
+        "SELECT notification_key, release_event_id, os_identifier, desired_revision,
+                desired_request_json, desired_at, state, retry_after
          FROM notification_jobs
          WHERE state IN ('desired', 'registered', 'failed')
          ORDER BY desired_at ASC, notification_key ASC
@@ -528,30 +530,68 @@ pub fn plan(conn: &Connection, limit: u32) -> Result<Vec<PlanRow>, StoreError> {
         .query_map([limit], |row| {
             Ok((
                 row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, i64>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, i64>(4)?,
-                row.get::<_, String>(5)?,
-                row.get::<_, Option<i64>>(6)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, i64>(5)?,
+                row.get::<_, String>(6)?,
+                row.get::<_, Option<i64>>(7)?,
             ))
         })?
         .collect::<Result<Vec<_>, _>>()?;
 
     rows.into_iter()
-        .map(|(key, os_id, revision, json, desired_at, state, retry)| {
-            Ok(PlanRow {
-                key: NotificationKey::from_stored(key),
-                os_identifier: OsIdentifier::from_stored(os_id),
-                desired_revision: revision,
-                desired_request_json: json,
-                desired_at: ts(desired_at)?,
-                state: NotificationJobState::parse(&state)
-                    .map_err(|e| StoreError::Integrity(e.to_string()))?,
-                retry_after: retry.map(ts).transpose()?,
-            })
-        })
+        .map(
+            |(key, event_id, os_id, revision, json, desired_at, state, retry)| {
+                Ok(PlanRow {
+                    key: NotificationKey::from_stored(key),
+                    release_event_id: ReleaseEventId::new(event_id)
+                        .map_err(|e| StoreError::Integrity(e.to_string()))?,
+                    os_identifier: OsIdentifier::from_stored(os_id),
+                    desired_revision: revision,
+                    desired_request_json: json,
+                    desired_at: ts(desired_at)?,
+                    state: NotificationJobState::parse(&state)
+                        .map_err(|e| StoreError::Integrity(e.to_string()))?,
+                    retry_after: retry.map(ts).transpose()?,
+                })
+            },
+        )
         .collect()
+}
+
+/// Job counts for health, bucketed the way the owner reads them.
+///
+/// `capacity` is the proven native ceiling: anything wanted beyond it is
+/// counted as deferred rather than silently missing.
+pub fn counts(conn: &Connection, capacity: u32) -> Result<NotificationCounts, StoreError> {
+    let mut stmt = conn.prepare(
+        "SELECT state, count(*) FROM notification_jobs
+         WHERE state IN ('desired', 'registered', 'failed')
+         GROUP BY state",
+    )?;
+    let mut counts = NotificationCounts::default();
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    for (state, count) in rows {
+        let count = u32::try_from(count).unwrap_or(u32::MAX);
+        match NotificationJobState::parse(&state)
+            .map_err(|e| StoreError::Integrity(e.to_string()))?
+        {
+            NotificationJobState::Desired => counts.desired = count,
+            NotificationJobState::Registered => counts.registered = count,
+            NotificationJobState::Failed => counts.failed = count,
+            // The `WHERE` above admits no other state.
+            _ => {}
+        }
+    }
+    counts.deferred_capacity = deferred_count(conn, capacity)?;
+    Ok(counts)
 }
 
 /// How many jobs want registration beyond `limit`.
@@ -565,11 +605,106 @@ pub fn deferred_count(conn: &Connection, limit: u32) -> Result<u32, StoreError> 
     Ok(u32::try_from(total.saturating_sub(i64::from(limit))).unwrap_or(0))
 }
 
+// ---------------------------------------------------------------------------
+// notification surface state
+// ---------------------------------------------------------------------------
+
+/// What the last reconciliation pass observed about the OS notification centre.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SurfaceState {
+    pub authorization: AuthorizationState,
+    pub authorization_observed_at: Option<UnixTimestamp>,
+    pub last_reconciled_at: Option<UnixTimestamp>,
+    pub last_error_code: Option<String>,
+}
+
+impl Default for SurfaceState {
+    fn default() -> Self {
+        Self {
+            authorization: AuthorizationState::Unknown,
+            authorization_observed_at: None,
+            last_reconciled_at: None,
+            last_error_code: None,
+        }
+    }
+}
+
+pub fn surface_state(conn: &Connection) -> Result<SurfaceState, StoreError> {
+    let row = conn
+        .query_row(
+            "SELECT authorization, authorization_observed_at, last_reconciled_at, last_error_code
+             FROM notification_surface_state WHERE singleton_id = 1",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<i64>>(1)?,
+                    row.get::<_, Option<i64>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                ))
+            },
+        )
+        .optional()?;
+
+    let Some((authorization, observed, reconciled, error)) = row else {
+        return Ok(SurfaceState::default());
+    };
+    Ok(SurfaceState {
+        authorization: AuthorizationState::parse(&authorization)
+            .ok_or_else(|| StoreError::Integrity(format!("authorization: {authorization}")))?,
+        authorization_observed_at: observed.map(ts).transpose()?,
+        last_reconciled_at: reconciled.map(ts).transpose()?,
+        last_error_code: error,
+    })
+}
+
+/// Records the outcome of a reconciliation pass.
+///
+/// Returns whether anything actually changed. A pass that observes the same
+/// authorization and no new error writes nothing but the reconcile timestamp,
+/// so an idle app does not dirty a page every safety tick.
+pub fn record_surface(
+    tx: &Transaction<'_>,
+    authorization: AuthorizationState,
+    error_code: Option<&str>,
+    now: UnixTimestamp,
+) -> Result<bool, StoreError> {
+    let previous = surface_state(tx)?;
+    let unchanged = previous.authorization == authorization
+        && previous.last_error_code.as_deref() == error_code;
+
+    let observed_at = if unchanged {
+        previous.authorization_observed_at.unwrap_or(now)
+    } else {
+        now
+    };
+
+    tx.execute(
+        "INSERT INTO notification_surface_state
+            (singleton_id, authorization, authorization_observed_at,
+             last_reconciled_at, last_error_code, updated_at)
+         VALUES (1, ?1, ?2, ?3, ?4, ?3)
+         ON CONFLICT(singleton_id) DO UPDATE SET
+            authorization = excluded.authorization,
+            authorization_observed_at = excluded.authorization_observed_at,
+            last_reconciled_at = excluded.last_reconciled_at,
+            last_error_code = excluded.last_error_code,
+            updated_at = excluded.updated_at",
+        rusqlite::params![
+            authorization.as_str(),
+            observed_at.get(),
+            now.get(),
+            error_code
+        ],
+    )?;
+    Ok(!unchanged)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::domain::ids::AniListId;
-    use crate::domain::ids::SourceKey;
+    use crate::domain::ids::{InstallationUuid, SourceKey};
     use crate::domain::media::{
         MediaObservation, MediaStatus, NextAiring, TitleSet, MAX_TITLE_LEN, PARSER_VERSION,
     };
@@ -893,5 +1028,174 @@ mod tests {
             .expect("present");
         assert_eq!(found.id, id);
         assert_eq!(found.state, ReleaseEventState::Withdrawn);
+    }
+
+    // --- notification jobs ---
+
+    /// Creates an event and the `desired` job that goes with it.
+    ///
+    /// Only one event per source media may be `scheduled`, so a second call
+    /// retires the previous episode the way a real advance would. Its job
+    /// survives, which is exactly the multi-job state the plan has to handle.
+    fn with_job(f: &mut Fixture, episode: i64, scheduled_at: i64) -> ReleaseEventId {
+        let transition = match scheduled_event(&f.conn, f.source_media_id).expect("read") {
+            Some(current) => ReleaseTransition::Advance {
+                retire: current.id,
+                retire_state: ReleaseEventState::Elapsed,
+                episode: ep(episode),
+                scheduled_at: at(scheduled_at),
+            },
+            None => ReleaseTransition::Insert {
+                episode: ep(episode),
+                scheduled_at: at(scheduled_at),
+            },
+        };
+        let event_id = apply(f, transition, 101).expect("event id");
+
+        let event = event_by_id(&f.conn, event_id)
+            .expect("read")
+            .expect("present");
+        let request = NativeRequest::build(
+            OsIdentifier::new(&InstallationUuid::generate(), &event.uuid),
+            crate::domain::notification::DeliveryMode::Scheduled,
+            at(scheduled_at),
+            "One Piece",
+            ep(episode),
+            AniListId::new(21).expect("id"),
+        );
+
+        let tx = f.conn.transaction().expect("begin");
+        apply_notification(
+            &tx,
+            &event,
+            &NotificationTransition::Create {
+                revision: 1,
+                request: Box::new(request),
+            },
+            at(102),
+        )
+        .expect("create job");
+        tx.commit().expect("commit");
+        event_id
+    }
+
+    #[test]
+    fn the_plan_carries_the_event_id_it_belongs_to() {
+        // The reconciler writes back by key, but callers correlate by event.
+        let mut f = fixture();
+        let event_id = with_job(&mut f, 5, 5_000);
+
+        let plan = plan(&f.conn, 10).expect("plan");
+        assert_eq!(plan.len(), 1);
+        assert_eq!(plan[0].release_event_id, event_id);
+    }
+
+    #[test]
+    fn capacity_defers_the_furthest_out_jobs_without_dropping_them() {
+        let mut f = fixture();
+        with_job(&mut f, 5, 5_000);
+        with_job(&mut f, 9, 12_000);
+
+        let plan = plan(&f.conn, 1).expect("plan");
+        assert_eq!(plan.len(), 1);
+        // The nearest airtime is the one that fits.
+        assert_eq!(plan[0].desired_at, at(5_000));
+        assert_eq!(deferred_count(&f.conn, 1).expect("deferred"), 1);
+    }
+
+    #[test]
+    fn counts_bucket_jobs_by_state() {
+        let mut f = fixture();
+        let registered = with_job(&mut f, 5, 5_000);
+        with_job(&mut f, 9, 12_000);
+
+        let key = {
+            let event = event_by_id(&f.conn, registered)
+                .expect("read")
+                .expect("present");
+            NotificationKey::for_event(&event.uuid)
+        };
+        let tx = f.conn.transaction().expect("begin");
+        mark_registered(&tx, &key, 1, at(200)).expect("register");
+        tx.commit().expect("commit");
+
+        let counts = counts(&f.conn, 10).expect("counts");
+        assert_eq!(counts.desired, 1);
+        assert_eq!(counts.registered, 1);
+        assert_eq!(counts.failed, 0);
+        assert_eq!(counts.deferred_capacity, 0);
+    }
+
+    #[test]
+    fn terminal_jobs_leave_the_plan_and_the_counts() {
+        let mut f = fixture();
+        let event_id = with_job(&mut f, 5, 5_000);
+        let event = event_by_id(&f.conn, event_id)
+            .expect("read")
+            .expect("present");
+
+        let tx = f.conn.transaction().expect("begin");
+        apply_notification(&tx, &event, &NotificationTransition::Cancel, at(200)).expect("cancel");
+        tx.commit().expect("commit");
+
+        assert!(plan(&f.conn, 10).expect("plan").is_empty());
+        assert_eq!(
+            counts(&f.conn, 10).expect("counts"),
+            NotificationCounts::default()
+        );
+    }
+
+    // --- surface state ---
+
+    #[test]
+    fn an_unrecorded_surface_reads_as_unknown() {
+        let f = fixture();
+        assert_eq!(
+            surface_state(&f.conn).expect("read"),
+            SurfaceState::default()
+        );
+    }
+
+    #[test]
+    fn recording_the_same_authorization_twice_reports_no_change() {
+        let mut f = fixture();
+
+        let tx = f.conn.transaction().expect("begin");
+        let first =
+            record_surface(&tx, AuthorizationState::Authorized, None, at(500)).expect("record");
+        tx.commit().expect("commit");
+        assert!(first);
+
+        let tx = f.conn.transaction().expect("begin");
+        let second =
+            record_surface(&tx, AuthorizationState::Authorized, None, at(900)).expect("record");
+        tx.commit().expect("commit");
+        assert!(!second);
+
+        let state = surface_state(&f.conn).expect("read");
+        // The pass still happened, so it is timestamped...
+        assert_eq!(state.last_reconciled_at, Some(at(900)));
+        // ...but the authorization was not re-observed, so its age is honest.
+        assert_eq!(state.authorization_observed_at, Some(at(500)));
+    }
+
+    #[test]
+    fn a_changed_authorization_restamps_the_observation() {
+        let mut f = fixture();
+
+        let tx = f.conn.transaction().expect("begin");
+        record_surface(&tx, AuthorizationState::NotDetermined, None, at(500)).expect("record");
+        tx.commit().expect("commit");
+
+        let tx = f.conn.transaction().expect("begin");
+        let changed = record_surface(&tx, AuthorizationState::Denied, Some("denied"), at(900))
+            .expect("record");
+        tx.commit().expect("commit");
+        assert!(changed);
+
+        let state = surface_state(&f.conn).expect("read");
+        assert_eq!(state.authorization, AuthorizationState::Denied);
+        assert_eq!(state.authorization_observed_at, Some(at(900)));
+        assert_eq!(state.last_error_code.as_deref(), Some("denied"));
     }
 }
