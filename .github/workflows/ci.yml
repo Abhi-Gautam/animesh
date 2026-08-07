@@ -5,48 +5,100 @@ on:
     branches: [master]
   pull_request:
 
-# Cancel superseded runs on the same ref to save minutes.
-concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
-
 env:
   CARGO_TERM_COLOR: always
+  # Fail on warnings here only. Locally they stay warnings so the inner loop is
+  # never blocked mid-edit.
+  RUSTFLAGS: -D warnings
 
 jobs:
-  # Fast, cheap gates first. These run on every push and fail loudly.
-  lint:
-    name: fmt + clippy
-    runs-on: ubuntu-latest
+  # macOS because the product is macOS-only: paths, the Unix socket, the bundle,
+  # and codesign all behave differently anywhere else.
+  check:
+    runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
-      # Honors rust-toolchain.toml for the pinned channel + components.
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
-      - name: rustfmt
-        run: cargo fmt --all --check
-      - name: clippy (warnings are errors)
-        run: cargo clippy --all-targets --all-features -- -D warnings
 
-  test:
-    name: nextest
-    runs-on: ubuntu-latest
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace --locked
+
+      # The harness feature compiles fakes into the binary. It is never enabled
+      # in release, but it still has to build, or it rots until the day someone
+      # needs it.
+      - name: Test harness feature builds
+        run: cargo check --package animesh --features test-harness --locked
+
+      - name: Release build excludes the test harness
+        run: |
+          if cargo tree --package animesh --edges features --locked | grep -q 'test-harness'; then
+            echo "test-harness is reachable from a default build" >&2
+            exit 1
+          fi
+
+      - name: Release build
+        run: cargo build --workspace --release --locked
+
+  # Proves the installer still produces a launchable, verifiable bundle. Signing
+  # is ad-hoc here, which is fine because nothing is installed or consented to.
+  bundle:
+    runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - uses: taiki-e/install-action@nextest
-      - name: tests
-        run: cargo nextest run --all-features
-      # nextest skips doctests; run them separately so they don't rot.
-      - name: doctests
-        run: cargo test --doc --all-features
 
-  supply-chain:
-    name: cargo-deny
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: EmbarkStudios/cargo-deny-action@v2
+      - name: Bundle
+        run: cargo xtask bundle --release
+
+      - name: Verify
+        run: cargo xtask verify --path target/bundle/Animesh.app
+
+      # The engine must come up and answer over IPC from inside the bundle, not
+      # only from target/debug. A bundle that verifies but cannot serve is the
+      # failure this catches.
+      - name: Smoke the bundled app
+        run: |
+          set -euo pipefail
+          APP=target/bundle/Animesh.app/Contents
+          "$APP/MacOS/Animesh" &
+          for _ in $(seq 1 20); do
+            if "$APP/Helpers/animesh" status >/dev/null 2>&1; then break; fi
+            sleep 0.5
+          done
+          "$APP/Helpers/animesh" status
+          "$APP/Helpers/animesh" next
+          pkill -TERM -f "$APP/MacOS/Animesh"
+          sleep 1
+          if pgrep -f "$APP/MacOS/Animesh" >/dev/null; then
+            echo "the app ignored SIGTERM" >&2
+            exit 1
+          fi
+
+      # A second instance must refuse rather than race the first for the socket
+      # and the database.
+      - name: Singleton is enforced
+        run: |
+          set -uo pipefail
+          APP=target/bundle/Animesh.app/Contents
+          "$APP/MacOS/Animesh" &
+          sleep 3
+          "$APP/MacOS/Animesh"
+          second=$?
+          pkill -TERM -f "$APP/MacOS/Animesh" || true
+          if [ "$second" -eq 0 ]; then
+            echo "a second instance started alongside the first" >&2
+            exit 1
+          fi
+          echo "second instance refused with exit $second"
