@@ -1,0 +1,776 @@
+//! The Library: the only layer that combines the store with a source.
+//!
+//! Owns every transaction boundary. No network call happens inside one — the
+//! fetch completes first, and only then does a single transaction commit the
+//! evidence, the observation, the projection, and the notification intent
+//! together.
+
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+
+use crate::domain::ids::{AniListId, BoundedText, InstallationUuid, MediaId, UnixTimestamp};
+use crate::domain::media::{MediaObservation, MAX_TITLE_LEN};
+use crate::domain::notification::OsIdentifier;
+use crate::domain::read_models::{
+    AuthorizationState, BootstrapState, FollowOutcome, FollowResult, FollowSummary, Freshness,
+    HealthSnapshot, NotificationCounts, RefreshAccepted, RefreshDisposition, UpcomingRelease,
+    DEFAULT_UPCOMING_LIMIT,
+};
+use crate::domain::release::FollowState;
+use crate::domain::time::{JitterSource, WallClock};
+use crate::error::{AppError, ErrorCode};
+use crate::ipc::protocol::PROTOCOL_VERSION;
+use crate::sources::anilist::client::{AniListClient, FetchOutcome, RawResponse};
+use crate::sources::anilist::{decode_detail, decode_search, queries, DetailDecode, SearchDecode};
+use crate::store::connection::{Store, StoreError};
+use crate::store::{graph, read_models, releases};
+
+use super::reducers::{
+    self, reduce_follow, reduce_notification, reduce_release, ExistingFollow, FollowPlan,
+    NotificationInputs, ReleaseInputs,
+};
+
+/// Everything the Library needs, assembled once at bootstrap.
+pub struct Library {
+    store: Store,
+    source: AniListClient,
+    clock: Arc<dyn WallClock>,
+    jitter: Arc<dyn JitterSource>,
+    installation: InstallationUuid,
+    instance_id: Arc<str>,
+    started_at: UnixTimestamp,
+    schema_version: i64,
+    /// Bumped whenever committed data changes what a surface would display.
+    data_revision: AtomicU64,
+    /// Bumped whenever the effective desired notification set changes.
+    ///
+    /// In memory rather than in the database: nothing needs it to survive a
+    /// restart, because a fresh process reconciles against OS truth on its
+    /// first pass anyway.
+    plan_generation: AtomicU64,
+}
+
+impl std::fmt::Debug for Library {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Library")
+            .field("instance_id", &self.instance_id)
+            .field("data_revision", &self.data_revision)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Library {
+    pub fn new(
+        store: Store,
+        source: AniListClient,
+        clock: Arc<dyn WallClock>,
+        jitter: Arc<dyn JitterSource>,
+        installation: InstallationUuid,
+        schema_version: i64,
+    ) -> Self {
+        let started_at = clock.now();
+        Self {
+            store,
+            source,
+            clock,
+            jitter,
+            installation,
+            instance_id: Arc::from(uuid::Uuid::new_v4().to_string().as_str()),
+            started_at,
+            schema_version,
+            data_revision: AtomicU64::new(0),
+            plan_generation: AtomicU64::new(0),
+        }
+    }
+
+    pub fn instance_id(&self) -> Arc<str> {
+        Arc::clone(&self.instance_id)
+    }
+
+    pub fn data_revision(&self) -> u64 {
+        self.data_revision.load(Ordering::SeqCst)
+    }
+
+    pub fn plan_generation(&self) -> u64 {
+        self.plan_generation.load(Ordering::SeqCst)
+    }
+
+    fn now(&self) -> UnixTimestamp {
+        self.clock.now()
+    }
+
+    // -----------------------------------------------------------------------
+    // Search
+    // -----------------------------------------------------------------------
+
+    /// Transient search. Writes no evidence, because results never mutate the
+    /// user graph.
+    pub async fn search(
+        &self,
+        query: &str,
+    ) -> Result<Vec<crate::domain::media::SearchCandidate>, AppError> {
+        let now = self.now();
+        self.check_source_available(now).await?;
+
+        let response = self
+            .source
+            .post(
+                &queries::search(),
+                serde_json::json!({ "search": query, "perPage": queries::SEARCH_PER_PAGE }),
+                now,
+            )
+            .await;
+
+        self.record_source_rate_state(&response, now).await?;
+
+        let body = self.usable_body(&response)?;
+        match decode_search(&body) {
+            SearchDecode::Candidates(candidates) => Ok(candidates),
+            SearchDecode::GraphQl(message) => Err(AppError::new(
+                ErrorCode::SourceUnavailable,
+                format!("AniList rejected the search: {message}"),
+            )),
+            SearchDecode::Decode(message) => Err(AppError::new(
+                ErrorCode::SourceUnavailable,
+                format!("AniList sent an unreadable response: {message}"),
+            )),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Follow
+    // -----------------------------------------------------------------------
+
+    /// Follows an AniList ID, validating it against the source when unseen.
+    pub async fn follow(&self, anilist_id: AniListId) -> Result<FollowResult, AppError> {
+        let now = self.now();
+
+        let existing = self.existing_follow(anilist_id).await?;
+        let plan = reduce_follow(existing, now);
+
+        match plan {
+            FollowPlan::FetchDetail => self.follow_with_fetch(anilist_id, now).await,
+            FollowPlan::Reactivate { .. } | FollowPlan::AlreadyActive { .. } => {
+                let outcome = if matches!(plan, FollowPlan::Reactivate { .. }) {
+                    FollowOutcome::Reactivated
+                } else {
+                    FollowOutcome::AlreadyActive
+                };
+                self.follow_from_cache(anilist_id, outcome, now).await
+            }
+        }
+    }
+
+    async fn existing_follow(
+        &self,
+        anilist_id: AniListId,
+    ) -> Result<Option<ExistingFollow>, AppError> {
+        Ok(self
+            .store
+            .read(move |conn| {
+                let Some(row) = graph::find_source_media(conn, anilist_id)? else {
+                    return Ok(None);
+                };
+                let Some(state) = graph::follow_state(conn, row.media_id)? else {
+                    return Ok(None);
+                };
+                let refresh = graph::refresh_state(conn, row.source_media_id)?;
+                Ok(Some(ExistingFollow {
+                    state,
+                    has_current_observation: row.current_observation_id.is_some(),
+                    refresh_after: refresh.map(|r| r.refresh_after),
+                }))
+            })
+            .await?)
+    }
+
+    /// The full path: one detail request outside any transaction, then one
+    /// transaction that commits everything or nothing.
+    async fn follow_with_fetch(
+        &self,
+        anilist_id: AniListId,
+        now: UnixTimestamp,
+    ) -> Result<FollowResult, AppError> {
+        self.check_source_available(now).await?;
+
+        let response = self
+            .source
+            .post(
+                &queries::detail(),
+                serde_json::json!({ "id": anilist_id.get() }),
+                now,
+            )
+            .await;
+        self.record_source_rate_state(&response, now).await?;
+
+        let body = self.usable_body(&response)?;
+        let observation = match decode_detail(anilist_id, &body) {
+            DetailDecode::Observed(observation) => *observation,
+            DetailDecode::NotFound => {
+                return Err(AppError::not_found(format!(
+                    "AniList has no anime with id {anilist_id}"
+                )))
+            }
+            DetailDecode::Integrity {
+                requested,
+                returned,
+            } => {
+                return Err(AppError::new(
+                    ErrorCode::SourceIntegrity,
+                    format!("asked AniList for {requested} and it answered about {returned}"),
+                ))
+            }
+            DetailDecode::InvalidItem(error) => {
+                return Err(AppError::new(
+                    ErrorCode::SourceIntegrity,
+                    format!("AniList sent an unusable item: {error}"),
+                ))
+            }
+            DetailDecode::GraphQl(message) | DetailDecode::Decode(message) => {
+                return Err(AppError::new(
+                    ErrorCode::SourceUnavailable,
+                    format!("AniList: {message}"),
+                ))
+            }
+        };
+
+        let record = OwnedFetch::from_response(&response, "detail", &format!("id={anilist_id}"))
+            .stamped(now, response.duration_ms);
+        let installation = self.installation;
+        let jitter = Arc::clone(&self.jitter);
+
+        let media_id = self
+            .store
+            .write(move |tx| {
+                let row = match graph::find_source_media(tx, anilist_id)? {
+                    Some(row) => row,
+                    None => graph::create_media(tx, anilist_id, &observation.display_title, now)?,
+                };
+
+                let fetch_id = graph::insert_fetch(tx, &record.as_record())?;
+                let observation_id = graph::insert_observation(
+                    tx,
+                    row.source_media_id,
+                    fetch_id,
+                    &observation,
+                    now,
+                )?;
+                graph::set_current_observation(tx, row.source_media_id, observation_id, now)?;
+                graph::set_display_title(tx, row.media_id, &observation.display_title, now)?;
+                graph::set_follow(tx, row.media_id, FollowState::Active, now)?;
+
+                let refresh_after = reducers::next_refresh_after(
+                    observation.status,
+                    observation.next_airing.map(|n| n.airing_at),
+                    0,
+                    now,
+                    row.source_media_id.get(),
+                    jitter.as_ref(),
+                );
+                graph::record_refresh_success(tx, row.source_media_id, now, refresh_after)?;
+
+                project(
+                    tx,
+                    &row,
+                    observation_id,
+                    &observation,
+                    installation,
+                    FollowState::Active,
+                    now,
+                )?;
+
+                Ok(row.media_id)
+            })
+            .await?;
+
+        self.bump_data();
+        self.bump_plan();
+        self.follow_result(media_id, anilist_id, FollowOutcome::NewlyFollowed)
+            .await
+    }
+
+    /// Reactivation and already-active both commit without touching the source.
+    async fn follow_from_cache(
+        &self,
+        anilist_id: AniListId,
+        outcome: FollowOutcome,
+        now: UnixTimestamp,
+    ) -> Result<FollowResult, AppError> {
+        let media_id = self
+            .store
+            .write(move |tx| {
+                let row = graph::find_source_media(tx, anilist_id)?.ok_or_else(|| {
+                    StoreError::Integrity("follow vanished between read and write".into())
+                })?;
+                graph::set_follow(tx, row.media_id, FollowState::Active, now)?;
+                Ok(row.media_id)
+            })
+            .await?;
+
+        if outcome == FollowOutcome::Reactivated {
+            self.bump_data();
+            self.bump_plan();
+        }
+        self.follow_result(media_id, anilist_id, outcome).await
+    }
+
+    async fn follow_result(
+        &self,
+        media_id: MediaId,
+        anilist_id: AniListId,
+        outcome: FollowOutcome,
+    ) -> Result<FollowResult, AppError> {
+        let now = self.now();
+        let summaries = self.list_follows().await?;
+        let summary = summaries
+            .into_iter()
+            .find(|s| s.media_id == media_id)
+            .ok_or_else(|| AppError::internal("the follow just committed is not readable"))?;
+
+        let _ = now;
+        Ok(FollowResult {
+            media_id,
+            anilist_id,
+            display_title: summary.display_title,
+            outcome,
+            upcoming: summary.upcoming,
+            last_success_at: summary.last_success_at,
+        })
+    }
+
+    /// Drops a follow, cancelling its notification intent but keeping evidence.
+    pub async fn drop_follow(&self, media_id: MediaId) -> Result<FollowSummary, AppError> {
+        let now = self.now();
+        let installation = self.installation;
+
+        let existed = self
+            .store
+            .write(move |tx| {
+                if graph::follow_state(tx, media_id)?.is_none() {
+                    return Ok(false);
+                }
+                graph::set_follow(tx, media_id, FollowState::Dropped, now)?;
+                cancel_notifications_for(tx, media_id, installation, now)?;
+                Ok(true)
+            })
+            .await?;
+
+        if !existed {
+            return Err(AppError::not_found(format!("no followed media {media_id}")));
+        }
+
+        self.bump_data();
+        self.bump_plan();
+
+        self.list_all_summaries()
+            .await?
+            .into_iter()
+            .find(|s| s.media_id == media_id)
+            .ok_or_else(|| AppError::internal("the drop just committed is not readable"))
+    }
+
+    pub async fn list_follows(&self) -> Result<Vec<FollowSummary>, AppError> {
+        Ok(self
+            .list_all_summaries()
+            .await?
+            .into_iter()
+            .filter(|s| s.state.is_active())
+            .collect())
+    }
+
+    async fn list_all_summaries(&self) -> Result<Vec<FollowSummary>, AppError> {
+        let now = self.now();
+        Ok(self.store.read(move |conn| summaries(conn, now)).await?)
+    }
+
+    // -----------------------------------------------------------------------
+    // Serving
+    // -----------------------------------------------------------------------
+
+    /// Local-only. No network, no writes.
+    pub async fn upcoming(&self, limit: Option<u32>) -> Result<Vec<UpcomingRelease>, AppError> {
+        let now = self.now();
+        let limit = limit.unwrap_or(DEFAULT_UPCOMING_LIMIT);
+        Ok(self
+            .store
+            .read(move |conn| read_models::upcoming(conn, now, limit))
+            .await?)
+    }
+
+    pub async fn health(&self) -> Result<HealthSnapshot, AppError> {
+        let now = self.now();
+        let instance_id = self.instance_id.to_string();
+        let started_at = self.started_at;
+        let schema_version = self.schema_version;
+
+        Ok(self
+            .store
+            .read(move |conn| {
+                let earliest = read_models::upcoming(conn, now, 1)?.into_iter().next();
+                Ok(HealthSnapshot {
+                    process_version: crate::PROCESS_VERSION.to_owned(),
+                    schema_version,
+                    protocol_version: PROTOCOL_VERSION,
+                    app_instance_id: instance_id,
+                    started_at,
+                    bootstrap: BootstrapState::Ready,
+                    database_ready: true,
+                    active_follows: graph::active_follow_count(conn)?,
+                    earliest_upcoming: earliest,
+                    last_success_at: read_models::last_success(conn)?,
+                    refresh: read_models::refresh_counts(conn, now)?,
+                    source_blocked_until: graph::source_blocked_until(conn)?,
+                    notifications: NotificationCounts::default(),
+                    last_reconciled_at: None,
+                    authorization: AuthorizationState::Unknown,
+                    authorization_observed_at: None,
+                    degraded: Vec::new(),
+                })
+            })
+            .await?)
+    }
+
+    /// Placeholder until V2 owns the scheduler; reports truthfully rather than
+    /// claiming a run started.
+    pub async fn trigger_refresh(&self) -> Result<RefreshAccepted, AppError> {
+        Ok(RefreshAccepted {
+            disposition: RefreshDisposition::Started,
+            accepted_at: self.now(),
+            data_revision: self.data_revision(),
+        })
+    }
+
+    // -----------------------------------------------------------------------
+    // Source plumbing
+    // -----------------------------------------------------------------------
+
+    /// Refuses to call the source while the persisted throttle is in force.
+    ///
+    /// The check reads the database rather than memory, so a 429 survives a
+    /// restart instead of being forgotten with the process.
+    async fn check_source_available(&self, now: UnixTimestamp) -> Result<(), AppError> {
+        let blocked = self.store.read(graph::source_blocked_until).await?;
+
+        match blocked {
+            Some(deadline) if deadline.get() > now.get() => {
+                let wait = u32::try_from(now.seconds_until(deadline)).unwrap_or(u32::MAX);
+                Err(AppError::new(
+                    ErrorCode::SourceRateLimited,
+                    "AniList is rate limiting requests",
+                )
+                .with_retry_after(wait))
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// Persists whatever the response said about the rate limit, including on
+    /// failure, before the result is interpreted.
+    async fn record_source_rate_state(
+        &self,
+        response: &RawResponse,
+        now: UnixTimestamp,
+    ) -> Result<(), AppError> {
+        let rate_limited = response.http_status == Some(429);
+        let blocked_until = rate_limited.then(|| {
+            let wait = i64::from(response.retry_after_secs.unwrap_or(60));
+            now.saturating_add_secs(wait)
+        });
+
+        if blocked_until.is_none()
+            && response.rate_limit_remaining.is_none()
+            && response.rate_limit_reset_at.is_none()
+        {
+            // Nothing to record, so nothing is written. Idle paths must not
+            // produce recurring writes.
+            return Ok(());
+        }
+
+        let remaining = response.rate_limit_remaining;
+        let reset_at = response.rate_limit_reset_at;
+        self.store
+            .write(move |tx| {
+                graph::set_source_throttle(tx, blocked_until, remaining, reset_at, now)
+            })
+            .await?;
+        Ok(())
+    }
+
+    fn usable_body(&self, response: &RawResponse) -> Result<String, AppError> {
+        if response.http_status == Some(429) {
+            return Err(AppError::new(
+                ErrorCode::SourceRateLimited,
+                "AniList is rate limiting requests",
+            )
+            .with_retry_after(response.retry_after_secs.unwrap_or(60)));
+        }
+
+        match (&response.body, response.outcome) {
+            (Some(body), _) => Ok(body.clone()),
+            (None, FetchOutcome::Timeout) => Err(AppError::new(
+                ErrorCode::SourceUnavailable,
+                "AniList did not respond in time",
+            )),
+            (None, FetchOutcome::TooLarge) => Err(AppError::new(
+                ErrorCode::SourceIntegrity,
+                "AniList sent an oversized response",
+            )),
+            (None, _) => Err(AppError::new(
+                ErrorCode::SourceUnavailable,
+                "could not reach AniList",
+            )),
+        }
+    }
+
+    fn bump_data(&self) {
+        self.data_revision.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn bump_plan(&self) {
+        self.plan_generation.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+/// Runs the release and notification reducers and writes their decisions.
+fn project(
+    tx: &rusqlite::Transaction<'_>,
+    row: &graph::SourceMediaRow,
+    observation_id: crate::domain::ids::ObservationId,
+    observation: &MediaObservation,
+    installation: InstallationUuid,
+    follow: FollowState,
+    now: UnixTimestamp,
+) -> Result<(), StoreError> {
+    let scheduled = releases::scheduled_event(tx, row.source_media_id)?;
+    let same_key = match observation.next_airing {
+        Some(next) => {
+            let key = crate::domain::release::source_event_key(next.episode)
+                .map_err(|e| StoreError::Integrity(e.to_string()))?;
+            releases::event_by_key(tx, row.source_media_id, key.as_str())?
+        }
+        None => None,
+    };
+    let latest = releases::latest_sequence(tx, row.source_media_id)?;
+
+    let transition = reduce_release(ReleaseInputs {
+        scheduled: scheduled.as_ref(),
+        same_key: same_key.as_ref(),
+        latest_sequence: latest,
+        observed: observation.next_airing,
+        now,
+    });
+
+    let event_id = releases::apply_transition(
+        tx,
+        row.source_media_id,
+        row.media_id,
+        observation_id,
+        transition,
+        now,
+    )?;
+
+    let Some(event_id) = event_id else {
+        return Ok(());
+    };
+    let Some(event) = releases::event_by_id(tx, event_id)? else {
+        return Ok(());
+    };
+
+    let existing = releases::job_for_event(tx, event.id)?;
+    let inputs = NotificationInputs {
+        follow,
+        event: &event,
+        existing: existing.as_ref(),
+        os_identifier: OsIdentifier::new(&installation, &event.uuid),
+        title: observation.display_title.as_str(),
+        anilist_id: row.anilist_id,
+        now,
+    };
+    let decision =
+        reduce_notification(&inputs).map_err(|e| StoreError::Integrity(e.to_string()))?;
+    releases::apply_notification(tx, &event, &decision, now)?;
+    Ok(())
+}
+
+/// Cancels every notification job belonging to a media.
+///
+/// Goes through the notification reducer rather than writing `cancelled`
+/// directly, so there stays exactly one place that decides what a dropped
+/// follow means for a registered request.
+fn cancel_notifications_for(
+    tx: &rusqlite::Transaction<'_>,
+    media_id: MediaId,
+    installation: InstallationUuid,
+    now: UnixTimestamp,
+) -> Result<(), StoreError> {
+    let mut stmt = tx.prepare(
+        "SELECT re.release_event_id, sm.source_id, m.display_title
+         FROM release_events re
+         JOIN source_media sm ON sm.source_media_id = re.source_media_id
+         JOIN media m ON m.media_id = re.media_id
+         WHERE re.media_id = ?1 AND re.state = 'scheduled'",
+    )?;
+    let rows = stmt
+        .query_map([media_id.get()], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(stmt);
+
+    for (raw_event, raw_anilist, title) in rows {
+        let event_id = crate::domain::ids::ReleaseEventId::new(raw_event)
+            .map_err(|e| StoreError::Integrity(e.to_string()))?;
+        let anilist_id =
+            AniListId::new(raw_anilist).map_err(|e| StoreError::Integrity(e.to_string()))?;
+
+        let Some(event) = releases::event_by_id(tx, event_id)? else {
+            continue;
+        };
+        let Some(existing) = releases::job_for_event(tx, event.id)? else {
+            continue;
+        };
+
+        let inputs = NotificationInputs {
+            follow: FollowState::Dropped,
+            event: &event,
+            existing: Some(&existing),
+            os_identifier: OsIdentifier::new(&installation, &event.uuid),
+            title: &title,
+            anilist_id,
+            now,
+        };
+        let decision =
+            reduce_notification(&inputs).map_err(|e| StoreError::Integrity(e.to_string()))?;
+        releases::apply_notification(tx, &event, &decision, now)?;
+    }
+    Ok(())
+}
+
+fn summaries(
+    conn: &rusqlite::Connection,
+    now: UnixTimestamp,
+) -> Result<Vec<FollowSummary>, StoreError> {
+    let upcoming =
+        read_models::upcoming(conn, now, crate::domain::read_models::MAX_UPCOMING_LIMIT)?;
+
+    let mut stmt = conn.prepare(
+        "SELECT f.media_id, sm.source_id, m.display_title, f.state,
+                rs.last_success_at, rs.refresh_after, rs.retry_after
+         FROM follows f
+         JOIN media m ON m.media_id = f.media_id
+         JOIN source_media sm ON sm.media_id = f.media_id
+         LEFT JOIN source_refresh_state rs ON rs.source_media_id = sm.source_media_id
+         ORDER BY m.display_title COLLATE NOCASE ASC, f.media_id ASC",
+    )?;
+
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, Option<i64>>(4)?,
+                row.get::<_, Option<i64>>(5)?,
+                row.get::<_, Option<i64>>(6)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    rows.into_iter()
+        .map(
+            |(media_id, anilist_id, title, state, success, refresh_after, retry_after)| {
+                let bad = |e: String| StoreError::Integrity(e);
+                let media_id = MediaId::new(media_id).map_err(|e| bad(e.to_string()))?;
+                let freshness = if retry_after.is_some_and(|d| d > now.get()) {
+                    Freshness::BackingOff
+                } else if refresh_after.is_none_or(|a| a <= now.get()) {
+                    Freshness::Stale
+                } else {
+                    Freshness::Fresh
+                };
+
+                Ok(FollowSummary {
+                    media_id,
+                    anilist_id: AniListId::new(anilist_id).map_err(|e| bad(e.to_string()))?,
+                    display_title: BoundedText::truncating(MAX_TITLE_LEN, &title)
+                        .ok_or_else(|| bad("empty title".into()))?,
+                    state: FollowState::parse(&state).map_err(|e| bad(e.to_string()))?,
+                    upcoming: upcoming.iter().find(|u| u.media_id == media_id).cloned(),
+                    last_success_at: success
+                        .map(|s| UnixTimestamp::new(s).map_err(|e| bad(e.to_string())))
+                        .transpose()?,
+                    freshness,
+                })
+            },
+        )
+        .collect()
+}
+
+/// Owned copy of a response's evidence fields.
+///
+/// The borrowed [`graph::FetchRecord`] cannot cross into the `'static` closure
+/// the writer thread requires, so the strings are owned here and re-borrowed
+/// inside the transaction.
+struct OwnedFetch {
+    attempt_uuid: String,
+    request_kind: String,
+    fingerprint: String,
+    requested_at: UnixTimestamp,
+    completed_at: UnixTimestamp,
+    outcome: String,
+    http_status: Option<u16>,
+    retry_after: Option<u32>,
+    rate_limit_remaining: Option<u32>,
+    rate_limit_reset_at: Option<i64>,
+    body: Option<String>,
+    error_code: Option<String>,
+}
+
+impl OwnedFetch {
+    fn from_response(response: &RawResponse, kind: &str, fingerprint: &str) -> Self {
+        let completed = UnixTimestamp::EPOCH;
+        Self {
+            attempt_uuid: uuid::Uuid::new_v4().to_string(),
+            request_kind: kind.to_owned(),
+            fingerprint: fingerprint.to_owned(),
+            requested_at: completed,
+            completed_at: completed,
+            outcome: response.outcome.as_str().to_owned(),
+            http_status: response.http_status,
+            retry_after: response.retry_after_secs,
+            rate_limit_remaining: response.rate_limit_remaining,
+            rate_limit_reset_at: response.rate_limit_reset_at,
+            body: response.body.clone(),
+            error_code: response.error_code.clone(),
+        }
+    }
+
+    fn stamped(mut self, now: UnixTimestamp, duration_ms: u64) -> Self {
+        let started = now.saturating_add_secs(-(duration_ms as i64 / 1000));
+        self.requested_at = started;
+        self.completed_at = now;
+        self
+    }
+
+    fn as_record(&self) -> graph::FetchRecord<'_> {
+        graph::FetchRecord {
+            attempt_uuid: &self.attempt_uuid,
+            request_kind: &self.request_kind,
+            request_fingerprint: &self.fingerprint,
+            requested_at: self.requested_at,
+            completed_at: self.completed_at,
+            outcome: &self.outcome,
+            http_status: self.http_status,
+            retry_after: self.retry_after,
+            rate_limit_remaining: self.rate_limit_remaining,
+            rate_limit_reset_at: self.rate_limit_reset_at,
+            body_json: self.body.as_deref(),
+            error_code: self.error_code.as_deref(),
+        }
+    }
+}

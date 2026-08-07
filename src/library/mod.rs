@@ -5,3 +5,5 @@
 //! one.
 
 pub mod reducers;
+
+pub mod service;

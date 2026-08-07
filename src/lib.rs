@@ -13,6 +13,7 @@
 //! domain            -> std/serde/chrono only
 //! ```
 
+pub mod cli;
 pub mod domain;
 pub mod error;
 pub mod ipc;

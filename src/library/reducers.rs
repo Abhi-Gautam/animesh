@@ -199,6 +199,85 @@ pub fn reduce_follow(existing: Option<ExistingFollow>, now: UnixTimestamp) -> Fo
 }
 
 // ---------------------------------------------------------------------------
+// Refresh cadence
+// ---------------------------------------------------------------------------
+
+/// Smallest gap between an attempt finishing and the next one becoming due.
+///
+/// Every branch is floored by this. Without it, an already-past airtime would
+/// compute a deadline in the past and the loop would spin.
+pub const MIN_REFRESH_DELAY_SECS: i64 = 60;
+
+/// Inside this window before airtime, jitter is dropped so the last refresh
+/// lands predictably close to the event.
+pub const JITTER_FREE_WINDOW_SECS: i64 = 30 * 60;
+
+/// Largest jitter added to a refresh deadline.
+pub const MAX_JITTER_SECS: u32 = 300;
+
+/// Backoff after a failure: 1m, 5m, 15m, 1h, then 6h forever.
+pub fn failure_backoff_secs(consecutive_failures: i64) -> i64 {
+    match consecutive_failures {
+        ..=1 => 60,
+        2 => 5 * 60,
+        3 => 15 * 60,
+        4 => 60 * 60,
+        _ => 6 * 60 * 60,
+    }
+}
+
+/// Relative retry cadence while the source keeps reporting an event whose
+/// airtime already passed: 2m, 5m, then capped.
+///
+/// Relative rather than absolute, because recomputing an elapsed absolute
+/// airtime as the next deadline is exactly the hot loop this prevents.
+fn post_air_delay_secs(attempts: i64) -> i64 {
+    match attempts {
+        ..=0 => 2 * 60,
+        1 => 5 * 60,
+        2 => 15 * 60,
+        _ => 60 * 60,
+    }
+}
+
+/// When the next successful-path refresh becomes due.
+pub fn next_refresh_after(
+    status: crate::domain::media::MediaStatus,
+    next_airing: Option<UnixTimestamp>,
+    post_air_attempts: i64,
+    finished_at: UnixTimestamp,
+    jitter_key: i64,
+    jitter: &dyn crate::domain::time::JitterSource,
+) -> UnixTimestamp {
+    let (delay, jitterable) = match next_airing {
+        Some(airing) => {
+            let until = finished_at.seconds_until(airing);
+            if until <= 0 {
+                (post_air_delay_secs(post_air_attempts), false)
+            } else if until <= 30 * 60 {
+                (5 * 60, false)
+            } else if until <= 6 * 60 * 60 {
+                (15 * 60, until > JITTER_FREE_WINDOW_SECS)
+            } else if until <= 48 * 60 * 60 {
+                (60 * 60, true)
+            } else {
+                (6 * 60 * 60, true)
+            }
+        }
+        None if status.may_still_air() => (6 * 60 * 60, true),
+        None => (7 * 24 * 60 * 60, true),
+    };
+
+    let jittered = if jitterable {
+        delay + i64::from(jitter.jitter_secs(jitter_key, MAX_JITTER_SECS))
+    } else {
+        delay
+    };
+
+    finished_at.saturating_add_secs(jittered.max(MIN_REFRESH_DELAY_SECS))
+}
+
+// ---------------------------------------------------------------------------
 // Event + follow -> notification job
 // ---------------------------------------------------------------------------
 
@@ -641,6 +720,149 @@ mod tests {
                 queue_refresh: true
             }
         );
+    }
+
+    // --- Section 14, refresh cadence ---
+
+    use crate::domain::media::MediaStatus;
+    use crate::domain::time::NoJitter;
+
+    fn due_in(next_airing: Option<i64>, status: MediaStatus, now: i64) -> i64 {
+        let after = next_refresh_after(status, next_airing.map(at), 0, at(now), 1, &NoJitter);
+        after.get() - now
+    }
+
+    #[test]
+    fn cadence_tightens_as_airtime_approaches() {
+        let now = 1_000_000;
+        assert_eq!(
+            due_in(Some(now + 72 * 3600), MediaStatus::Releasing, now),
+            6 * 3600
+        );
+        assert_eq!(
+            due_in(Some(now + 24 * 3600), MediaStatus::Releasing, now),
+            3600
+        );
+        assert_eq!(
+            due_in(Some(now + 3 * 3600), MediaStatus::Releasing, now),
+            15 * 60
+        );
+        assert_eq!(
+            due_in(Some(now + 10 * 60), MediaStatus::Releasing, now),
+            5 * 60
+        );
+    }
+
+    #[test]
+    fn a_title_with_no_schedule_still_refreshes_on_the_active_cadence() {
+        let now = 1_000_000;
+        assert_eq!(due_in(None, MediaStatus::Releasing, now), 6 * 3600);
+        // Unknown is active-but-uncertain, not terminal.
+        assert_eq!(due_in(None, MediaStatus::Unknown, now), 6 * 3600);
+    }
+
+    #[test]
+    fn finished_titles_drop_to_the_weekly_cadence() {
+        let now = 1_000_000;
+        assert_eq!(due_in(None, MediaStatus::Finished, now), 7 * 24 * 3600);
+        assert_eq!(due_in(None, MediaStatus::Cancelled, now), 7 * 24 * 3600);
+    }
+
+    #[test]
+    fn an_elapsed_airtime_never_computes_a_deadline_in_the_past() {
+        // The post-air hot loop this exists to prevent.
+        let now = 1_000_000;
+        let delay = due_in(Some(now - 5_000), MediaStatus::Releasing, now);
+        assert!(delay >= MIN_REFRESH_DELAY_SECS, "delay was {delay}");
+    }
+
+    #[test]
+    fn post_air_retries_back_off_rather_than_repeating() {
+        let now = 1_000_000;
+        let delays: Vec<i64> = (0..4)
+            .map(|attempts| {
+                next_refresh_after(
+                    MediaStatus::Releasing,
+                    Some(at(now - 100)),
+                    attempts,
+                    at(now),
+                    1,
+                    &NoJitter,
+                )
+                .get()
+                    - now
+            })
+            .collect();
+        assert_eq!(delays, vec![120, 300, 900, 3600]);
+    }
+
+    #[test]
+    fn every_branch_respects_the_minimum_delay() {
+        let now = 1_000_000;
+        for airing in [
+            None,
+            Some(now - 1),
+            Some(now),
+            Some(now + 1),
+            Some(now + 10),
+        ] {
+            for status in [MediaStatus::Releasing, MediaStatus::Finished] {
+                assert!(
+                    due_in(airing, status, now) >= MIN_REFRESH_DELAY_SECS,
+                    "airing {airing:?} status {status:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn no_jitter_is_added_close_to_airtime() {
+        // A jittered deadline inside the last half hour could miss the event.
+        let now = 1_000_000;
+        let jitter = crate::domain::time::KeyedJitter::default();
+        let close = next_refresh_after(
+            MediaStatus::Releasing,
+            Some(at(now + 20 * 60)),
+            0,
+            at(now),
+            1,
+            &jitter,
+        );
+        assert_eq!(close.get() - now, 5 * 60);
+    }
+
+    #[test]
+    fn jitter_spreads_distant_deadlines() {
+        let now = 1_000_000;
+        let jitter = crate::domain::time::KeyedJitter::default();
+        let spread: std::collections::HashSet<i64> = (0..50)
+            .map(|key| {
+                next_refresh_after(
+                    MediaStatus::Releasing,
+                    Some(at(now + 72 * 3600)),
+                    0,
+                    at(now),
+                    key,
+                    &jitter,
+                )
+                .get()
+            })
+            .collect();
+        assert!(
+            spread.len() > 25,
+            "only {} distinct deadlines",
+            spread.len()
+        );
+    }
+
+    #[test]
+    fn failure_backoff_climbs_then_caps() {
+        assert_eq!(failure_backoff_secs(1), 60);
+        assert_eq!(failure_backoff_secs(2), 300);
+        assert_eq!(failure_backoff_secs(3), 900);
+        assert_eq!(failure_backoff_secs(4), 3600);
+        assert_eq!(failure_backoff_secs(5), 6 * 3600);
+        assert_eq!(failure_backoff_secs(500), 6 * 3600);
     }
 
     // --- Section 10, notification job ---
