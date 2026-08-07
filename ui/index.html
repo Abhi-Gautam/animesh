@@ -238,8 +238,10 @@
       const res = await fetch('animesh://snapshot');
       render(await res.json());
     } catch (e) {
+      // Visible rather than silent: a blank window is indistinguishable from a
+      // broken one, and this is the seam most likely to break.
       document.getElementById('app').innerHTML =
-        '<div class="empty">Waiting for the engine…</div>';
+        '<div class="empty">Cannot reach the engine — ' + esc(e.message) + '</div>';
     }
   }
 
