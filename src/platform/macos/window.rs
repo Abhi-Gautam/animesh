@@ -100,6 +100,11 @@ impl MainWindow {
             .build(&target)
             .map_err(|e| format!("cannot create the webview: {e}"))?;
 
+        // Opened automatically while the page is being brought up: a blank
+        // window reports nothing on its own, and the console names the failure.
+        #[cfg(any(debug_assertions, feature = "devtools"))]
+        webview.open_devtools();
+
         show_window(mtm, &target.0);
 
         // Lives on the main thread for the process's lifetime. Not shared:
