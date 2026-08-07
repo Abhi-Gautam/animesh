@@ -10,11 +10,11 @@ use std::sync::Arc;
 
 use crate::domain::ids::{AniListId, BoundedText, InstallationUuid, MediaId, UnixTimestamp};
 use crate::domain::media::{MediaObservation, MAX_TITLE_LEN};
-use crate::domain::notification::OsIdentifier;
+use crate::domain::notification::{JobOutcome, OsIdentifier, NATIVE_CAPACITY};
 use crate::domain::read_models::{
-    AuthorizationState, BootstrapState, FollowOutcome, FollowResult, FollowSummary, Freshness,
-    HealthSnapshot, NotificationCounts, RefreshAccepted, RefreshDisposition, UpcomingRelease,
-    AIRED_VISIBILITY_SECS, DEFAULT_UPCOMING_LIMIT,
+    AuthorizationState, BootstrapState, DegradedReason, FollowOutcome, FollowResult, FollowSummary,
+    Freshness, HealthSnapshot, NotificationCounts, RefreshAccepted, RefreshDisposition,
+    UpcomingRelease, AIRED_VISIBILITY_SECS, DEFAULT_UPCOMING_LIMIT,
 };
 use crate::domain::release::FollowState;
 use crate::domain::time::{JitterSource, WallClock};
@@ -100,6 +100,65 @@ impl Library {
 
     pub fn now(&self) -> UnixTimestamp {
         self.clock.now()
+    }
+
+    pub(crate) fn store(&self) -> &Store {
+        &self.store
+    }
+
+    // -----------------------------------------------------------------------
+    // Notification reconciliation
+    // -----------------------------------------------------------------------
+
+    /// Commits everything one reconciliation pass observed.
+    ///
+    /// One transaction for the whole pass: a crash partway through leaves the
+    /// database describing the OS as it was before, and the next pass re-reads
+    /// OS truth anyway. Recording half a pass would be strictly worse than
+    /// recording none of it.
+    ///
+    /// This never bumps the plan generation. Registration is a consequence of
+    /// the desired set, not a change to it; bumping here would make every pass
+    /// invalidate itself and reconcile forever.
+    pub async fn record_reconciliation(
+        &self,
+        outcomes: Vec<JobOutcome>,
+        authorization: AuthorizationState,
+        error_code: Option<String>,
+    ) -> Result<(), AppError> {
+        let now = self.now();
+        let changed = self
+            .store
+            .write(move |tx| {
+                let mut changed = false;
+                for outcome in &outcomes {
+                    changed = true;
+                    match outcome {
+                        JobOutcome::Registered { key, revision } => {
+                            releases::mark_registered(tx, key, *revision, now)?;
+                        }
+                        JobOutcome::Delivered { key } => {
+                            releases::mark_delivered(tx, key, now)?;
+                        }
+                        JobOutcome::Failed {
+                            key,
+                            error_code,
+                            retry_after,
+                        } => {
+                            releases::mark_failed(tx, key, error_code, *retry_after, now)?;
+                        }
+                    }
+                }
+                let surface_changed =
+                    releases::record_surface(tx, authorization, error_code.as_deref(), now)?;
+                Ok(changed || surface_changed)
+            })
+            .await?;
+
+        if changed {
+            self.bump_data();
+        }
+        Ok(())
     }
 
     // -----------------------------------------------------------------------
@@ -410,6 +469,9 @@ impl Library {
             .store
             .read(move |conn| {
                 let earliest = read_models::upcoming(conn, now, 1, 0)?.into_iter().next();
+                let surface = releases::surface_state(conn)?;
+                let counts = releases::counts(conn, NATIVE_CAPACITY)?;
+                let blocked_until = graph::source_blocked_until(conn)?;
                 Ok(HealthSnapshot {
                     process_version: crate::PROCESS_VERSION.to_owned(),
                     schema_version,
@@ -422,12 +484,12 @@ impl Library {
                     earliest_upcoming: earliest,
                     last_success_at: read_models::last_success(conn)?,
                     refresh: read_models::refresh_counts(conn, now)?,
-                    source_blocked_until: graph::source_blocked_until(conn)?,
-                    notifications: NotificationCounts::default(),
-                    last_reconciled_at: None,
-                    authorization: AuthorizationState::Unknown,
-                    authorization_observed_at: None,
-                    degraded: Vec::new(),
+                    source_blocked_until: blocked_until,
+                    notifications: counts,
+                    last_reconciled_at: surface.last_reconciled_at,
+                    authorization: surface.authorization,
+                    authorization_observed_at: surface.authorization_observed_at,
+                    degraded: degraded_reasons(surface.authorization, &counts, blocked_until),
                 })
             })
             .await?)
@@ -822,6 +884,28 @@ impl RefreshPass {
     pub const fn did_work(&self) -> bool {
         self.applied > 0 || self.stale > 0 || self.failed > 0
     }
+}
+
+/// What the owner needs to act on, most actionable first.
+///
+/// Only `Denied` is reported: an authorization that was never requested is the
+/// normal state before the first follow, not a fault.
+fn degraded_reasons(
+    authorization: AuthorizationState,
+    counts: &NotificationCounts,
+    blocked_until: Option<UnixTimestamp>,
+) -> Vec<DegradedReason> {
+    let mut reasons = Vec::new();
+    if authorization == AuthorizationState::Denied {
+        reasons.push(DegradedReason::NotificationsDenied);
+    }
+    if counts.deferred_capacity > 0 {
+        reasons.push(DegradedReason::NotificationCapacityExceeded);
+    }
+    if blocked_until.is_some() {
+        reasons.push(DegradedReason::SourceRateLimited);
+    }
+    reasons
 }
 
 /// Runs the release and notification reducers and writes their decisions.

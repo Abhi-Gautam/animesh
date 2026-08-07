@@ -4,6 +4,7 @@
 //! owns every transaction, and no network call or Apple callback happens inside
 //! one.
 
+pub mod notification_plan;
 pub mod reducers;
 
 pub mod service;

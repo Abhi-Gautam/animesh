@@ -21,6 +21,17 @@ pub const OS_IDENTIFIER_PREFIX: &str = "dev.animesh.release.";
 /// Maximum stored length of the canonical request JSON.
 pub const MAX_REQUEST_JSON_LEN: usize = 4096;
 
+/// How many pending requests Animesh will hold in the OS at once.
+///
+/// Apple keeps only the soonest-firing requests once an app exceeds its limit
+/// and drops the rest silently, so this is deliberately a floor rather than a
+/// guess at the ceiling: jobs beyond it stay durable and surface as deferred,
+/// which is visible, instead of being registered and quietly discarded.
+///
+/// D1 must confirm the real lower bound on the minimum supported OS before
+/// this is raised.
+pub const NATIVE_CAPACITY: u32 = 64;
+
 /// Lifecycle of a notification job.
 ///
 /// There is deliberately no `ambiguous` state. Every reconciliation pass reads
@@ -232,6 +243,37 @@ impl NotificationPlanItem {
         match self.retry_after {
             Some(after) => now.get() >= after.get(),
             None => true,
+        }
+    }
+}
+
+/// What one reconciliation pass concluded about one job.
+///
+/// Every variant is a statement about what the OS was observed to hold, not
+/// about what Animesh asked for. There is no `Attempted`: an add whose result
+/// is unknown produces nothing, and the next pass reads the truth instead.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum JobOutcome {
+    Registered {
+        key: NotificationKey,
+        revision: i64,
+    },
+    Delivered {
+        key: NotificationKey,
+    },
+    Failed {
+        key: NotificationKey,
+        error_code: String,
+        retry_after: UnixTimestamp,
+    },
+}
+
+impl JobOutcome {
+    pub fn key(&self) -> &NotificationKey {
+        match self {
+            Self::Registered { key, .. } | Self::Delivered { key } | Self::Failed { key, .. } => {
+                key
+            }
         }
     }
 }

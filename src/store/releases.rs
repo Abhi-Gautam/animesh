@@ -1098,7 +1098,6 @@ mod tests {
 
         let plan = plan(&f.conn, 1).expect("plan");
         assert_eq!(plan.len(), 1);
-        // The nearest airtime is the one that fits.
         assert_eq!(plan[0].desired_at, at(5_000));
         assert_eq!(deferred_count(&f.conn, 1).expect("deferred"), 1);
     }
