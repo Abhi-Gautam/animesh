@@ -358,6 +358,7 @@ impl Library {
         outcome: FollowOutcome,
         now: UnixTimestamp,
     ) -> Result<FollowResult, AppError> {
+        let installation = self.installation;
         let media_id = self
             .store
             .write(move |tx| {
@@ -365,6 +366,7 @@ impl Library {
                     StoreError::Integrity("follow vanished between read and write".into())
                 })?;
                 graph::set_follow(tx, row.media_id, FollowState::Active, now)?;
+                renotify_for(tx, row.media_id, installation, FollowState::Active, now)?;
                 Ok(row.media_id)
             })
             .await?;
@@ -412,7 +414,7 @@ impl Library {
                     return Ok(false);
                 }
                 graph::set_follow(tx, media_id, FollowState::Dropped, now)?;
-                cancel_notifications_for(tx, media_id, installation, now)?;
+                renotify_for(tx, media_id, installation, FollowState::Dropped, now)?;
                 Ok(true)
             })
             .await?;
@@ -969,15 +971,22 @@ fn project(
     Ok(())
 }
 
-/// Cancels every notification job belonging to a media.
+/// Re-runs the notification reducer over a media's scheduled events.
 ///
-/// Goes through the notification reducer rather than writing `cancelled`
-/// directly, so there stays exactly one place that decides what a dropped
-/// follow means for a registered request.
-fn cancel_notifications_for(
+/// Called when the follow state changes without new source data. Dropping and
+/// re-following must be symmetric: the drop cancels the jobs, so the re-follow
+/// has to revive them. Without this, re-following a title whose schedule has
+/// not moved leaves its job `cancelled`, because the only other caller of the
+/// reducer is the observation path and a recent follow does not refetch.
+///
+/// Goes through the reducer rather than writing a state directly, so there
+/// stays exactly one place that decides what a follow change means for a
+/// registered request.
+fn renotify_for(
     tx: &rusqlite::Transaction<'_>,
     media_id: MediaId,
     installation: InstallationUuid,
+    follow: FollowState,
     now: UnixTimestamp,
 ) -> Result<(), StoreError> {
     let mut stmt = tx.prepare(
@@ -1012,7 +1021,7 @@ fn cancel_notifications_for(
         };
 
         let inputs = NotificationInputs {
-            follow: FollowState::Dropped,
+            follow,
             event: &event,
             existing: Some(&existing),
             os_identifier: OsIdentifier::new(&installation, &event.uuid),

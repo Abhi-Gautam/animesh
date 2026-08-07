@@ -34,7 +34,18 @@ use crate::store::{graph, migrations};
 /// Returns `Err` only for failures that leave nothing to serve — a lost
 /// singleton race, or a socket that cannot be bound. Everything else degrades
 /// into a queryable state rather than terminating.
-pub async fn run(paths: &AppPaths, shutdown: watch::Receiver<bool>) -> Result<(), IpcError> {
+/// Called once the engine is serving, with everything a platform surface needs
+/// to attach to it.
+///
+/// A hook rather than a return value because bootstrap owns the process for its
+/// whole lifetime: by the time it returns, there is nothing left to attach to.
+pub type ReadyHook = Box<dyn FnOnce(Arc<Library>, super::WakeHandle) + Send>;
+
+pub async fn run(
+    paths: &AppPaths,
+    shutdown: watch::Receiver<bool>,
+    on_ready: Option<ReadyHook>,
+) -> Result<(), IpcError> {
     let endpoint = Endpoint::bind(paths)?;
     tracing::info!(socket = %endpoint.socket_path().display(), "endpoint bound");
 
@@ -46,12 +57,16 @@ pub async fn run(paths: &AppPaths, shutdown: watch::Receiver<bool>) -> Result<()
             let library = Arc::new(library);
             let instance_id = library.instance_id();
 
-            let (_wake, wake_rx) = super::wake_channel();
+            let (wake, wake_rx) = super::wake_channel();
             let scheduler = tokio::spawn(super::run_scheduler(
                 Arc::clone(&library),
                 wake_rx,
                 shutdown.clone(),
             ));
+
+            if let Some(hook) = on_ready {
+                hook(Arc::clone(&library), wake.clone());
+            }
 
             tracing::info!("engine ready");
             let dispatcher = Dispatcher::Ready(Arc::clone(&library));

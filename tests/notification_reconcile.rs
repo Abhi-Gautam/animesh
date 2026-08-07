@@ -504,3 +504,27 @@ async fn a_transient_failure_backs_off_rather_than_retrying_every_pass() {
     let third = world.reconciler.settle().await.expect("third");
     assert_eq!(third.submitted, 1);
 }
+
+#[tokio::test]
+async fn re_following_revives_the_cancelled_job() {
+    // Dropping cancels the job. Re-following within the refresh cadence does
+    // not refetch, so the observation path never runs — without a symmetric
+    // revive the title is followed but silently un-notified.
+    let mut server = mockito::Server::new_async().await;
+    let world = followed(&mut server).await;
+    world.reconciler.settle().await.expect("first");
+
+    let media_id = world.library.list_follows().await.expect("list")[0].media_id;
+    let identifier = world.centre.pending_ids()[0].clone();
+
+    world.library.drop_follow(media_id).await.expect("drop");
+    world.reconciler.settle().await.expect("after drop");
+    assert!(world.centre.pending_ids().is_empty());
+
+    world.library.follow(id(21)).await.expect("re-follow");
+    let report = world.reconciler.settle().await.expect("after re-follow");
+
+    assert_eq!(report.submitted, 1, "the revived job was never registered");
+    // The same episode keeps its identifier, so this is one banner, not two.
+    assert_eq!(world.centre.pending_ids(), vec![identifier]);
+}
