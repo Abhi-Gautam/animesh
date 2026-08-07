@@ -48,7 +48,7 @@ fn batch_body(items: &[String]) -> String {
 
 struct World {
     _dir: tempfile::TempDir,
-    library: Library,
+    library: Arc<Library>,
     clock: Arc<ManualClock>,
 }
 
@@ -70,14 +70,14 @@ async fn world(base_url: String) -> World {
     let clock = Arc::new(ManualClock::new(at(NOW)));
     World {
         _dir: dir,
-        library: Library::new(
+        library: Arc::new(Library::new(
             store,
             animesh::sources::anilist::client::AniListClient::new(base_url).expect("client"),
             Arc::clone(&clock) as Arc<dyn WallClock>,
             Arc::new(NoJitter),
             installation,
             1,
-        ),
+        )),
         clock,
     }
 }
@@ -334,4 +334,96 @@ async fn the_earliest_due_deadline_drives_the_scheduler() {
         .expect("due")
         .expect("some");
     assert!(due.get() > NOW, "the next deadline must be in the future");
+}
+
+// ---------------------------------------------------------------------------
+// The scheduler loop
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn an_idle_scheduler_makes_no_requests() {
+    // Section 22's hard gate: with nothing due there is no wake, no request,
+    // and no write. A polling loop would fail this.
+    let mut server = mockito::Server::new_async().await;
+    let never = server.mock("POST", "/").expect(0).create_async().await;
+
+    let world = world(server.url()).await;
+    let (_wake_handle, wake) = animesh::engine::wake_channel();
+    let (shutdown_tx, shutdown) = tokio::sync::watch::channel(false);
+
+    let library = Arc::clone(&world.library);
+    let scheduler =
+        tokio::spawn(async move { animesh::engine::run_scheduler(library, wake, shutdown).await });
+
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    shutdown_tx.send(true).expect("signal");
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), scheduler).await;
+
+    never.assert_async().await;
+}
+
+#[tokio::test]
+async fn the_scheduler_refreshes_what_is_due() {
+    let mut server = mockito::Server::new_async().await;
+    server
+        .mock("POST", "/")
+        .with_status(200)
+        .with_body(detail_body(21, "One Piece", Some((5, NOW + 3_600))))
+        .create_async()
+        .await;
+
+    let world = world(server.url()).await;
+    world.library.follow(id(21)).await.expect("follow");
+
+    // Past the cadence deadline, and AniList now reports the next episode.
+    world.clock.advance(7_200);
+    let later = NOW + 7_200;
+    server
+        .mock("POST", "/")
+        .with_status(200)
+        .with_body(batch_body(&[media_json(
+            21,
+            "One Piece",
+            Some((6, later + 604_800)),
+        )]))
+        .create_async()
+        .await;
+
+    let (_wake_handle, wake) = animesh::engine::wake_channel();
+    let (shutdown_tx, shutdown) = tokio::sync::watch::channel(false);
+    let library = Arc::clone(&world.library);
+    let scheduler =
+        tokio::spawn(async move { animesh::engine::run_scheduler(library, wake, shutdown).await });
+
+    // The loop should pick the due row up without anyone poking it.
+    let mut advanced = false;
+    for _ in 0..40 {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let upcoming = world.library.upcoming(None).await.expect("upcoming");
+        if upcoming.first().and_then(|u| u.episode).map(|e| e.get()) == Some(6) {
+            advanced = true;
+            break;
+        }
+    }
+
+    shutdown_tx.send(true).expect("signal");
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), scheduler).await;
+
+    assert!(advanced, "the scheduler never refreshed the due title");
+}
+
+#[tokio::test]
+async fn the_scheduler_stops_on_shutdown() {
+    let server = mockito::Server::new_async().await;
+    let world = world(server.url()).await;
+
+    let (_wake_handle, wake) = animesh::engine::wake_channel();
+    let (shutdown_tx, shutdown) = tokio::sync::watch::channel(false);
+    let library = Arc::clone(&world.library);
+    let scheduler =
+        tokio::spawn(async move { animesh::engine::run_scheduler(library, wake, shutdown).await });
+
+    shutdown_tx.send(true).expect("signal");
+    let stopped = tokio::time::timeout(std::time::Duration::from_secs(2), scheduler).await;
+    assert!(stopped.is_ok(), "the scheduler did not stop on shutdown");
 }

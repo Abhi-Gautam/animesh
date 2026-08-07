@@ -98,7 +98,7 @@ impl Library {
         self.plan_generation.load(Ordering::SeqCst)
     }
 
-    fn now(&self) -> UnixTimestamp {
+    pub fn now(&self) -> UnixTimestamp {
         self.clock.now()
     }
 

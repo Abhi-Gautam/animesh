@@ -15,6 +15,7 @@
 
 pub mod cli;
 pub mod domain;
+pub mod engine;
 pub mod error;
 pub mod ipc;
 pub mod library;
