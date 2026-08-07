@@ -15,6 +15,8 @@
 
 pub mod domain;
 pub mod error;
+pub mod ipc;
+pub mod library;
 pub mod paths;
 pub mod sources;
 
