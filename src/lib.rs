@@ -20,6 +20,7 @@ pub mod error;
 pub mod ipc;
 pub mod library;
 pub mod paths;
+pub mod platform;
 pub mod sources;
 pub mod store;
 
