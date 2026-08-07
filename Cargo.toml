@@ -72,7 +72,7 @@ tracing-subscriber = { version = "0.3", default-features = false, features = [
     "ansi",
 ] }
 uuid = { version = "1", features = ["v4", "serde"] }
-wry = "0.56.0"
+wry = { version = "0.56", features = ["devtools"] }
 
 [dev-dependencies]
 mockito = "1"

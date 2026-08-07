@@ -102,7 +102,6 @@ impl MainWindow {
 
         // Opened automatically while the page is being brought up: a blank
         // window reports nothing on its own, and the console names the failure.
-        #[cfg(any(debug_assertions, feature = "devtools"))]
         webview.open_devtools();
 
         show_window(mtm, &target.0);
