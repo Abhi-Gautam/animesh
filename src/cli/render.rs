@@ -9,7 +9,7 @@ use chrono::{Local, TimeZone};
 use crate::domain::ids::UnixTimestamp;
 use crate::domain::media::SearchCandidate;
 use crate::domain::read_models::{
-    FollowResult, FollowSummary, Freshness, HealthSnapshot, UpcomingRelease,
+    BootstrapState, FollowResult, FollowSummary, Freshness, HealthSnapshot, UpcomingRelease,
 };
 
 /// Formats an absolute instant in the viewer's local timezone, naming the zone.
@@ -198,17 +198,18 @@ pub fn follow_result(result: &FollowResult, now: UnixTimestamp) -> String {
 }
 
 pub fn health(snapshot: &HealthSnapshot, now: UnixTimestamp) -> String {
+    // Rendered explicitly rather than through `{:?}`, which leaked a Rust
+    // debug form into the one screen the owner reads when something is wrong.
+    let state = match snapshot.bootstrap {
+        BootstrapState::Starting => "starting up",
+        BootstrapState::Ready => "running",
+        BootstrapState::Degraded => "needs attention",
+    };
+
     let mut out = format!(
-        "Animesh {} (schema {}, protocol {})\n\
-         Instance {}, up since {}\n\
-         Bootstrap: {:?}\n\
-         Following {} title(s)\n",
+        "Animesh {} — {state}\nRunning since {}\nFollowing {} title(s)\n",
         snapshot.process_version,
-        snapshot.schema_version,
-        snapshot.protocol_version,
-        snapshot.app_instance_id,
         local_time(snapshot.started_at),
-        snapshot.bootstrap,
         snapshot.active_follows,
     );
 
@@ -228,13 +229,33 @@ pub fn health(snapshot: &HealthSnapshot, now: UnixTimestamp) -> String {
         None => "Last successful refresh: never\n".to_owned(),
     });
 
+    // The one question worth running `status` for: am I actually going to get
+    // pinged tonight? It was in the snapshot and never printed.
+    let notifications = &snapshot.notifications;
     out.push_str(&format!(
-        "Refresh: {} due, {} stale, {} backing off, {} failed\n",
-        snapshot.refresh.due,
-        snapshot.refresh.stale,
-        snapshot.refresh.backing_off,
-        snapshot.refresh.failed,
+        "Notifications: {} registered with macOS",
+        notifications.registered
     ));
+    if notifications.desired > 0 {
+        out.push_str(&format!(", {} waiting", notifications.desired));
+    }
+    if notifications.failed > 0 {
+        out.push_str(&format!(", {} failed", notifications.failed));
+    }
+    if notifications.deferred_capacity > 0 {
+        out.push_str(&format!(
+            ", {} beyond what macOS will hold",
+            notifications.deferred_capacity
+        ));
+    }
+    out.push('\n');
+
+    if snapshot.refresh.backing_off > 0 || snapshot.refresh.failed > 0 {
+        out.push_str(&format!(
+            "Refresh trouble: {} backing off, {} failed\n",
+            snapshot.refresh.backing_off, snapshot.refresh.failed,
+        ));
+    }
 
     if let Some(until) = snapshot.source_blocked_until {
         out.push_str(&format!(
