@@ -175,7 +175,7 @@ impl DegradedReason {
                 "Notifications are denied. Enable them in System Settings > Notifications > Animesh."
             }
             Self::NotificationCapacityExceeded => {
-                "More releases are scheduled than macOS will hold. The nearest ones are registered."
+                "More releases are scheduled than the system will hold. The nearest ones are registered."
             }
             Self::SourceRateLimited => "AniList is rate limiting requests. Refreshes resume automatically.",
         }
@@ -201,7 +201,11 @@ pub struct RefreshCounts {
     pub failed: u32,
 }
 
-/// Reported macOS notification authorization.
+/// Reported notification authorization.
+///
+/// Named after the macOS states because that is the only surface with a real
+/// permission model; on a desktop that has none, an adapter reports Authorized
+/// when the notification service answers at all.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AuthorizationState {

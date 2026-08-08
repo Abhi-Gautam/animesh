@@ -123,9 +123,15 @@ pub fn configure(conn: &Connection, writable: bool) -> Result<(), StoreError> {
     conn.pragma_update(None, "synchronous", "FULL")?;
     expect_int(conn, "synchronous", 2)?;
 
-    // macOS-specific: without it, fsync is a hint the drive may reorder around.
-    conn.pragma_update(None, "fullfsync", "ON")?;
-    expect_int(conn, "fullfsync", 1)?;
+    // Darwin-only. On macOS a plain fsync is a hint the drive may reorder
+    // around, and F_FULLFSYNC is the barrier that actually holds. Elsewhere
+    // SQLite compiles the pragma out and reading it back returns 0, so setting
+    // it would fail the assertion for a guarantee the platform already gives.
+    #[cfg(target_os = "macos")]
+    {
+        conn.pragma_update(None, "fullfsync", "ON")?;
+        expect_int(conn, "fullfsync", 1)?;
+    }
 
     conn.busy_handler(None)?;
     conn.pragma_update(None, "busy_timeout", BUSY_TIMEOUT_MS)?;

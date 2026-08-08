@@ -17,12 +17,16 @@ const PRIVATE_DIR_MODE: u32 = 0o700;
 /// File mode for the database, socket, and lock: owner read/write.
 const PRIVATE_FILE_MODE: u32 = 0o600;
 
-/// Longest usable Unix socket path on macOS.
+/// Longest usable Unix socket path, minus the terminator.
 ///
-/// `sockaddr_un.sun_path` is 104 bytes including the terminator. Exceeding it
+/// `sockaddr_un.sun_path` is 104 bytes on Darwin and 108 on Linux. Exceeding it
 /// fails at `bind` with a truncation error that reads nothing like "your home
 /// directory is too long", so it is checked up front.
+#[cfg(target_os = "macos")]
 pub const MAX_SOCKET_PATH_LEN: usize = 103;
+/// Longest usable Unix socket path, minus the terminator.
+#[cfg(not(target_os = "macos"))]
+pub const MAX_SOCKET_PATH_LEN: usize = 107;
 
 #[derive(Debug, Error)]
 pub enum PathError {
@@ -48,10 +52,16 @@ pub enum PathError {
 }
 
 /// Every path the app uses.
+///
+/// The runtime root is a field rather than a child of the data root because the
+/// two belong in different places on Linux: durable state lives under XDG data,
+/// while a socket is per-session and belongs in the runtime directory the system
+/// clears on logout.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppPaths {
     data_root: PathBuf,
     log_root: PathBuf,
+    runtime_root: PathBuf,
 }
 
 impl AppPaths {
@@ -67,29 +77,62 @@ impl AppPaths {
         }
 
         let base = directories::BaseDirs::new().ok_or(PathError::NoHomeDirectory)?;
+        Ok(Self::for_platform(&base))
+    }
+
+    /// Apple's layout: capitalised, under `~/Library`, with no runtime dir of
+    /// its own for a socket to live in.
+    #[cfg(target_os = "macos")]
+    fn for_platform(base: &directories::BaseDirs) -> Self {
         let home = base.home_dir();
-        Ok(Self {
-            data_root: home.join("Library/Application Support/Animesh"),
+        let data_root = home.join("Library/Application Support/Animesh");
+        Self {
+            runtime_root: data_root.join("runtime"),
             log_root: home.join("Library/Logs/Animesh"),
-        })
+            data_root,
+        }
+    }
+
+    /// XDG. Lowercase, because on Linux the owner sees these paths in a shell.
+    ///
+    /// `XDG_RUNTIME_DIR` is short (`/run/user/1000`), which matters: it is what
+    /// keeps the socket inside `sun_path` no matter how deep the home directory
+    /// is. It is absent on a headless box or in a container, so the data root
+    /// stands in rather than failing to start.
+    #[cfg(not(target_os = "macos"))]
+    fn for_platform(base: &directories::BaseDirs) -> Self {
+        let data_root = base.data_dir().join("animesh");
+        Self {
+            runtime_root: base
+                .runtime_dir()
+                .map_or_else(|| data_root.join("runtime"), |dir| dir.join("animesh")),
+            log_root: base
+                .state_dir()
+                .unwrap_or_else(|| base.data_dir())
+                .join("animesh"),
+            data_root,
+        }
     }
 
     #[cfg(feature = "test-harness")]
     fn from_environment() -> Option<Self> {
-        let data_root = std::env::var_os("ANIMESH_DATA_ROOT")?;
-        let log_root = std::env::var_os("ANIMESH_LOG_ROOT")?;
+        let data_root = PathBuf::from(std::env::var_os("ANIMESH_DATA_ROOT")?);
+        let log_root = PathBuf::from(std::env::var_os("ANIMESH_LOG_ROOT")?);
         Some(Self {
-            data_root: PathBuf::from(data_root),
-            log_root: PathBuf::from(log_root),
+            runtime_root: data_root.join("runtime"),
+            data_root,
+            log_root,
         })
     }
 
     /// Roots everything under `root`, for tests and packaged fixtures.
     pub fn under_root(root: impl AsRef<Path>) -> Self {
         let root = root.as_ref();
+        let data_root = root.join("data");
         Self {
-            data_root: root.join("data"),
+            runtime_root: data_root.join("runtime"),
             log_root: root.join("logs"),
+            data_root,
         }
     }
 
@@ -105,16 +148,16 @@ impl AppPaths {
         self.data_root.join("library.db")
     }
 
-    pub fn runtime_root(&self) -> PathBuf {
-        self.data_root.join("runtime")
+    pub fn runtime_root(&self) -> &Path {
+        &self.runtime_root
     }
 
     pub fn socket(&self) -> PathBuf {
-        self.runtime_root().join("app.sock")
+        self.runtime_root.join("app.sock")
     }
 
     pub fn lock(&self) -> PathBuf {
-        self.runtime_root().join("app.lock")
+        self.runtime_root.join("app.lock")
     }
 
     /// Creates the directory tree with owner-only permissions.
@@ -123,7 +166,7 @@ impl AppPaths {
     /// a data root that became group-readable is a real leak of what the owner
     /// watches, and fixing it costs one `chmod`.
     pub fn ensure_dirs(&self) -> Result<(), PathError> {
-        for dir in [&self.data_root, &self.log_root, &self.runtime_root()] {
+        for dir in [&self.data_root, &self.log_root, &self.runtime_root] {
             create_private_dir(dir)?;
         }
         self.check_socket_path()
@@ -195,6 +238,7 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn production_layout_is_under_library() {
         let paths = AppPaths::production().expect("home directory");
@@ -210,6 +254,37 @@ mod tests {
         );
     }
 
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn production_layout_follows_xdg() {
+        let paths = AppPaths::production().expect("home directory");
+        let data = paths.data_root().display().to_string();
+        assert!(data.ends_with("/animesh"), "unexpected data root: {data}");
+        // Durable state and the socket must not share a directory: one survives
+        // a logout and the other must not.
+        assert_ne!(paths.runtime_root(), paths.data_root());
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn the_socket_lives_in_the_runtime_dir_when_the_session_has_one() {
+        // The whole reason runtime_root is its own field: /run/user/<uid> keeps
+        // the socket inside sun_path however deep the home directory is.
+        let Some(base) = directories::BaseDirs::new() else {
+            return;
+        };
+        let Some(runtime) = base.runtime_dir() else {
+            return;
+        };
+        let paths = AppPaths::for_platform(&base);
+        assert!(
+            paths.socket().starts_with(runtime),
+            "socket is at {}, outside {}",
+            paths.socket().display(),
+            runtime.display()
+        );
+    }
+
     #[test]
     fn ensure_dirs_creates_everything_owner_only() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -218,7 +293,7 @@ mod tests {
 
         assert_eq!(mode_of(paths.data_root()), PRIVATE_DIR_MODE);
         assert_eq!(mode_of(paths.log_root()), PRIVATE_DIR_MODE);
-        assert_eq!(mode_of(&paths.runtime_root()), PRIVATE_DIR_MODE);
+        assert_eq!(mode_of(paths.runtime_root()), PRIVATE_DIR_MODE);
     }
 
     #[test]

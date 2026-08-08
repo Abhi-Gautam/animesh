@@ -1,22 +1,26 @@
-//! The Animesh app process.
+//! The Animesh daemon.
 //!
 //! Owns the database, the AniList client, the refresh scheduler, the IPC
-//! server, the status item, and the notification centre. Bundled as
-//! `Contents/MacOS/Animesh`; the cargo bin is `animesh-app` because macOS
-//! filesystems are case-insensitive and `Animesh` would collide with the
-//! `animesh` CLI in the target directory.
+//! server, and — where the platform has one — the status item and the
+//! notification centre. The CLI is a client of this process and never opens the
+//! database itself.
 //!
-//! The primordial thread belongs to `NSApplication` — AppKit requires it and
-//! will not accept a substitute — so the async runtime lives on one named
-//! worker thread. Nothing crosses that boundary except two channels.
+//! There are two composition roots because the platforms disagree about who
+//! owns the main thread. On macOS `NSApplication` requires the primordial
+//! thread and will not accept a substitute, so the async runtime lives on one
+//! named worker and nothing crosses that boundary except two channels. Nothing
+//! else claims the main thread, so everywhere else the engine simply runs on
+//! it.
+//!
+//! Bundled on macOS as `Contents/MacOS/Animesh`; the cargo bin is `animesh-app`
+//! because macOS filesystems are case-insensitive and `Animesh` would collide
+//! with the `animesh` CLI in the target directory.
 
 use std::process::ExitCode;
 
 use animesh::engine::bootstrap;
 use animesh::paths::AppPaths;
-use animesh::platform::macos::menu_bar::{self, MenuBar, MenuState};
-use objc2_foundation::MainThreadMarker;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::watch;
 
 fn main() -> ExitCode {
     init_tracing();
@@ -29,13 +33,48 @@ fn main() -> ExitCode {
         }
     };
 
+    run(paths)
+}
+
+// ---------------------------------------------------------------------------
+// macOS: AppKit owns the main thread, the engine gets a worker
+// ---------------------------------------------------------------------------
+
+#[cfg(target_os = "macos")]
+fn run(paths: AppPaths) -> ExitCode {
+    use animesh::platform::macos::menu_bar::{self, MenuBar, MenuState};
+    use objc2_foundation::MainThreadMarker;
+    use tokio::sync::mpsc;
+
     let state = MenuState::new();
     let (commands_tx, commands_rx) = mpsc::unbounded_channel();
 
     let engine_state = state.clone();
     let engine = std::thread::Builder::new()
         .name("animesh-engine".to_owned())
-        .spawn(move || engine_thread(paths, engine_state, commands_rx));
+        .spawn(move || {
+            let status = run_engine(paths, move |shutdown| {
+                let hook: bootstrap::ReadyHook = Box::new(move |library, wake| {
+                    tokio::spawn(animesh::platform::macos::app::run_surface(
+                        library,
+                        wake,
+                        engine_state,
+                        commands_rx,
+                        shutdown,
+                    ));
+                });
+                Some(hook)
+            });
+
+            // The socket is unlinked and the database is closed by this point,
+            // so nothing is left for an orderly unwind to protect. Exiting from
+            // here is what lets the AppKit run loop stay untouched on the main
+            // thread: it never has to be woken to be told the engine is done.
+            if MainThreadMarker::new().is_none() {
+                std::process::exit(i32::from(status));
+            }
+            ExitCode::from(status)
+        });
 
     let engine = match engine {
         Ok(handle) => handle,
@@ -56,13 +95,12 @@ fn main() -> ExitCode {
     let _menu = MenuBar::install(mtm, commands_tx, state);
     tracing::info!("status item installed");
 
-    // Never returns under normal operation. The engine thread exits the process
-    // once it has released the socket and closed the database, which keeps
-    // every AppKit call on this thread and needs no cross-thread wake-up.
+    // Never returns under normal operation.
     app.run();
     join(engine)
 }
 
+#[cfg(target_os = "macos")]
 fn join(engine: std::thread::JoinHandle<ExitCode>) -> ExitCode {
     engine.join().unwrap_or_else(|_| {
         eprintln!("Animesh: the engine thread panicked");
@@ -70,11 +108,34 @@ fn join(engine: std::thread::JoinHandle<ExitCode>) -> ExitCode {
     })
 }
 
-fn engine_thread(
-    paths: AppPaths,
-    state: MenuState,
-    commands: mpsc::UnboundedReceiver<menu_bar::MenuCommand>,
-) -> ExitCode {
+// ---------------------------------------------------------------------------
+// Everywhere else: the engine owns the process
+// ---------------------------------------------------------------------------
+
+/// No status item, so nothing needs the main thread and no surface attaches.
+///
+/// The CLI is the whole product here. A notification adapter plugs into the
+/// same [`bootstrap::ReadyHook`] the menu bar uses once one exists; until then
+/// the daemon serves the socket and keeps the schedule current, which is what
+/// `animesh next` reads.
+#[cfg(not(target_os = "macos"))]
+fn run(paths: AppPaths) -> ExitCode {
+    ExitCode::from(run_engine(paths, |_shutdown| None))
+}
+
+// ---------------------------------------------------------------------------
+// Shared engine runtime
+// ---------------------------------------------------------------------------
+
+/// Runs the engine on this thread until shutdown, returning the exit status.
+///
+/// `on_ready` is built inside the runtime rather than passed in ready-made,
+/// because a platform surface needs to spawn onto that runtime and needs the
+/// shutdown sender to stop the process when the user quits.
+fn run_engine<F>(paths: AppPaths, on_ready: F) -> u8
+where
+    F: FnOnce(watch::Sender<bool>) -> Option<bootstrap::ReadyHook>,
+{
     // Current-thread on purpose: this is one thread doing one thing, and a work
     // stealing pool would only add threads for an idle process to keep parked.
     let runtime = match tokio::runtime::Builder::new_current_thread()
@@ -84,26 +145,17 @@ fn engine_thread(
         Ok(runtime) => runtime,
         Err(error) => {
             eprintln!("Animesh: could not start the async runtime: {error}");
-            return ExitCode::from(2);
+            return 2;
         }
     };
 
-    let status: u8 = runtime.block_on(async move {
+    runtime.block_on(async move {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         tokio::spawn(await_signals(shutdown_tx.clone()));
 
-        let surface_state = state.clone();
-        let hook: bootstrap::ReadyHook = Box::new(move |library, wake| {
-            tokio::spawn(animesh::platform::macos::app::run_surface(
-                library,
-                wake,
-                surface_state,
-                commands,
-                shutdown_tx,
-            ));
-        });
+        let hook = on_ready(shutdown_tx);
 
-        match bootstrap::run(&paths, shutdown_rx, Some(hook)).await {
+        match bootstrap::run(&paths, shutdown_rx, hook).await {
             Ok(()) => {
                 tracing::info!("shut down cleanly");
                 0
@@ -119,22 +171,13 @@ fn engine_thread(
                 2
             }
         }
-    });
-
-    // The socket is unlinked and the database is closed by this point, so there
-    // is nothing left for an orderly unwind to protect. Exiting from here is
-    // what lets the AppKit run loop stay untouched on the main thread: it never
-    // has to be woken to be told the engine is done.
-    if MainThreadMarker::new().is_none() {
-        std::process::exit(i32::from(status));
-    }
-    ExitCode::from(status)
+    })
 }
 
 /// Flips the shutdown signal on `SIGTERM` or `SIGINT`.
 ///
-/// launchd sends `SIGTERM` when it stops the agent, so this is the normal exit
-/// path rather than an exceptional one.
+/// launchd and systemd both send `SIGTERM` to stop a unit, so this is the
+/// normal exit path rather than an exceptional one.
 async fn await_signals(shutdown: watch::Sender<bool>) {
     use tokio::signal::unix::{signal, SignalKind};
 

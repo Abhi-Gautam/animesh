@@ -260,7 +260,7 @@ pub fn health(snapshot: &HealthSnapshot, now: UnixTimestamp) -> String {
     // pinged tonight? It was in the snapshot and never printed.
     let notifications = &snapshot.notifications;
     out.push_str(&format!(
-        "Notifications: {} registered with macOS",
+        "Notifications: {} registered with the system",
         notifications.registered
     ));
     if notifications.desired > 0 {
@@ -271,7 +271,7 @@ pub fn health(snapshot: &HealthSnapshot, now: UnixTimestamp) -> String {
     }
     if notifications.deferred_capacity > 0 {
         out.push_str(&format!(
-            ", {} beyond what macOS will hold",
+            ", {} beyond what the system will hold",
             notifications.deferred_capacity
         ));
     }

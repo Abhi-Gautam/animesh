@@ -41,17 +41,9 @@ default = []
 test-harness = []
 
 [dependencies]
-block2 = "0.6"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
 clap = { version = "4", features = ["derive"] }
 directories = "6"
-objc2 = { version = "0.6", default-features = false, features = ["std"] }
-# NSResponder/NSView/NSControl/NSButton are the NSStatusBarButton hierarchy, and
-# NSRunningApplication carries NSApplicationActivationPolicy — neither is named
-# directly in our code, and dropping either stops the status item compiling.
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "objc2-core-foundation", "NSApplication", "NSStatusBar", "NSStatusItem", "NSStatusBarButton", "NSMenu", "NSMenuItem", "NSResponder", "NSButton", "NSControl", "NSView", "NSRunningApplication"] }
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSArray", "NSDictionary", "NSDate", "NSError", "NSCalendar", "NSTimeZone", "NSURL", "NSValue", "NSThread", "NSRunLoop", "NSBundle", "NSSet", "NSNotification"] }
-objc2-user-notifications = { version = "0.3", default-features = false, features = ["std", "block2", "UNUserNotificationCenter", "UNNotificationRequest", "UNNotificationContent", "UNNotificationTrigger", "UNNotificationSettings", "UNNotification", "UNNotificationSound", "UNError"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 rusqlite = { version = "0.37", features = ["bundled"] }
 rustix = { version = "1", features = ["fs", "process"] }
@@ -74,6 +66,18 @@ tracing-subscriber = { version = "0.3", default-features = false, features = [
     "ansi",
 ] }
 uuid = { version = "1", features = ["v4", "serde"] }
+
+# Apple frameworks. `src/platform/mod.rs` gates the modules; without this the
+# dependency graph would still pull them in and no other platform could build.
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6"
+objc2 = { version = "0.6", default-features = false, features = ["std"] }
+# NSResponder/NSView/NSControl/NSButton are the NSStatusBarButton hierarchy, and
+# NSRunningApplication carries NSApplicationActivationPolicy — neither is named
+# directly in our code, and dropping either stops the status item compiling.
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "objc2-core-foundation", "NSApplication", "NSStatusBar", "NSStatusItem", "NSStatusBarButton", "NSMenu", "NSMenuItem", "NSResponder", "NSButton", "NSControl", "NSView", "NSRunningApplication"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSArray", "NSDictionary", "NSDate", "NSError", "NSCalendar", "NSTimeZone", "NSURL", "NSValue", "NSThread", "NSRunLoop", "NSBundle", "NSSet", "NSNotification"] }
+objc2-user-notifications = { version = "0.3", default-features = false, features = ["std", "block2", "UNUserNotificationCenter", "UNNotificationRequest", "UNNotificationContent", "UNNotificationTrigger", "UNNotificationSettings", "UNNotification", "UNNotificationSound", "UNError"] }
 
 [dev-dependencies]
 mockito = "1"
