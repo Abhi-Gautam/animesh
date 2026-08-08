@@ -67,6 +67,14 @@ tracing-subscriber = { version = "0.3", default-features = false, features = [
 ] }
 uuid = { version = "1", features = ["v4", "serde"] }
 
+# The freedesktop notification spec is one D-Bus method and one probe, so zbus
+# is used directly rather than through notify-rust: that crate brings a second
+# notification abstraction to sit beside NotificationSurface, and its macOS path
+# duplicates the UNUserNotificationCenter adapter we already have. Pure Rust, so
+# a static-ish build and CI cross-compilation stay simple.
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = { version = "5.18", default-features = false, features = ["tokio"] }
+
 # Apple frameworks. `src/platform/mod.rs` gates the modules; without this the
 # dependency graph would still pull them in and no other platform could build.
 [target.'cfg(target_os = "macos")'.dependencies]

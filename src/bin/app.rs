@@ -17,6 +17,8 @@
 //! with the `animesh` CLI in the target directory.
 
 use std::process::ExitCode;
+#[cfg(target_os = "linux")]
+use std::sync::Arc;
 
 use animesh::engine::bootstrap;
 use animesh::paths::AppPaths;
@@ -112,13 +114,46 @@ fn join(engine: std::thread::JoinHandle<ExitCode>) -> ExitCode {
 // Everywhere else: the engine owns the process
 // ---------------------------------------------------------------------------
 
-/// No status item, so nothing needs the main thread and no surface attaches.
+/// No status item, so nothing needs the main thread.
 ///
-/// The CLI is the whole product here. A notification adapter plugs into the
-/// same [`bootstrap::ReadyHook`] the menu bar uses once one exists; until then
-/// the daemon serves the socket and keeps the schedule current, which is what
-/// `animesh next` reads.
-#[cfg(not(target_os = "macos"))]
+/// The CLI is the whole visible surface. Notifications attach through the same
+/// [`bootstrap::ReadyHook`] the menu bar uses, but the desktop here holds no
+/// schedule, so the daemon runs the notifier loop and fires them itself.
+#[cfg(target_os = "linux")]
+fn run(paths: AppPaths) -> ExitCode {
+    use animesh::engine::{notifier, reconciler::Reconciler};
+    use animesh::platform::linux::notifications::DesktopNotifier;
+
+    let status = run_engine(paths, |shutdown| {
+        let hook: bootstrap::ReadyHook = Box::new(move |library, _wake| {
+            tokio::spawn(async move {
+                // A missing session bus is an ordinary way to run the daemon —
+                // a server, a container, an SSH session — not a failure. The
+                // schedule and the CLI work either way; only banners are lost.
+                let notifier_surface = match DesktopNotifier::connect().await {
+                    Ok(surface) => surface,
+                    Err(reason) => {
+                        tracing::warn!(
+                            reason = %reason,
+                            "no desktop notifications; the CLI is unaffected"
+                        );
+                        return;
+                    }
+                };
+                let reconciler = Arc::new(Reconciler::new(
+                    Arc::clone(&library),
+                    notifier_surface as Arc<dyn animesh::engine::reconciler::NotificationSurface>,
+                ));
+                notifier::run(library, reconciler, shutdown.subscribe()).await;
+            });
+        });
+        Some(hook)
+    });
+    ExitCode::from(status)
+}
+
+/// Every other platform: the daemon and the CLI, with no notification adapter.
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn run(paths: AppPaths) -> ExitCode {
     ExitCode::from(run_engine(paths, |_shutdown| None))
 }
