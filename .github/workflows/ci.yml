@@ -72,15 +72,23 @@ jobs:
         run: |
           set -euo pipefail
           target/debug/animesh-app &
+          APP=$!
           for _ in $(seq 1 20); do
             if target/debug/animesh status >/dev/null 2>&1; then break; fi
             sleep 0.5
           done
           target/debug/animesh status
           target/debug/animesh next
-          pkill -TERM -f target/debug/animesh-app
-          sleep 1
-          if pgrep -f target/debug/animesh-app >/dev/null; then
+
+          # By PID, never `pgrep -f`: that matches any process whose command
+          # line merely contains the string, including the shell running this
+          # script, which turns a clean shutdown into a failed job.
+          kill -TERM "$APP"
+          for _ in $(seq 1 20); do
+            kill -0 "$APP" 2>/dev/null || break
+            sleep 0.5
+          done
+          if kill -0 "$APP" 2>/dev/null; then
             echo "the daemon ignored SIGTERM" >&2
             exit 1
           fi
