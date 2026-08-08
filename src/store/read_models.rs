@@ -184,7 +184,7 @@ mod tests {
         MediaObservation, MediaStatus, NextAiring, TitleSet, PARSER_VERSION,
     };
     use crate::domain::release::FollowState;
-    use crate::library::reducers::ReleaseTransition;
+    use crate::domain::release::ReleaseTransition;
     use crate::store::graph::{self, FetchRecord};
     use crate::store::{connection::configure, migrations, releases};
 

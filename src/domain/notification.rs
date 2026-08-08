@@ -225,6 +225,37 @@ impl NativeRequest {
     }
 }
 
+/// The stored job as the notification reducer needs to see it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NotificationJobSnapshot {
+    pub state: NotificationJobState,
+    pub desired_revision: i64,
+    pub desired_request_json: String,
+}
+
+/// What the notification reducer decided about one event's job.
+///
+/// Lives here for the same reason as [`super::release::ReleaseTransition`]: the
+/// reducer computes it and the store writes it, so neither may own it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NotificationTransition {
+    NoChange,
+    Create {
+        revision: i64,
+        request: Box<NativeRequest>,
+    },
+    /// The effective request changed before delivery; revision increments and
+    /// the same OS identifier is replaced.
+    Update {
+        revision: i64,
+        request: Box<NativeRequest>,
+    },
+    /// The follow was dropped, or the event was withdrawn or superseded.
+    Cancel,
+    /// Airtime plus grace passed while it was never registered.
+    Expire,
+}
+
 /// One entry in the desired registration plan.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NotificationPlanItem {

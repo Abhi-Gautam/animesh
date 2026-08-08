@@ -4,12 +4,13 @@
 //! decision the caller writes. Follow and refresh call the same reducers, so
 //! there is exactly one place where a schedule change becomes a state change.
 
-use crate::domain::ids::{AniListId, EpisodeNumber, ReleaseEventId, UnixTimestamp};
+use crate::domain::ids::{AniListId, EpisodeNumber, UnixTimestamp};
 use crate::domain::media::NextAiring;
 use crate::domain::notification::{
-    DeliveryMode, NativeRequest, NotificationJobState, OsIdentifier,
+    DeliveryMode, NativeRequest, NotificationJobSnapshot, NotificationJobState,
+    NotificationTransition, OsIdentifier,
 };
-use crate::domain::release::{FollowState, ReleaseEvent, ReleaseEventState};
+use crate::domain::release::{FollowState, ReleaseEvent, ReleaseEventState, ReleaseTransition};
 
 // ---------------------------------------------------------------------------
 // Observation -> release event
@@ -30,48 +31,6 @@ pub struct ReleaseInputs<'a> {
     /// The schedule the source just reported. `None` means an explicit null.
     pub observed: Option<NextAiring>,
     pub now: UnixTimestamp,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ReleaseTransition {
-    NoChange,
-    /// The source re-asserted an event unchanged; only observation bookkeeping.
-    Touch {
-        event_id: ReleaseEventId,
-    },
-    Insert {
-        episode: EpisodeNumber,
-        scheduled_at: UnixTimestamp,
-    },
-    /// Same episode at a new instant; schedule revision increments.
-    Reschedule {
-        event_id: ReleaseEventId,
-        scheduled_at: UnixTimestamp,
-    },
-    /// A withdrawn event reappeared; schedule revision increments.
-    Reinstate {
-        event_id: ReleaseEventId,
-        scheduled_at: UnixTimestamp,
-    },
-    /// Retire the current event and open the next one.
-    Advance {
-        retire: ReleaseEventId,
-        retire_state: ReleaseEventState,
-        episode: EpisodeNumber,
-        scheduled_at: UnixTimestamp,
-    },
-    /// The source stopped reporting a still-future event.
-    Withdraw {
-        event_id: ReleaseEventId,
-    },
-    MarkElapsed {
-        event_id: ReleaseEventId,
-    },
-    /// The source reported an episode earlier than one already recorded.
-    IntegrityFailure {
-        latest: EpisodeNumber,
-        observed: EpisodeNumber,
-    },
 }
 
 pub fn reduce_release(inputs: ReleaseInputs<'_>) -> ReleaseTransition {
@@ -274,14 +233,6 @@ pub fn next_refresh_after(
 // Event + follow -> notification job
 // ---------------------------------------------------------------------------
 
-/// The stored job as the reducer needs to see it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NotificationJobSnapshot {
-    pub state: NotificationJobState,
-    pub desired_revision: i64,
-    pub desired_request_json: String,
-}
-
 #[derive(Debug, Clone)]
 pub struct NotificationInputs<'a> {
     pub follow: FollowState,
@@ -291,25 +242,6 @@ pub struct NotificationInputs<'a> {
     pub title: &'a str,
     pub anilist_id: AniListId,
     pub now: UnixTimestamp,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum NotificationTransition {
-    NoChange,
-    Create {
-        revision: i64,
-        request: Box<NativeRequest>,
-    },
-    /// The effective request changed before delivery; revision increments and
-    /// the same OS identifier is replaced.
-    Update {
-        revision: i64,
-        request: Box<NativeRequest>,
-    },
-    /// The follow was dropped, or the event was withdrawn or superseded.
-    Cancel,
-    /// Airtime plus grace passed while it was never registered.
-    Expire,
 }
 
 /// Builds the request Animesh wants registered, or `None` when it wants none.
@@ -387,7 +319,7 @@ pub fn reduce_notification(
 mod tests {
     use super::*;
 
-    use crate::domain::ids::{EventUuid, MediaId, ObservationId, SourceMediaId};
+    use crate::domain::ids::{EventUuid, MediaId, ObservationId, ReleaseEventId, SourceMediaId};
     use crate::domain::notification::CATCH_UP_GRACE_SECS;
     use crate::domain::release::source_event_key;
 

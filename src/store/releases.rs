@@ -12,11 +12,9 @@ use crate::domain::notification::{
 };
 use crate::domain::read_models::{AuthorizationState, NotificationCounts};
 use crate::domain::release::{
-    source_event_key, ReleaseEvent, ReleaseEventState, MAX_EVENT_KEY_LEN,
+    source_event_key, ReleaseEvent, ReleaseEventState, ReleaseTransition, MAX_EVENT_KEY_LEN,
 };
-use crate::library::reducers::{
-    NotificationJobSnapshot, NotificationTransition, ReleaseTransition,
-};
+use crate::domain::notification::{NotificationJobSnapshot, NotificationTransition};
 
 const EVENT_COLUMNS: &str = "release_event_id, event_uuid, media_id, source_media_id,
      source_event_key, sequence_number, scheduled_at, state, schedule_revision,

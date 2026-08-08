@@ -91,6 +91,53 @@ impl ReleaseEvent {
     }
 }
 
+/// What one observation decided about a source media's schedule.
+///
+/// Produced by the release reducer and consumed by the store, so it lives here
+/// rather than beside either: a decision type owned by the layer that computes
+/// it would force the layer that writes it to depend upward.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReleaseTransition {
+    NoChange,
+    /// The source re-asserted an event unchanged; only observation bookkeeping.
+    Touch {
+        event_id: ReleaseEventId,
+    },
+    Insert {
+        episode: EpisodeNumber,
+        scheduled_at: UnixTimestamp,
+    },
+    /// Same episode at a new instant; schedule revision increments.
+    Reschedule {
+        event_id: ReleaseEventId,
+        scheduled_at: UnixTimestamp,
+    },
+    /// A withdrawn event reappeared; schedule revision increments.
+    Reinstate {
+        event_id: ReleaseEventId,
+        scheduled_at: UnixTimestamp,
+    },
+    /// Retire the current event and open the next one.
+    Advance {
+        retire: ReleaseEventId,
+        retire_state: ReleaseEventState,
+        episode: EpisodeNumber,
+        scheduled_at: UnixTimestamp,
+    },
+    /// The source stopped reporting a still-future event.
+    Withdraw {
+        event_id: ReleaseEventId,
+    },
+    MarkElapsed {
+        event_id: ReleaseEventId,
+    },
+    /// The source reported an episode earlier than one already recorded.
+    IntegrityFailure {
+        latest: EpisodeNumber,
+        observed: EpisodeNumber,
+    },
+}
+
 /// Whether a follow is active or has been dropped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
