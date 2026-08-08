@@ -21,6 +21,7 @@ pub mod ipc;
 pub mod library;
 pub mod paths;
 pub mod platform;
+pub mod service;
 pub mod sources;
 pub mod store;
 

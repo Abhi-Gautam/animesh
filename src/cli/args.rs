@@ -50,6 +50,25 @@ pub enum Command {
 
     /// Show app health.
     Status,
+
+    /// Run Animesh in the background, or stop it.
+    ///
+    /// Installing already does this. These are repair tools.
+    Service {
+        #[command(subcommand)]
+        action: ServiceAction,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ServiceAction {
+    /// Register the daemon and start it at login.
+    Start,
+    /// Stop the daemon and unregister it. The library is kept.
+    Stop,
+    Restart,
+    /// Whether the system is managing the daemon.
+    Status,
 }
 
 #[cfg(test)]
@@ -67,7 +86,7 @@ mod tests {
             .collect();
         assert_eq!(
             names,
-            vec!["search", "follow", "next", "list", "drop", "refresh", "status"]
+            vec!["search", "follow", "next", "list", "drop", "refresh", "status", "service"]
         );
     }
 

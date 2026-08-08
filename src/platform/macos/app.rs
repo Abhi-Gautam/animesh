@@ -52,6 +52,15 @@ pub async fn run_surface(
         )
     });
 
+    // Ask once, at startup, if the owner has never been asked. Apple wants the
+    // prompt to follow a user action, and installing Animesh and starting it is
+    // one — while the menu item that raises it is the only other trigger, and a
+    // CLI-first owner may never open the menu. Anything other than
+    // NotDetermined is a decision already made and is not re-litigated.
+    if let Some(centre) = &centre {
+        prompt_on_first_run(centre).await;
+    }
+
     // Settle before waiting for anything. A fresh process knows nothing about
     // what macOS is holding, and the answer is what health reports — waiting
     // for a menu click to find out would leave the app blank until one came.
@@ -90,6 +99,20 @@ pub async fn run_surface(
 
         settle(reconciler.as_ref()).await;
         republish(&library, &state).await;
+    }
+}
+
+/// Raises the system permission prompt the first time, and only the first time.
+async fn prompt_on_first_run(centre: &NotificationCenter) {
+    use crate::domain::read_models::AuthorizationState;
+
+    match centre.authorization().await {
+        Ok(AuthorizationState::NotDetermined) => match centre.request_authorization().await {
+            Ok(granted) => tracing::info!(granted, "first-run notification authorization"),
+            Err(error) => tracing::warn!(error = %error, "could not ask for notifications"),
+        },
+        Ok(_) => {}
+        Err(error) => tracing::warn!(error = %error, "cannot read notification authorization"),
     }
 }
 

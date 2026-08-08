@@ -11,7 +11,7 @@ use crate::ipc::client;
 use crate::ipc::protocol::{Request, Response};
 use crate::paths::AppPaths;
 
-use args::{Cli, Command};
+use args::{Cli, Command, ServiceAction};
 
 /// Runs one command and returns the process exit status.
 pub async fn run(cli: Cli) -> ExitCode {
@@ -34,6 +34,17 @@ pub async fn run(cli: Cli) -> ExitCode {
 }
 
 async fn execute(cli: Cli) -> Result<String, AppError> {
+    // Service management is the one command that does not go over the socket:
+    // it is what makes the socket exist.
+    if let Command::Service { action } = &cli.command {
+        return match action {
+            ServiceAction::Start => crate::service::start(),
+            ServiceAction::Stop => crate::service::stop(),
+            ServiceAction::Restart => crate::service::restart(),
+            ServiceAction::Status => crate::service::status(),
+        };
+    }
+
     let paths = AppPaths::production().map_err(|e| AppError::internal(e.to_string()))?;
     let now = SystemClock.now();
 
@@ -104,6 +115,9 @@ async fn execute(cli: Cli) -> Result<String, AppError> {
                 other => Err(mismatched(&other)),
             }
         }
+
+        // Handled above, before any socket work.
+        Command::Service { .. } => Ok(String::new()),
     }
 }
 
