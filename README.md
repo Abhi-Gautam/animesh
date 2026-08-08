@@ -9,6 +9,17 @@ Follow the shows you care about, see what is coming next, and get notified when
 a new episode releases. Your library stays on your machine in a local SQLite
 database—no login or account required.
 
+## Where this is going
+
+The schedule is the wedge, not the point. What accumulates is a durable local
+record of what you follow, watch, miss, and come back to—anime first, then TV,
+film, music, and anything else with a release date.
+
+That record is meant to have two readers: a person asking what is on tonight,
+and an agent that has to know what you are into before it can answer anything
+useful about it. Local, structured, and yours, instead of re-derived badly by
+every tool that asks.
+
 ## Status
 
 animesh is in active development and not yet packaged for installation.
