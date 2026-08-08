@@ -12,10 +12,15 @@ env:
   RUSTFLAGS: -D warnings
 
 jobs:
-  # macOS because the product is macOS-only: paths, the Unix socket, the bundle,
-  # and codesign all behave differently anywhere else.
+  # macOS carries the bundle, the status item and the notification centre; Linux
+  # carries the daemon and the CLI, which is the whole product there. Both must
+  # stay green or the platform boundary has stopped being real.
   check:
-    runs-on: macos-14
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
@@ -49,6 +54,43 @@ jobs:
 
       - name: Release build
         run: cargo build --workspace --release --locked
+
+  # The daemon and the CLI are the entire Linux surface, so the thing worth
+  # proving is that they come up, talk over the socket, and stop on SIGTERM
+  # without a desktop session anywhere in sight.
+  linux-daemon:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --bins --locked
+
+      - name: The daemon serves the CLI
+        run: |
+          set -euo pipefail
+          target/debug/animesh-app &
+          for _ in $(seq 1 20); do
+            if target/debug/animesh status >/dev/null 2>&1; then break; fi
+            sleep 0.5
+          done
+          target/debug/animesh status
+          target/debug/animesh next
+          pkill -TERM -f target/debug/animesh-app
+          sleep 1
+          if pgrep -f target/debug/animesh-app >/dev/null; then
+            echo "the daemon ignored SIGTERM" >&2
+            exit 1
+          fi
+
+      # XDG, not ~/Library. A regression here writes the user's library
+      # somewhere they will never find it.
+      - name: State lands where XDG says it should
+        run: |
+          set -euo pipefail
+          test -f "${XDG_DATA_HOME:-$HOME/.local/share}/animesh/library.db"
 
   # Proves the installer still produces a launchable, verifiable bundle. Signing
   # is ad-hoc here, which is fine because nothing is installed or consented to.
