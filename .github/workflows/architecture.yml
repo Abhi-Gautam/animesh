@@ -1,72 +1,101 @@
 name: Architecture
 
-# Enforces the layering rules documented in src/library/mod.rs and
-# src/sources/mod.rs:
+# Enforces the dependency direction documented at the top of src/lib.rs:
 #
-#   * `rusqlite::` may only appear in src/store/ and src/ids.rs
-#     (the latter for ToSql/FromSql trait impls only — value-type
-#     boundary, not query code).
-#   * `reqwest::` may only appear in src/sources/, src/llm/,
-#     src/notifier/, and src/errors.rs (the last for one
-#     reqwest::Error type-check).
-#   * crate::store::Db may only be imported by src/library/ and
-#     src/store/. Everything else must go through Library.
+#   binaries          -> composition only
+#   platform::macos   -> engine + Apple frameworks
+#   engine            -> domain + library + ports
+#   library           -> domain + store + source coordinator
+#   store             -> domain + rusqlite
+#   sources           -> source DTOs + domain observations
+#   domain            -> std/serde/chrono only
 #
-# These rules are mechanically observable. If they ever drift, the
-# fix should be moving the violation back into its layer, not
-# weakening this check.
+# Every rule below is mechanically observable. If one starts failing, the fix is
+# to move the violation back into its layer, not to widen the allow-list.
 
 on:
   push:
-    branches: [ master ]
+    branches: [master]
   pull_request:
-    branches: [ master ]
 
 jobs:
   layering:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
-      - name: rusqlite must stay inside src/store/ and src/ids.rs
+      # grep exits 1 on no match, which is the success case here, so each check
+      # inverts explicitly rather than relying on the exit status.
+      - name: rusqlite stays in store, and in the one place that owns transactions
         run: |
           set -euo pipefail
-          # grep -r exits 1 on no match — which is the success case
-          # here. Wrap so the workflow only fails on actual matches.
           if grep -rn --include='*.rs' 'rusqlite::' src \
               | grep -v '^src/store/' \
-              | grep -v '^src/ids.rs:' ; then
-            echo "::error::rusqlite:: used outside src/store/ and src/ids.rs"
+              | grep -v '^src/library/service.rs:' ; then
+            echo "::error::rusqlite:: outside src/store/ and src/library/service.rs"
+            echo "::error::Repositories take a transaction handle; only the Library opens one."
             exit 1
           fi
-          echo "rusqlite layering: OK"
 
-      - name: reqwest must stay inside src/sources/, src/llm/, src/notifier/
+      - name: reqwest stays in sources
         run: |
           set -euo pipefail
-          if grep -rn --include='*.rs' 'reqwest::' src \
-              | grep -v '^src/sources/' \
-              | grep -v '^src/llm/' \
-              | grep -v '^src/notifier/' \
-              | grep -v '^src/errors.rs:' ; then
-            # errors.rs is allowed to reference reqwest::Error for
-            # error classification only.
-            echo "::error::reqwest:: used outside src/sources/, src/llm/, src/notifier/, src/errors.rs"
+          if grep -rn --include='*.rs' 'reqwest::' src | grep -v '^src/sources/' ; then
+            echo "::error::reqwest:: outside src/sources/"
             exit 1
           fi
-          echo "reqwest layering: OK"
 
-      - name: Library must be the only owner of Db inside the crate
+      - name: Apple frameworks stay in platform and the app binary
         run: |
           set -euo pipefail
-          # Matches both `use crate::store::Db` and `use crate::store::{Db, ...}`
-          # forms by looking for `Db` as a whole word in any import or
-          # qualified reference rooted at `crate::store`.
-          if grep -rnE --include='*.rs' '\bcrate::store::[^;]*\bDb\b' src \
-              | grep -v '^src/library/' \
-              | grep -v '^src/store/' ; then
-            echo "::error::Db referenced outside src/library/ + src/store/"
-            echo "::error::All business logic must go through Library, not Db directly."
+          if grep -rnE --include='*.rs' '\b(objc2|objc2_[a-z_]+|block2)\b' src \
+              | grep -v '^src/platform/' \
+              | grep -v '^src/bin/app.rs:' ; then
+            echo "::error::Apple framework crate outside src/platform/ and src/bin/app.rs"
             exit 1
           fi
-          echo "Library facade rule: OK"
+
+      - name: domain depends on nothing in this crate
+        run: |
+          set -euo pipefail
+          if grep -rnE --include='*.rs' \
+              'crate::(store|sources|ipc|platform|library|engine|cli)\b' src/domain ; then
+            echo "::error::src/domain/ imported another layer"
+            echo "::error::domain must stay source-, storage- and platform-neutral."
+            exit 1
+          fi
+
+      - name: store depends only on domain
+        run: |
+          set -euo pipefail
+          if grep -rnE --include='*.rs' \
+              'crate::(sources|ipc|platform|library|engine|cli)\b' src/store ; then
+            echo "::error::src/store/ imported a sibling or higher layer"
+            echo "::error::Types both a reducer and a repository need belong in domain."
+            exit 1
+          fi
+
+      - name: sources never touch storage
+        run: |
+          set -euo pipefail
+          if grep -rnE --include='*.rs' \
+              'crate::(store|library|platform|engine)\b' src/sources ; then
+            echo "::error::src/sources/ reached past transport and parsing"
+            exit 1
+          fi
+
+      - name: the CLI never opens the database
+        run: |
+          set -euo pipefail
+          if grep -rnE --include='*.rs' 'crate::store|rusqlite' src/cli src/bin/animesh.rs ; then
+            echo "::error::The CLI is an IPC client; it must not reach the database."
+            exit 1
+          fi
+
+      - name: release builds never enable the test harness
+        run: |
+          set -euo pipefail
+          if grep -n 'default = \["test-harness"\]' Cargo.toml ; then
+            echo "::error::test-harness is on by default; path overrides would ship."
+            exit 1
+          fi
