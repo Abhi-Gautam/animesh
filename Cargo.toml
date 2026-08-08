@@ -96,6 +96,17 @@ strip = true
 lto = "thin"
 codegen-units = 1
 
+# What a profiler needs: release codegen, but symbols left in place.
+#
+# `release` strips, so a flame graph taken against it is a wall of hex. Copying
+# release here rather than editing it keeps the shipped binary small — the two
+# builds are meant to differ, and profiling the stripped one is the mistake this
+# profile exists to prevent.
+[profile.profiling]
+inherits = "release"
+strip = false
+debug = true
+
 [lints.rust]
 unused = "warn"
 missing_debug_implementations = "warn"
