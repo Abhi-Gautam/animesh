@@ -18,7 +18,6 @@ use crate::library::service::Library;
 
 use super::menu_bar::{MenuCommand, MenuModel, MenuRow, MenuState};
 use super::notifications::NotificationCenter;
-use super::view_model::{TitleView, WindowModel, WindowState};
 
 /// How often a pass runs with nothing having asked for one.
 ///
@@ -30,14 +29,10 @@ const SAFETY_TICK: Duration = Duration::from_secs(15 * 60);
 /// How many releases the menu lists before it stops being a glance.
 const MENU_ROWS: u32 = 8;
 
-/// The window has room, so it shows the whole library rather than a slice.
-const WINDOW_ROWS: u32 = 200;
-
 pub async fn run_surface(
     library: Arc<Library>,
     wake: WakeHandle,
     state: MenuState,
-    window: WindowState,
     mut commands: UnboundedReceiver<MenuCommand>,
     shutdown: watch::Sender<bool>,
 ) {
@@ -61,7 +56,7 @@ pub async fn run_surface(
     // what macOS is holding, and the answer is what health reports — waiting
     // for a menu click to find out would leave the app blank until one came.
     settle(reconciler.as_ref()).await;
-    republish(&library, &state, &window).await;
+    republish(&library, &state).await;
 
     loop {
         let command = tokio::select! {
@@ -94,7 +89,7 @@ pub async fn run_surface(
         }
 
         settle(reconciler.as_ref()).await;
-        republish(&library, &state, &window).await;
+        republish(&library, &state).await;
     }
 }
 
@@ -118,7 +113,7 @@ async fn settle(reconciler: Option<&Reconciler>) {
     }
 }
 
-async fn republish(library: &Library, state: &MenuState, window: &WindowState) {
+async fn republish(library: &Library, state: &MenuState) {
     let health = match library.health().await {
         Ok(health) => health,
         Err(error) => {
@@ -129,80 +124,6 @@ async fn republish(library: &Library, state: &MenuState, window: &WindowState) {
     let now = library.now();
     let upcoming = library.upcoming(Some(MENU_ROWS)).await.unwrap_or_default();
     state.publish(model(&health, &upcoming, now));
-
-    // The window shows everything, not just the glance, so it gets its own read.
-    let all = library
-        .upcoming(Some(WINDOW_ROWS))
-        .await
-        .unwrap_or_default();
-    window.publish(window_model(&health, &all, now));
-}
-
-/// Whether an airtime falls on the same local day as `now`.
-///
-/// Local rather than a fixed 24-hour window: "tonight" is a calendar idea, and
-/// an episode at 23:50 is tonight while one at 00:10 tomorrow is not.
-fn is_today(scheduled_at: UnixTimestamp, now: UnixTimestamp) -> bool {
-    use chrono::{Datelike, Local, TimeZone};
-    match (
-        Local.timestamp_opt(scheduled_at.get(), 0).single(),
-        Local.timestamp_opt(now.get(), 0).single(),
-    ) {
-        (Some(a), Some(b)) => a.ordinal() == b.ordinal() && a.year() == b.year(),
-        _ => false,
-    }
-}
-
-fn window_model(
-    health: &HealthSnapshot,
-    upcoming: &[UpcomingRelease],
-    now: UnixTimestamp,
-) -> WindowModel {
-    let views: Vec<TitleView> = upcoming
-        .iter()
-        .map(|release| title_view(release, now))
-        .collect();
-
-    WindowModel {
-        following: health.active_follows,
-        tonight: views
-            .iter()
-            .zip(upcoming)
-            .filter(|(_, release)| is_today(release.scheduled_at, now))
-            .map(|(view, _)| view.clone())
-            .collect(),
-        upcoming: views,
-        notifications_authorized: health.authorization.permits_registration(),
-        attention: health
-            .degraded
-            .first()
-            .map(|reason| reason.remediation().to_owned()),
-    }
-}
-
-fn title_view(release: &UpcomingRelease, now: UnixTimestamp) -> TitleView {
-    use chrono::{Local, TimeZone};
-
-    let day = Local
-        .timestamp_opt(release.scheduled_at.get(), 0)
-        .single()
-        .map(|local| local.format("%A").to_string())
-        .unwrap_or_default();
-
-    TitleView {
-        media_id: release.media_id.get(),
-        anilist_id: release.anilist_id.get(),
-        title: release.display_title.as_str().to_owned(),
-        episode: release.episode.map(|e| e.get()),
-        timing: crate::cli::render::relative(now, release.scheduled_at),
-        airs_at: crate::cli::render::local_time(release.scheduled_at),
-        // The store has had this all along; no surface has ever shown it.
-        status: "releasing".to_owned(),
-        aired: release.aired,
-        freshness: format!("{:?}", release.freshness).to_lowercase(),
-        notified: false,
-        day,
-    }
 }
 
 fn model(health: &HealthSnapshot, upcoming: &[UpcomingRelease], now: UnixTimestamp) -> MenuModel {
