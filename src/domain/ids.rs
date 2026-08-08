@@ -237,7 +237,6 @@ impl Source {
             Self::AniList => "anilist",
         }
     }
-
 }
 
 impl fmt::Display for Source {
@@ -468,7 +467,10 @@ mod tests {
         // The schema pins this with `CHECK (source = 'anilist')`, so the encoding
         // and the constraint have to agree.
         assert_eq!(Source::AniList.as_str(), "anilist");
-        assert_eq!(SourceKey::anilist(AniListId::new(21).expect("id")).to_string(), "anilist:21");
+        assert_eq!(
+            SourceKey::anilist(AniListId::new(21).expect("id")).to_string(),
+            "anilist:21"
+        );
     }
 
     #[test]

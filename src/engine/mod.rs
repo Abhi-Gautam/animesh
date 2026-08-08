@@ -4,6 +4,7 @@
 //! requirement: with nothing due there must be no wake, no request, no write.
 
 pub mod bootstrap;
+pub mod notifier;
 pub mod reconciler;
 
 use std::sync::Arc;

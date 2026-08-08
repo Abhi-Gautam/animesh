@@ -80,6 +80,9 @@ struct FakeCenter {
     state: Mutex<CenterState>,
     authorization: Mutex<AuthorizationState>,
     fail_adds: AtomicBool,
+    /// False models a freedesktop-style surface: Notify fires on submit and
+    /// there is no pending list to read back.
+    holds_schedule: AtomicBool,
 }
 
 impl FakeCenter {
@@ -88,7 +91,14 @@ impl FakeCenter {
             state: Mutex::new(CenterState::default()),
             authorization: Mutex::new(AuthorizationState::Authorized),
             fail_adds: AtomicBool::new(false),
+            holds_schedule: AtomicBool::new(true),
         })
+    }
+
+    /// Switches the fake to a surface that fires immediately and keeps no
+    /// pending list.
+    fn fires_immediately(&self) {
+        self.holds_schedule.store(false, Ordering::SeqCst);
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, CenterState> {
@@ -156,6 +166,10 @@ fn ready<T: Send + 'static>(value: Result<T, SurfaceError>) -> SurfaceFuture<'st
 }
 
 impl NotificationSurface for FakeCenter {
+    fn holds_schedule(&self) -> bool {
+        self.holds_schedule.load(Ordering::SeqCst)
+    }
+
     fn authorization(&self) -> SurfaceFuture<'_, AuthorizationState> {
         ready(Ok(*self.authorization.lock().expect("auth lock")))
     }
@@ -527,4 +541,63 @@ async fn re_following_revives_the_cancelled_job() {
     assert_eq!(report.submitted, 1, "the revived job was never registered");
     // The same episode keeps its identifier, so this is one banner, not two.
     assert_eq!(world.centre.pending_ids(), vec![identifier]);
+}
+
+// ---------------------------------------------------------------------------
+// Surfaces that cannot hold a schedule
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_surface_that_fires_immediately_waits_for_airtime() {
+    // Submitting early would put tonight's banner on screen this afternoon.
+    let mut server = mockito::Server::new_async().await;
+    let world = followed(&mut server).await;
+    world.centre.fires_immediately();
+
+    let report = world.reconciler.settle().await.expect("settle");
+
+    assert_eq!(report.submitted, 0, "fired before airtime: {report:?}");
+    assert_eq!(report.waiting, 1, "the job should be waiting: {report:?}");
+    assert!(world.centre.adds().is_empty());
+}
+
+#[tokio::test]
+async fn firing_is_delivering_when_nothing_will_report_it_back() {
+    // There is no pending list to observe the request in later, so the
+    // submission is the only observation there will ever be. Delivered is
+    // terminal, which is what stops a second banner for the same episode.
+    let mut server = mockito::Server::new_async().await;
+    let world = followed(&mut server).await;
+    world.centre.fires_immediately();
+
+    // Airtime arrives.
+    world.clock.set(at(AIRTIME));
+    let report = world.reconciler.settle().await.expect("settle");
+
+    assert_eq!(report.submitted, 1, "did not fire at airtime: {report:?}");
+    assert_eq!(world.centre.adds().len(), 1);
+
+    let health = world.library.health().await.expect("health");
+    assert_eq!(
+        health.notifications.registered, 0,
+        "a fired banner must not sit in the plan as registered"
+    );
+
+    // A later pass must not fire it again, even though the fake reports no
+    // pending and no delivered requests at all.
+    world.centre.clear_ops();
+    let second = world.reconciler.settle().await.expect("settle again");
+    assert_eq!(second.submitted, 0, "fired twice: {second:?}");
+    assert!(world.centre.adds().is_empty());
+}
+
+#[tokio::test]
+async fn a_schedule_holding_surface_still_registers_ahead_of_airtime() {
+    // The macOS path must be untouched by the capability flag.
+    let mut server = mockito::Server::new_async().await;
+    let world = followed(&mut server).await;
+
+    let report = world.reconciler.settle().await.expect("settle");
+    assert_eq!(report.submitted, 1, "did not register early: {report:?}");
+    assert_eq!(report.waiting, 0);
 }

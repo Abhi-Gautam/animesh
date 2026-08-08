@@ -69,6 +69,23 @@ impl SurfaceError {
 /// completion handlers, and the reconciler must be usable through `dyn` from a
 /// single-threaded AppKit composition root.
 pub trait NotificationSurface: Send + Sync {
+    /// Whether the OS will hold a request until a future instant and can be
+    /// asked what it is holding.
+    ///
+    /// True on macOS: a `UNCalendarNotificationTrigger` fires without this
+    /// process, and `pending` reports it back, so the schedule is durable
+    /// outside animesh.
+    ///
+    /// False for a surface that fires on submit and keeps no pending list — the
+    /// freedesktop spec is the case in hand. Three things follow, and the
+    /// reconciler applies all of them: a request may only be submitted once its
+    /// airtime has arrived, submitting *is* delivering because there is no
+    /// later observation that could confirm it, and the daemon has to be alive
+    /// at airtime or the job falls to the catch-up window and then expires.
+    fn holds_schedule(&self) -> bool {
+        true
+    }
+
     fn authorization(&self) -> SurfaceFuture<'_, AuthorizationState>;
     fn pending(&self) -> SurfaceFuture<'_, Vec<PendingRequest>>;
     fn delivered(&self) -> SurfaceFuture<'_, Vec<String>>;
@@ -89,6 +106,11 @@ pub struct PassReport {
     pub removed: u32,
     /// Skipped because their failure backoff had not expired.
     pub backing_off: u32,
+    /// Wanted, airtime still ahead, on a surface that cannot hold a schedule.
+    ///
+    /// Not a problem and not deferred work: these are the jobs the daemon will
+    /// fire itself when the moment arrives.
+    pub waiting: u32,
     pub deferred: u32,
     pub authorization: AuthorizationState,
     /// Set when the pass could not proceed at all.
@@ -221,6 +243,7 @@ impl Reconciler {
         report: &mut PassReport,
     ) -> Vec<JobOutcome> {
         let now = plan.computed_at;
+        let holds_schedule = self.surface.holds_schedule();
         let mut outcomes = Vec::new();
 
         for item in &plan.items {
@@ -248,12 +271,30 @@ impl Reconciler {
                 continue;
             }
 
+            // Submitting to a surface that fires immediately would put tonight's
+            // banner on screen this afternoon. Wait for the moment instead; the
+            // notifier loop wakes for it.
+            if !holds_schedule && item.request.fire_at.get() > now.get() {
+                report.waiting += 1;
+                continue;
+            }
+
             match self.surface.add(&item.request).await {
                 Ok(()) => {
                     report.submitted += 1;
-                    outcomes.push(JobOutcome::Registered {
-                        key: item.key.clone(),
-                        revision: item.desired_revision,
+                    outcomes.push(if holds_schedule {
+                        JobOutcome::Registered {
+                            key: item.key.clone(),
+                            revision: item.desired_revision,
+                        }
+                    } else {
+                        // The banner is on screen and no pending list will ever
+                        // report it back, so the submission is the observation.
+                        // `Delivered` is terminal, which is exactly right: it is
+                        // what stops a second banner for the same episode.
+                        JobOutcome::Delivered {
+                            key: item.key.clone(),
+                        }
                     });
                 }
                 Err(error) => {

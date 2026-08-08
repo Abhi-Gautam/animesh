@@ -10,11 +10,11 @@ use crate::domain::ids::{
 use crate::domain::notification::{
     NativeRequest, NotificationJobState, NotificationKey, OsIdentifier,
 };
+use crate::domain::notification::{NotificationJobSnapshot, NotificationTransition};
 use crate::domain::read_models::{AuthorizationState, NotificationCounts};
 use crate::domain::release::{
     source_event_key, ReleaseEvent, ReleaseEventState, ReleaseTransition, MAX_EVENT_KEY_LEN,
 };
-use crate::domain::notification::{NotificationJobSnapshot, NotificationTransition};
 
 const EVENT_COLUMNS: &str = "release_event_id, event_uuid, media_id, source_media_id,
      source_event_key, sequence_number, scheduled_at, state, schedule_revision,
@@ -590,6 +590,20 @@ pub fn counts(conn: &Connection, capacity: u32) -> Result<NotificationCounts, St
     }
     counts.deferred_capacity = deferred_count(conn, capacity)?;
     Ok(counts)
+}
+
+/// The soonest airtime among jobs that still want to be registered.
+///
+/// Drives the wake-up on a platform where the daemon fires the notification
+/// itself. `None` means nothing is wanted, so the loop can block on a signal.
+pub fn earliest_desired(conn: &Connection) -> Result<Option<UnixTimestamp>, StoreError> {
+    let raw: Option<i64> = conn.query_row(
+        "SELECT MIN(desired_at) FROM notification_jobs
+         WHERE state IN ('desired', 'registered', 'failed')",
+        [],
+        |row| row.get(0),
+    )?;
+    raw.map(ts).transpose()
 }
 
 /// How many jobs want registration beyond `limit`.

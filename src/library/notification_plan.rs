@@ -45,6 +45,14 @@ fn to_item(row: PlanRow) -> Result<NotificationPlanItem, StoreError> {
 }
 
 impl Library {
+    /// The soonest airtime among jobs that still want to be registered.
+    ///
+    /// Drives the wake-up where the daemon fires notifications itself. `None`
+    /// means nothing is wanted, so the loop can wait on its safety tick.
+    pub async fn earliest_notification(&self) -> Result<Option<UnixTimestamp>, AppError> {
+        Ok(self.store().read(releases::earliest_desired).await?)
+    }
+
     /// The nearest jobs that still want to exist in the OS, soonest first.
     pub async fn selected_plan(&self) -> Result<SelectedPlan, AppError> {
         // Read the generation before the query, never after. A bump that lands
