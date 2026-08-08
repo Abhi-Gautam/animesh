@@ -72,11 +72,15 @@ async fn connect(socket: &Path) -> Result<UnixStream, AppError> {
     }
 }
 
+/// The one message that has to name a fix.
+///
+/// Everything funnels here — a stopped daemon, a first run before the service
+/// was registered, a crash — so it names the single command that resolves all
+/// three rather than a location that only exists on one platform.
 fn not_running() -> AppError {
     AppError::new(
         ErrorCode::Unavailable,
-        "Animesh is not running. Start it from /Applications, or run \
-         'open -b dev.animesh.app'.",
+        "Animesh is not running. Start it with 'animesh service start'.",
     )
 }
 

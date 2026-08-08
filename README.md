@@ -41,9 +41,24 @@ Everything else is a client of it over a user-private Unix socket.
 - **Menu bar** — a glance at what is next, and a refresh. macOS only.
 - **Notifications** — a reminder at airtime. Optional; nothing else depends on it.
 
+## Install
+
+Not tagged yet, so the tap installs from `master`:
+
+```bash
+brew install --HEAD Abhi-Gautam/animesh/animesh
+animesh service start
+```
+
+`service start` registers the daemon with launchd or systemd, starts it, and
+keeps it running across restarts. On macOS it will ask for notification
+permission the first time; declining is fine, since nothing in the CLI depends
+on it.
+
 ## Commands
 
 ```bash
+animesh service start        # register the daemon; installing does this once
 animesh search "one piece"   # find a title on AniList
 animesh follow 21            # follow it, by AniList id
 animesh next                 # upcoming episodes; local only, never hits the network
@@ -52,6 +67,9 @@ animesh drop 1               # stop following, by media id
 animesh refresh              # pull schedules now
 animesh status               # health, and what to do about it
 ```
+
+`service` also takes `stop`, `restart` and `status`. It is a repair tool — the
+daemon is registered at install and is not otherwise your concern.
 
 Exit codes: `0` success, `1` bad input, `2` needs intervention, `3` temporary—retry.
 
@@ -63,16 +81,24 @@ cargo test
 cargo clippy --all-targets -- -D warnings
 ```
 
-To run the real thing, build and install the app bundle. It links the CLI into
-`~/.local/bin`, which needs to be on your `PATH`:
+To run the real thing from a checkout on macOS, build and install the app
+bundle. It links the CLI into `~/.local/bin`, which needs to be on your `PATH`:
 
 ```bash
 cargo xtask install
-open /Applications/Animesh.app   # launch once to grant notification permission
+animesh service start
 ```
 
-The database lives at `~/Library/Application Support/Animesh/library.db`. Build
-with `--features test-harness` to relocate it; set both `ANIMESH_DATA_ROOT` and
+On Linux the two binaries are all there is:
+
+```bash
+cargo build --release
+./target/release/animesh service start
+```
+
+The database lives at `~/Library/Application Support/Animesh/library.db` on
+macOS and `~/.local/share/animesh/library.db` on Linux. Build with
+`--features test-harness` to relocate it; set both `ANIMESH_DATA_ROOT` and
 `ANIMESH_LOG_ROOT`, or neither takes effect.
 
 ## License
