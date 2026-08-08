@@ -53,6 +53,19 @@ pub enum BatchDecode {
 }
 
 impl BatchDecode {
+    /// The stable code recorded against a pass that could not use this response.
+    ///
+    /// `None` for a usable page. Lives beside the enum so the outcome and the
+    /// code it is filed under cannot drift apart.
+    pub fn failure_code(&self) -> Option<String> {
+        match self {
+            Self::Items(_) => None,
+            Self::Integrity(error) => Some(format!("integrity:{error}")),
+            Self::Decode(_) => Some("decode".to_owned()),
+            Self::GraphQl(_) => Some("graphql".to_owned()),
+        }
+    }
+
     pub const fn outcome(&self) -> FetchOutcome {
         match self {
             Self::Items(_) => FetchOutcome::Success,

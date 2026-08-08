@@ -8,7 +8,9 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use crate::domain::ids::{AniListId, BoundedText, InstallationUuid, MediaId, UnixTimestamp};
+use crate::domain::ids::{
+    AniListId, BoundedText, FetchId, InstallationUuid, MediaId, UnixTimestamp,
+};
 use crate::domain::media::{MediaObservation, MAX_TITLE_LEN};
 use crate::domain::notification::{JobOutcome, OsIdentifier, NATIVE_CAPACITY};
 use crate::domain::read_models::{
@@ -262,39 +264,41 @@ impl Library {
             .await;
         self.record_source_rate_state(&response, now).await?;
 
-        let body = self.usable_body(&response)?;
-        let observation = match decode_detail(anilist_id, &body) {
-            DetailDecode::Observed(observation) => *observation,
-            DetailDecode::NotFound => {
-                return Err(AppError::not_found(format!(
-                    "AniList has no anime with id {anilist_id}"
-                )))
-            }
-            DetailDecode::Integrity {
-                requested,
-                returned,
-            } => {
-                return Err(AppError::new(
-                    ErrorCode::SourceIntegrity,
-                    format!("asked AniList for {requested} and it answered about {returned}"),
-                ))
-            }
-            DetailDecode::InvalidItem(error) => {
-                return Err(AppError::new(
-                    ErrorCode::SourceIntegrity,
-                    format!("AniList sent an unusable item: {error}"),
-                ))
-            }
-            DetailDecode::GraphQl(message) | DetailDecode::Decode(message) => {
-                return Err(AppError::new(
-                    ErrorCode::SourceUnavailable,
-                    format!("AniList: {message}"),
-                ))
+        let fingerprint = format!("id={anilist_id}");
+        let duration_ms = response.duration_ms;
+
+        // Every early return below still records the attempt. A response that
+        // could not be used is evidence that it arrived, and dropping it would
+        // leave the Bronze layer describing only the requests that went well.
+        let body = match self.usable_body(&response) {
+            Ok(body) => body,
+            Err(error) => {
+                let evidence = OwnedFetch::from_response(&response, "detail", &fingerprint)
+                    .stamped(now, duration_ms);
+                self.record_fetch(evidence).await?;
+                return Err(error);
             }
         };
 
-        let record = OwnedFetch::from_response(&response, "detail", &format!("id={anilist_id}"))
-            .stamped(now, response.duration_ms);
+        let decode = decode_detail(anilist_id, &body);
+        let observation = match decode {
+            DetailDecode::Observed(observation) => *observation,
+            failed => {
+                // Reclassify before storing: AniList answers a GraphQL error
+                // with HTTP 200, so the transport outcome alone would file a
+                // failure as a success.
+                let error = detail_error(anilist_id, &failed);
+                let response =
+                    response.reclassified(failed.outcome(), Some(error.code.as_str().to_owned()));
+                let evidence = OwnedFetch::from_response(&response, "detail", &fingerprint)
+                    .stamped(now, duration_ms);
+                self.record_fetch(evidence).await?;
+                return Err(error);
+            }
+        };
+
+        let record =
+            OwnedFetch::from_response(&response, "detail", &fingerprint).stamped(now, duration_ms);
         let installation = self.installation;
         let jitter = Arc::clone(&self.jitter);
 
@@ -537,26 +541,30 @@ impl Library {
         self.record_source_rate_state(&response, now).await?;
 
         let fingerprint = format!("id_in={}", ids.len());
-        let evidence = OwnedFetch::from_response(&response, "batch", &fingerprint)
-            .stamped(now, response.duration_ms);
+        let duration_ms = response.duration_ms;
 
         let Some(body) = response.body.clone() else {
-            return self
-                .fail_all(&due, &claims, now, response.outcome.as_str())
-                .await;
+            let code = response.outcome.as_str().to_owned();
+            let evidence = OwnedFetch::from_response(&response, "batch", &fingerprint)
+                .stamped(now, duration_ms);
+            return self.fail_all(&due, &claims, evidence, now, &code).await;
         };
 
-        match decode_batch(&ids, &body) {
+        let decode = decode_batch(&ids, &body);
+        let failure_code = decode.failure_code();
+        let response = response.reclassified(decode.outcome(), failure_code.clone());
+        let evidence =
+            OwnedFetch::from_response(&response, "batch", &fingerprint).stamped(now, duration_ms);
+
+        match decode {
             BatchDecode::Items(items) => {
                 self.apply_items(&due, &claims, items, evidence, now).await
             }
             // Integrity, decode, and GraphQL failures all preserve projection.
-            BatchDecode::Integrity(error) => {
-                self.fail_all(&due, &claims, now, &format!("integrity:{error}"))
-                    .await
+            _ => {
+                let code = failure_code.unwrap_or_else(|| "decode".to_owned());
+                self.fail_all(&due, &claims, evidence, now, &code).await
             }
-            BatchDecode::Decode(_) => self.fail_all(&due, &claims, now, "decode").await,
-            BatchDecode::GraphQl(_) => self.fail_all(&due, &claims, now, "graphql").await,
         }
     }
 
@@ -589,7 +597,15 @@ impl Library {
         evidence: OwnedFetch,
         now: UnixTimestamp,
     ) -> Result<RefreshPass, AppError> {
-        let evidence = Arc::new(evidence);
+        // One response is one occurrence, so the row is written once and every
+        // item cites the same fetch_id. Inserting it per item would mean several
+        // titles in a batch racing to store the same attempt_uuid, which the
+        // UNIQUE index correctly refuses.
+        //
+        // It is committed before the items rather than with them: a crash in
+        // between leaves evidence with nothing derived from it, which is a true
+        // statement about what happened. The reverse would not be.
+        let fetch_id = self.record_fetch(evidence).await?;
         let mut pass = RefreshPass::default();
 
         for (row, generation) in due.iter().zip(claims.iter().copied()) {
@@ -601,7 +617,6 @@ impl Library {
                 ItemResult::Observed(observation) => {
                     let observation = (**observation).clone();
                     let row = *row;
-                    let evidence = Arc::clone(&evidence);
                     let installation = self.installation;
                     let jitter = Arc::clone(&self.jitter);
 
@@ -612,13 +627,11 @@ impl Library {
                             // drop or a newer claim that raced the fetch must
                             // win over this response.
                             if !graph::generation_is_current(tx, row.source_media_id, generation)? {
-                                graph::insert_fetch(tx, &evidence.as_record())?;
                                 return Ok(false);
                             }
                             let follow = graph::follow_state(tx, row.media_id)?;
                             let follow = follow.unwrap_or(FollowState::Dropped);
 
-                            let fetch_id = graph::insert_fetch(tx, &evidence.as_record())?;
                             let observation_id = graph::insert_observation(
                                 tx,
                                 row.source_media_id,
@@ -731,13 +744,27 @@ impl Library {
         Ok(())
     }
 
+    /// Stores one response occurrence and returns the row it became.
+    async fn record_fetch(&self, evidence: OwnedFetch) -> Result<FetchId, AppError> {
+        Ok(self
+            .store
+            .write(move |tx| graph::insert_fetch(tx, &evidence.as_record()))
+            .await?)
+    }
+
     async fn fail_all(
         &self,
         due: &[graph::DueRow],
         claims: &[i64],
+        evidence: OwnedFetch,
         now: UnixTimestamp,
         code: &str,
     ) -> Result<RefreshPass, AppError> {
+        // The response is evidence even though no item could use it; without
+        // this the only trace of a bad batch would be N per-title backoffs with
+        // nothing recording what actually came back.
+        self.record_fetch(evidence).await?;
+
         let mut pass = RefreshPass::default();
         for (row, generation) in due.iter().zip(claims.iter().copied()) {
             self.record_item_failure(row, generation, now, code).await?;
@@ -905,6 +932,35 @@ fn degraded_reasons(
         reasons.push(DegradedReason::SourceRateLimited);
     }
     reasons
+}
+
+/// The error a detail decode that produced no observation reports to the caller.
+///
+/// Separate from the match that stores the evidence so the same decode drives
+/// both, and a new variant cannot be classified two different ways.
+fn detail_error(anilist_id: AniListId, decode: &DetailDecode) -> AppError {
+    match decode {
+        DetailDecode::Observed(_) => {
+            AppError::internal("a successful decode reached the failure path")
+        }
+        DetailDecode::NotFound => {
+            AppError::not_found(format!("AniList has no anime with id {anilist_id}"))
+        }
+        DetailDecode::Integrity {
+            requested,
+            returned,
+        } => AppError::new(
+            ErrorCode::SourceIntegrity,
+            format!("asked AniList for {requested} and it answered about {returned}"),
+        ),
+        DetailDecode::InvalidItem(error) => AppError::new(
+            ErrorCode::SourceIntegrity,
+            format!("AniList sent an unusable item: {error}"),
+        ),
+        DetailDecode::GraphQl(message) | DetailDecode::Decode(message) => {
+            AppError::new(ErrorCode::SourceUnavailable, format!("AniList: {message}"))
+        }
+    }
 }
 
 /// Runs the release and notification reducers and writes their decisions.

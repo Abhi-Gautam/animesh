@@ -48,8 +48,23 @@ fn batch_body(items: &[String]) -> String {
 
 struct World {
     _dir: tempfile::TempDir,
+    db_path: std::path::PathBuf,
     library: Arc<Library>,
     clock: Arc<ManualClock>,
+}
+
+impl World {
+    /// Every stored response occurrence, as (outcome, error_code).
+    fn fetches(&self) -> Vec<(String, Option<String>)> {
+        let conn = rusqlite::Connection::open(&self.db_path).expect("open");
+        let mut stmt = conn
+            .prepare("SELECT outcome, error_code FROM source_fetches ORDER BY fetch_id")
+            .expect("prepare");
+        let rows = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .expect("query");
+        rows.collect::<Result<Vec<_>, _>>().expect("rows")
+    }
 }
 
 async fn world(base_url: String) -> World {
@@ -70,6 +85,7 @@ async fn world(base_url: String) -> World {
     let clock = Arc::new(ManualClock::new(at(NOW)));
     World {
         _dir: dir,
+        db_path,
         library: Arc::new(Library::new(
             store,
             animesh::sources::anilist::client::AniListClient::new(base_url).expect("client"),
@@ -526,4 +542,109 @@ async fn health_reports_only_genuinely_future_episodes() {
         world.library.upcoming(None).await.expect("upcoming").len(),
         1
     );
+}
+
+#[tokio::test]
+async fn a_batch_covering_several_titles_applies_every_one() {
+    // Every other refresh test follows exactly one title, so the shared-evidence
+    // path across a multi-row batch has never been exercised.
+    let mut server = mockito::Server::new_async().await;
+    server
+        .mock("POST", "/")
+        .with_status(200)
+        .with_body(detail_body(21, "One Piece", Some((5, NOW + 500_000))))
+        .expect(1)
+        .create_async()
+        .await;
+    server
+        .mock("POST", "/")
+        .with_status(200)
+        .with_body(detail_body(1535, "Death Note", Some((3, NOW + 500_000))))
+        .expect(1)
+        .create_async()
+        .await;
+
+    let world = world(server.url()).await;
+    world.library.follow(id(21)).await.expect("follow one");
+    world.library.follow(id(1535)).await.expect("follow two");
+
+    world.clock.advance(400_000);
+    server
+        .mock("POST", "/")
+        .with_status(200)
+        .with_body(batch_body(&[
+            media_json(21, "One Piece", Some((6, NOW + 900_000))),
+            media_json(1535, "Death Note", Some((4, NOW + 900_000))),
+        ]))
+        .create_async()
+        .await;
+
+    let pass = world.library.refresh_due(10).await.expect("refresh");
+    assert_eq!(pass.applied, 2, "both titles should apply: {pass:?}");
+    assert_eq!(pass.failed, 0, "no item should fail: {pass:?}");
+}
+
+#[tokio::test]
+async fn a_graphql_error_is_stored_as_evidence_and_not_as_a_success() {
+    // AniList answers a GraphQL error with HTTP 200, so the transport outcome
+    // alone would file the failure under 'success' — and before the fetch row
+    // was written at all, a failed follow left no trace that it ever happened.
+    let mut server = mockito::Server::new_async().await;
+    server
+        .mock("POST", "/")
+        .with_status(200)
+        .with_body(r#"{"errors":[{"message":"Too Many Requests"}]}"#)
+        .create_async()
+        .await;
+
+    let world = world(server.url()).await;
+    world.library.follow(id(21)).await.expect_err("should fail");
+
+    assert_eq!(
+        world.fetches(),
+        vec![(
+            "graphql_error".to_owned(),
+            Some("source_unavailable".to_owned())
+        )],
+        "the attempt left no correctly-classified evidence"
+    );
+}
+
+#[tokio::test]
+async fn one_batch_response_is_one_row_however_many_titles_it_covers() {
+    let mut server = mockito::Server::new_async().await;
+    server
+        .mock("POST", "/")
+        .with_status(200)
+        .with_body(detail_body(21, "One Piece", Some((5, NOW + 500_000))))
+        .expect(1)
+        .create_async()
+        .await;
+    server
+        .mock("POST", "/")
+        .with_status(200)
+        .with_body(detail_body(1535, "Death Note", Some((3, NOW + 500_000))))
+        .expect(1)
+        .create_async()
+        .await;
+
+    let world = world(server.url()).await;
+    world.library.follow(id(21)).await.expect("follow one");
+    world.library.follow(id(1535)).await.expect("follow two");
+
+    world.clock.advance(400_000);
+    server
+        .mock("POST", "/")
+        .with_status(200)
+        .with_body(batch_body(&[
+            media_json(21, "One Piece", Some((6, NOW + 900_000))),
+            media_json(1535, "Death Note", Some((4, NOW + 900_000))),
+        ]))
+        .create_async()
+        .await;
+    world.library.refresh_due(10).await.expect("refresh");
+
+    // Two detail follows, then one batch covering both titles.
+    let outcomes: Vec<String> = world.fetches().into_iter().map(|(o, _)| o).collect();
+    assert_eq!(outcomes, vec!["success", "success", "success"]);
 }
