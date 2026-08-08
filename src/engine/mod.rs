@@ -17,6 +17,10 @@ use crate::library::service::{Library, RefreshPass};
 /// several batches rather than one request AniList would reject.
 pub const REFRESH_BATCH: u32 = 25;
 
+/// AniList serves at most 50 media per page, and `perPage` is bound to the
+/// claimed id count — so the claim itself is what has to stay under the ceiling.
+const _: () = assert!(REFRESH_BATCH <= 50);
+
 /// Longest the loop will sleep in one step.
 ///
 /// A deadline further out than this is re-evaluated on waking, so a suspended

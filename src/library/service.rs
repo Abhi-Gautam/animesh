@@ -208,17 +208,16 @@ impl Library {
         let now = self.now();
 
         let existing = self.existing_follow(anilist_id).await?;
-        let plan = reduce_follow(existing, now);
 
-        match plan {
+        match reduce_follow(existing) {
             FollowPlan::FetchDetail => self.follow_with_fetch(anilist_id, now).await,
-            FollowPlan::Reactivate { .. } | FollowPlan::AlreadyActive { .. } => {
-                let outcome = if matches!(plan, FollowPlan::Reactivate { .. }) {
-                    FollowOutcome::Reactivated
-                } else {
-                    FollowOutcome::AlreadyActive
-                };
-                self.follow_from_cache(anilist_id, outcome, now).await
+            FollowPlan::Reactivate => {
+                self.follow_from_cache(anilist_id, FollowOutcome::Reactivated, now)
+                    .await
+            }
+            FollowPlan::AlreadyActive => {
+                self.follow_from_cache(anilist_id, FollowOutcome::AlreadyActive, now)
+                    .await
             }
         }
     }
@@ -236,11 +235,9 @@ impl Library {
                 let Some(state) = graph::follow_state(conn, row.media_id)? else {
                     return Ok(None);
                 };
-                let refresh = graph::refresh_state(conn, row.source_media_id)?;
                 Ok(Some(ExistingFollow {
                     state,
                     has_current_observation: row.current_observation_id.is_some(),
-                    refresh_after: refresh.map(|r| r.refresh_after),
                 }))
             })
             .await?)

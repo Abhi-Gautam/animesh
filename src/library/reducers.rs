@@ -161,40 +161,33 @@ pub struct ExistingFollow {
     pub state: FollowState,
     /// Whether a current observation exists to serve from without the network.
     pub has_current_observation: bool,
-    pub refresh_after: Option<UnixTimestamp>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FollowPlan {
     /// Nothing is cached, so the source must validate the ID before we commit.
     FetchDetail,
-    Reactivate {
-        queue_refresh: bool,
-    },
-    AlreadyActive {
-        queue_refresh: bool,
-    },
+    Reactivate,
+    AlreadyActive,
 }
 
-pub fn reduce_follow(existing: Option<ExistingFollow>, now: UnixTimestamp) -> FollowPlan {
+/// Whether following this id needs the source, and what it means if it does not.
+///
+/// Staleness is deliberately not an input. A follow that is behind its refresh
+/// deadline is already visible to `due_for_refresh`, and the scheduler is woken
+/// by the same commit that created it — so deciding here would either duplicate
+/// that or race it.
+pub fn reduce_follow(existing: Option<ExistingFollow>) -> FollowPlan {
     let Some(existing) = existing else {
         return FollowPlan::FetchDetail;
     };
-
-    let stale = existing
-        .refresh_after
-        .is_none_or(|after| now.get() >= after.get());
 
     match existing.state {
         // A dropped follow with nothing cached cannot be reactivated into a
         // useful state, so it is treated as new.
         FollowState::Dropped if !existing.has_current_observation => FollowPlan::FetchDetail,
-        FollowState::Dropped => FollowPlan::Reactivate {
-            queue_refresh: stale,
-        },
-        FollowState::Active => FollowPlan::AlreadyActive {
-            queue_refresh: stale,
-        },
+        FollowState::Dropped => FollowPlan::Reactivate,
+        FollowState::Active => FollowPlan::AlreadyActive,
     }
 }
 
@@ -646,37 +639,16 @@ mod tests {
 
     #[test]
     fn an_unseen_id_must_be_validated_by_the_source() {
-        assert_eq!(reduce_follow(None, at(1_000)), FollowPlan::FetchDetail);
+        assert_eq!(reduce_follow(None), FollowPlan::FetchDetail);
     }
 
     #[test]
-    fn an_active_fresh_follow_makes_no_request() {
+    fn an_active_follow_makes_no_request() {
         let existing = ExistingFollow {
             state: FollowState::Active,
             has_current_observation: true,
-            refresh_after: Some(at(9_000)),
         };
-        assert_eq!(
-            reduce_follow(Some(existing), at(1_000)),
-            FollowPlan::AlreadyActive {
-                queue_refresh: false
-            }
-        );
-    }
-
-    #[test]
-    fn an_active_stale_follow_queues_a_refresh() {
-        let existing = ExistingFollow {
-            state: FollowState::Active,
-            has_current_observation: true,
-            refresh_after: Some(at(500)),
-        };
-        assert_eq!(
-            reduce_follow(Some(existing), at(1_000)),
-            FollowPlan::AlreadyActive {
-                queue_refresh: true
-            }
-        );
+        assert_eq!(reduce_follow(Some(existing)), FollowPlan::AlreadyActive);
     }
 
     #[test]
@@ -684,42 +656,19 @@ mod tests {
         let existing = ExistingFollow {
             state: FollowState::Dropped,
             has_current_observation: true,
-            refresh_after: Some(at(9_000)),
         };
-        assert_eq!(
-            reduce_follow(Some(existing), at(1_000)),
-            FollowPlan::Reactivate {
-                queue_refresh: false
-            }
-        );
+        assert_eq!(reduce_follow(Some(existing)), FollowPlan::Reactivate);
     }
 
     #[test]
     fn a_dropped_follow_without_cached_data_needs_a_fetch() {
+        // Reactivating would leave a follow with nothing to serve and no
+        // guarantee the id is real, so it takes the validating path instead.
         let existing = ExistingFollow {
             state: FollowState::Dropped,
             has_current_observation: false,
-            refresh_after: None,
         };
-        assert_eq!(
-            reduce_follow(Some(existing), at(1_000)),
-            FollowPlan::FetchDetail
-        );
-    }
-
-    #[test]
-    fn a_never_refreshed_follow_counts_as_stale() {
-        let existing = ExistingFollow {
-            state: FollowState::Active,
-            has_current_observation: true,
-            refresh_after: None,
-        };
-        assert_eq!(
-            reduce_follow(Some(existing), at(1_000)),
-            FollowPlan::AlreadyActive {
-                queue_refresh: true
-            }
-        );
+        assert_eq!(reduce_follow(Some(existing)), FollowPlan::FetchDetail);
     }
 
     // --- Refresh cadence ---

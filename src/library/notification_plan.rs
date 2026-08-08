@@ -26,16 +26,6 @@ pub struct SelectedPlan {
     pub deferred: u32,
 }
 
-impl SelectedPlan {
-    /// Skips items still inside their failure backoff, so a repeatedly failing
-    /// job cannot starve the ones behind it by being retried every pass.
-    pub fn attemptable(&self, now: UnixTimestamp) -> impl Iterator<Item = &NotificationPlanItem> {
-        self.items
-            .iter()
-            .filter(move |item| item.is_attemptable(now))
-    }
-}
-
 fn to_item(row: PlanRow) -> Result<NotificationPlanItem, StoreError> {
     let uuid = row
         .key

@@ -377,11 +377,6 @@ async fn batch_with_an_unrequested_id_is_an_integrity_error() {
     );
 }
 
-#[tokio::test]
-async fn batch_respects_the_documented_size_bound() {
-    assert_eq!(queries::MAX_BATCH_IDS, 50);
-}
-
 // ---------------------------------------------------------------------------
 // Search decoding
 // ---------------------------------------------------------------------------

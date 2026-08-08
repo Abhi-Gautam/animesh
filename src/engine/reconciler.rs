@@ -11,7 +11,7 @@
 
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use crate::domain::ids::UnixTimestamp;
@@ -115,14 +115,12 @@ pub struct Reconciler {
     /// Separate from the plan generation so menu rendering can refresh on
     /// status movement without that movement looking like a new desired set.
     status_revision: AtomicU64,
-    dirty: AtomicBool,
 }
 
 impl std::fmt::Debug for Reconciler {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Reconciler")
             .field("status_revision", &self.status_revision)
-            .field("dirty", &self.dirty)
             .finish_non_exhaustive()
     }
 }
@@ -133,7 +131,6 @@ impl Reconciler {
             library,
             surface,
             status_revision: AtomicU64::new(0),
-            dirty: AtomicBool::new(true),
         }
     }
 
@@ -141,23 +138,16 @@ impl Reconciler {
         self.status_revision.load(Ordering::SeqCst)
     }
 
-    /// Marks work pending without doing it.
-    ///
-    /// Launch, data change, wake, activation, menu open, and the safety timer
-    /// all land here so none of them can start a second concurrent pass.
-    pub fn mark_dirty(&self) {
-        self.dirty.store(true, Ordering::SeqCst);
-    }
-
     /// Runs passes until the plan stops moving underneath them.
+    ///
+    /// Callers do not mark work pending; every trigger — launch, data change,
+    /// wake, activation, menu open, the safety tick — calls this directly, and
+    /// serialization comes from the single surface task rather than a flag.
     pub async fn settle(&self) -> Result<PassReport, AppError> {
         let mut report = PassReport::default();
         for _ in 0..MAX_PASSES {
-            self.dirty.store(false, Ordering::SeqCst);
             report = self.run_pass().await?;
-
-            let moved = self.library.plan_generation() != report.generation;
-            if !moved && !self.dirty.load(Ordering::SeqCst) {
+            if self.library.plan_generation() == report.generation {
                 return Ok(report);
             }
         }

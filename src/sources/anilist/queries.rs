@@ -8,9 +8,6 @@
 /// Maximum search results requested in one call.
 pub const SEARCH_PER_PAGE: u32 = 10;
 
-/// Maximum AniList IDs in one batch refresh.
-pub const MAX_BATCH_IDS: usize = 50;
-
 /// Fields shared by every media selection.
 ///
 /// `timeUntilAiring` is deliberately absent. Presentation derives the relative

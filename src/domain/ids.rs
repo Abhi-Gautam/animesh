@@ -238,13 +238,6 @@ impl Source {
         }
     }
 
-    /// Decodes the stored form, rejecting anything unrecognized.
-    pub fn parse(value: &str) -> Result<Self, IdError> {
-        match value {
-            "anilist" => Ok(Self::AniList),
-            other => Err(IdError::UnknownSource(other.to_owned())),
-        }
-    }
 }
 
 impl fmt::Display for Source {
@@ -362,10 +355,6 @@ impl BoundedText {
     pub fn as_str(&self) -> &str {
         &self.0
     }
-
-    pub fn into_inner(self) -> String {
-        self.0
-    }
 }
 
 impl fmt::Display for BoundedText {
@@ -476,18 +465,10 @@ mod tests {
 
     #[test]
     fn source_encoding_is_stable() {
+        // The schema pins this with `CHECK (source = 'anilist')`, so the encoding
+        // and the constraint have to agree.
         assert_eq!(Source::AniList.as_str(), "anilist");
-        assert_eq!(Source::parse("anilist"), Ok(Source::AniList));
-    }
-
-    #[test]
-    fn source_decoding_rejects_unknown() {
-        assert!(matches!(
-            Source::parse("myanimelist"),
-            Err(IdError::UnknownSource(_))
-        ));
-        // Case matters: the stored form is exactly lowercase.
-        assert!(Source::parse("AniList").is_err());
+        assert_eq!(SourceKey::anilist(AniListId::new(21).expect("id")).to_string(), "anilist:21");
     }
 
     #[test]
