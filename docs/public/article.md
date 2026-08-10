@@ -40,8 +40,10 @@ Commands:
   follow   Follow a title by its AniList id
   next     Show upcoming episodes. Local-only; never touches the network
   list     List everything you follow
+  drop     Stop following a title
   refresh  Ask the app to refresh schedules now
   status   Show app health
+  service  Run Animesh in the background, or stop it
 ```
 
 The important promise is attached to `next`: it is local-only.
