@@ -27,7 +27,7 @@ Two commands could refresh at once. The menu could read halfway through a write.
 
 So one long-lived process owns the database, the AniList client, refresh scheduling, and notification policy. Everything else is a client or an adapter.
 
-![Animesh architecture showing the CLI and menu bar communicating through one daemon, which owns SQLite, AniList refreshes, scheduling, and native notification adapters.](/media/animesh/architecture.svg "One owner, several surfaces. D2 and ELK compute the geometry; narrow screens scroll instead of shrinking labels into unreadable text.")
+![Animesh architecture showing the CLI and menu bar communicating through one daemon, which owns SQLite, AniList refreshes, scheduling, and native notification adapters.](/media/animesh/architecture.svg "One owner, several surfaces. The diagram keeps a fixed readable coordinate system; narrow screens scroll inside the figure instead of shrinking its labels.")
 
 The CLI is intentionally thin. It parses one command, sends one versioned request over a user-private Unix socket, prints one response, and exits. It never opens SQLite and it never constructs an AniList client.
 
