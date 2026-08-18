@@ -25,4 +25,4 @@ Core engine capabilities are: discover → follow → ingest → normalize → c
 
 - **Marvel-tier bar.** Reject "good enough" defaults — Postgres-grade durability + Task-Manager-grade efficiency. The user will flag laziness.
 - **Active development.** We are building right now no need to preserve any old behavior. Cleaner architecture wins.
-- **Reuse before building.** Before adding a primitive, deep-dive what exists and either justify why it can't be extended or extend it. Recommend, then ask.
+- **Reuse before building.** Inspect what exists before adding a primitive; extend it when appropriate and justify any new abstraction.
