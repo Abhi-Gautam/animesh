@@ -1,42 +1,22 @@
 # animesh
 
-A local-first personal release radar for macOS and Linux. Anime first, with a
-core that can later support TV, music, and other scheduled media.
+A local-first release radar for macOS and Linux. Follow the shows you care
+about, see what is next, and get notified when an episode drops. Everything
+lives in a SQLite database on your machine — no account, no login, nothing
+uploaded. Anime first, with a core that can later carry TV, film and music.
 
-## Product goal
+I built it because keeping up meant opening Crunchyroll and a countdown site
+and doing it again an hour later:
+[I just wanted to know when an episode dropped](https://syntropicsystems.dev/writing/animesh/)
+is the long version — why one process owns the data, and how a small utility
+turned into a notification pipeline.
 
-Follow the shows you care about, see what is coming next, and get notified when
-a new episode releases. Your library stays on your machine in a local SQLite
-database—no login or account required.
+## Expect it to break
 
-## Where this is going
-
-The schedule is the wedge, not the point. What accumulates is a durable local
-record of what you follow, watch, miss, and come back to—anime first, then TV,
-film, music, and anything else with a release date.
-
-That record is meant to have two readers: a person asking what is on tonight,
-and an agent that has to know what you are into before it can answer anything
-useful about it. Local, structured, and yours, instead of re-derived badly by
-every tool that asks.
-
-## Status
-
-animesh is in active development. The daemon, the CLI, notifications and the
-agent skill are shipped; installation is from Homebrew on macOS and Linux.
-
-The broader goals—richer local data, backlog and history, a window and other
-surfaces, streaming availability, and cross-media support—remain unchanged.
-
-## Surfaces
-
-One background process owns the database, the AniList client, and the schedule.
-Everything else is a client of it over a user-private Unix socket.
-
-- **CLI** — complete. Every action is reachable here, with no desktop session.
-- **Menu bar** — a glance at what is next, and a refresh. macOS only.
-- **Notifications** — a reminder at airtime. Optional; nothing else depends on it.
-- **Agents** — the same CLI in JSON, published as an Agent Skill. See below.
+animesh is under heavy development and changes often. Commands, output,
+the JSON shape, the stored schema and the daemon protocol are all still moving,
+and releases will break them without ceremony. Install it to use it, and expect
+to reinstall. Do not build anything on top of it yet.
 
 ## Install
 
@@ -46,22 +26,19 @@ brew install abhi-gautam/animesh/animesh
 animesh service start
 ```
 
-The tap is this repository, so the formula is always the one that matches the
-code.
+The tap is this repository, so the formula always matches the code.
 
 Prebuilt tarballs for macOS (Apple Silicon and Intel) and Linux x86_64 are
-attached to each [release](https://github.com/Abhi-Gautam/animesh/releases), and
-each one carries an `INSTALL.txt`.
+attached to each [release](https://github.com/Abhi-Gautam/animesh/releases),
+each with an `INSTALL.txt`.
 
-`service start` registers the daemon with launchd or systemd, starts it, and
-keeps it running across restarts. On macOS it will ask for notification
-permission the first time; declining is fine, since nothing in the CLI depends
-on it.
+`service start` registers the background process with launchd or systemd and
+keeps it running across restarts. On macOS it asks for notification permission
+the first time; declining is fine, since nothing in the CLI depends on it.
 
 ## Commands
 
 ```bash
-animesh service start        # register the daemon; installing does this once
 animesh search "one piece"   # find a title on AniList
 animesh follow 21            # follow it, by AniList id
 animesh next                 # upcoming episodes; local only, never hits the network
@@ -79,20 +56,22 @@ Exit codes: `0` success, `1` bad input, `2` needs intervention, `3` temporary—
 
 ## Agents
 
-Every command takes `--json` and answers with one line: `{"data":..,"kind":..,
-"ok":true}`, or `{"error":{"code":..},"ok":false}` on failure. The `code` is
-stable; the message is prose.
+Every command takes `--json` and answers with one line:
 
 ```bash
-animesh --json next -n 3
+$ animesh --json next -n 3
+{"data":[...],"kind":"upcoming","ok":true}
 ```
 
+Failures answer `{"error":{"code":...},"ok":false}` on stdout. The `code` is
+meant to be branched on; the message is prose and will change.
+
 `animesh skill install` writes an [Agent Skill](https://agentskills.io) to
-`~/.agents/skills/animesh/`, the vendor-neutral location read by Codex, Cursor,
-Gemini CLI, Copilot, OpenCode and Goose, and mirrors it to `~/.claude/skills/`
-when Claude Code is installed. After that, an agent can answer what is airing
-tonight, follow a show for you, or read what you watch before recommending
-anything — against your library, on your machine, with no account anywhere.
+`~/.agents/skills/animesh/` — the vendor-neutral location read by Codex,
+Cursor, Gemini CLI, Copilot, OpenCode and Goose — and mirrors it to
+`~/.claude/skills/` when Claude Code is installed. An agent can then answer
+what is airing tonight, follow something for you, or read what you actually
+watch before recommending anything, against your library, on your machine.
 
 `animesh skill status` says where it landed; `animesh skill uninstall` removes it.
 
@@ -104,8 +83,9 @@ cargo test
 cargo clippy --all-targets -- -D warnings
 ```
 
-To run the real thing from a checkout on macOS, build and install the app
-bundle. It links the CLI into `~/.local/bin`, which needs to be on your `PATH`:
+On macOS the app has to run from a bundle, because notifications need a bundle
+identifier. This builds one and links the CLI into `~/.local/bin`, which needs
+to be on your `PATH`:
 
 ```bash
 cargo xtask install
