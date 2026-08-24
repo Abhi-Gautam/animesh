@@ -140,12 +140,15 @@ jobs:
       # and the database.
       - name: Singleton is enforced
         run: |
-          set -uo pipefail
+          set -euo pipefail
           APP=target/bundle/Animesh.app/Contents
           "$APP/MacOS/Animesh" &
           sleep 3
-          "$APP/MacOS/Animesh"
-          second=$?
+          # The refusal is the assertion, so the non-zero exit has to be read
+          # rather than inherited: the step runs under `bash -e`, which aborts
+          # on the second instance before `$?` is ever consulted.
+          second=0
+          "$APP/MacOS/Animesh" || second=$?
           pkill -TERM -f "$APP/MacOS/Animesh" || true
           if [ "$second" -eq 0 ]; then
             echo "a second instance started alongside the first" >&2
