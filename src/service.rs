@@ -389,6 +389,33 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn the_daemon_is_found_through_two_hops_on_a_homebrew_mac() {
+        // The shape that actually ships on macOS: the formula installs the
+        // bundle into the Cellar and symlinks the CLI out of it, then Homebrew
+        // symlinks *that* into its bin. Resolving one hop lands in the Cellar's
+        // bin, which holds no daemon.
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path();
+        let keg = root.join("Cellar/animesh/0.6.0");
+        let contents = keg.join("Animesh.app/Contents");
+        let cli = contents.join("Helpers/animesh");
+        let daemon = contents.join("MacOS").join(APP_EXECUTABLE);
+        touch(&cli);
+        touch(&daemon);
+
+        let keg_link = keg.join("bin/animesh");
+        link(&cli, &keg_link);
+        let prefix_link = root.join("bin/animesh");
+        link(&keg_link, &prefix_link);
+
+        assert_eq!(
+            resolve_daemon(&prefix_link).map(|p| std::fs::canonicalize(p).expect("canonicalize")),
+            Some(std::fs::canonicalize(&daemon).expect("canonicalize"))
+        );
+    }
+
     #[test]
     fn the_daemon_is_found_beside_an_unlinked_cli() {
         // `target/release/animesh` from a checkout, with no link involved.
