@@ -93,23 +93,26 @@ class Animesh < Formula
   end
 
   test do
+    # Every assertion here has to hold whether or not the daemon is running,
+    # because `brew test` is run on machines where it is. Asserting "not
+    # running" passes in CI and fails for anyone who followed the caveats.
+
     # The CLI must answer without a daemon, a database, or a desktop session.
     assert_match "animesh", shell_output("#{bin}/animesh --version")
 
-    # And it must fail honestly when the daemon is not running rather than
-    # hanging or reporting success: exit 3 is the retryable category.
-    output = shell_output("#{bin}/animesh next 2>&1", 3)
-    assert_match "not running", output
-
-    # The machine-readable mode is the agent contract, and it has to hold in the
-    # failure case too — one JSON document on stdout, with a stable code.
-    document = JSON.parse(shell_output("#{bin}/animesh --json next", 3))
+    # Validation happens before the socket is touched, so this exercises the
+    # JSON envelope and the exit code without needing to know what is running.
+    document = JSON.parse(shell_output("#{bin}/animesh --json next -n 0", 1))
     refute document.fetch("ok")
-    assert_equal "unavailable", document.dig("error", "code")
+    assert_equal "invalid_argument", document.dig("error", "code")
 
-    # The CLI must find the daemon through the symlink Homebrew installs it
-    # behind. Resolving from the link alone finds an empty bin and reports a
-    # correct install as broken.
+    # The agent skill is written from the binary, so this proves the install
+    # carries it rather than depending on a file that was never packaged.
+    assert_match "skill", shell_output("#{bin}/animesh --json skill status")
+
+    # The CLI must be findable through the symlink Homebrew installs it behind:
+    # resolving from the link alone finds an empty bin and reports a correct
+    # install as missing its daemon.
     assert_predicate bin/"animesh", :symlink? if OS.mac?
   end
 end
