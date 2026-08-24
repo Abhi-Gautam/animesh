@@ -12,6 +12,14 @@ use crate::domain::ids::{AniListId, MediaId};
     disable_help_subcommand = true
 )]
 pub struct Cli {
+    /// Emit one JSON document on stdout instead of text.
+    ///
+    /// Global rather than per-command so an agent can set it once and parse
+    /// every answer the same way. The envelope is `{"ok":true,"kind":..,
+    /// "data":..}` or `{"ok":false,"error":..}`; exit codes are unchanged.
+    #[arg(long, global = true)]
+    pub json: bool,
+
     #[command(subcommand)]
     pub command: Command,
 }
@@ -58,6 +66,26 @@ pub enum Command {
         #[command(subcommand)]
         action: ServiceAction,
     },
+
+    /// Install the Agent Skill, so any AI agent can drive Animesh.
+    Skill {
+        #[command(subcommand)]
+        action: SkillAction,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SkillAction {
+    /// Write the skill where agents look for it.
+    Install {
+        /// Overwrite a skill file that has been edited since it was installed.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Remove the skill from every location it was installed to.
+    Uninstall,
+    /// Where the skill is installed, and whether it is current.
+    Status,
 }
 
 #[derive(Debug, Subcommand)]
@@ -86,7 +114,9 @@ mod tests {
             .collect();
         assert_eq!(
             names,
-            vec!["search", "follow", "next", "list", "drop", "refresh", "status", "service"]
+            vec![
+                "search", "follow", "next", "list", "drop", "refresh", "status", "service", "skill"
+            ]
         );
     }
 
@@ -105,6 +135,26 @@ mod tests {
             Command::Search { query } => assert_eq!(query, vec!["one", "piece"]),
             other => panic!("expected search, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn json_is_accepted_before_or_after_the_subcommand() {
+        // A global flag, so an agent can put it wherever it builds argv.
+        assert!(
+            Cli::try_parse_from(["animesh", "--json", "next"])
+                .expect("parse")
+                .json
+        );
+        assert!(
+            Cli::try_parse_from(["animesh", "next", "--json"])
+                .expect("parse")
+                .json
+        );
+        assert!(
+            !Cli::try_parse_from(["animesh", "next"])
+                .expect("parse")
+                .json
+        );
     }
 
     #[test]
