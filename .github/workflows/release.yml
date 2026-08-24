@@ -23,7 +23,7 @@ jobs:
         run: |
           set -euo pipefail
           tag="${GITHUB_REF_NAME#v}"
-          crate=$(sed -n '0,/^version = /s/^version = "\(.*\)"/\1/p' Cargo.toml)
+          crate=$(grep -m1 '^version = ' Cargo.toml | sed 's/^version = "\(.*\)"/\1/')
           if [ "$tag" != "$crate" ]; then
             echo "tag ${GITHUB_REF_NAME} does not match Cargo.toml version ${crate}" >&2
             exit 1
