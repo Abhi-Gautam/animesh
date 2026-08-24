@@ -41,9 +41,13 @@ Everything else is a client of it over a user-private Unix socket.
 ## Install
 
 ```bash
-brew install Abhi-Gautam/animesh/animesh
+brew tap abhi-gautam/animesh https://github.com/Abhi-Gautam/animesh
+brew install abhi-gautam/animesh/animesh
 animesh service start
 ```
+
+The tap is this repository, so the formula is always the one that matches the
+code.
 
 Prebuilt tarballs for macOS (Apple Silicon and Intel) and Linux x86_64 are
 attached to each [release](https://github.com/Abhi-Gautam/animesh/releases), and

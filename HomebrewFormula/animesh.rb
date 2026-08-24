@@ -1,7 +1,12 @@
 # Homebrew formula for animesh.
 #
-# Lives here so it is versioned with the code that it installs; the tap
-# (Abhi-Gattam/homebrew-animesh) carries a copy. A formula rather than a cask,
+# This directory is what makes the repository its own tap: Homebrew looks for
+# formulae in `Formula/`, then `HomebrewFormula/`, then the root, so there is no
+# separate `homebrew-animesh` repository to keep in sync with this one. The cost
+# is that installing takes a `brew tap <name> <url>` first, because the
+# `user/tap/formula` shorthand resolves only to a repo named `homebrew-*`.
+#
+# A formula rather than a cask,
 # for two reasons. Casks download an artifact and Gatekeeper quarantines it, so
 # an unnotarised app would refuse to launch on every machine but the author's —
 # a formula's files are not quarantined, so v1 ships without notarisation.
