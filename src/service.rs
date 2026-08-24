@@ -19,8 +19,13 @@ use crate::error::{AppError, ErrorCode};
 /// knows the service by, so changing either orphans an installed unit.
 #[cfg(target_os = "macos")]
 pub const LABEL: &str = "dev.animesh.agent";
+
 #[cfg(not(target_os = "macos"))]
 pub const UNIT: &str = "animesh.service";
+
+/// The daemon's filename inside the bundle. Must match what xtask writes to
+/// `Contents/MacOS`, or an installed app cannot start its own daemon.
+const APP_EXECUTABLE: &str = "Animesh";
 
 /// What one action did, phrased for a person reading a terminal.
 pub type Outcome = Result<String, AppError>;
@@ -41,29 +46,40 @@ fn home() -> Result<PathBuf, AppError> {
 /// `Contents/Helpers` and the daemon in `Contents/MacOS`; everywhere else they
 /// are siblings, which covers a Homebrew prefix and `target/debug` alike.
 fn daemon_path() -> Result<PathBuf, AppError> {
-    let cli = std::env::current_exe()
+    let launched = std::env::current_exe()
         .map_err(|e| failed(format!("cannot locate the running executable: {e}")))?;
-    let dir = cli
-        .parent()
-        .ok_or_else(|| failed("the running executable has no directory"))?;
+    resolve_daemon(&launched).ok_or_else(|| {
+        failed(format!(
+            "cannot find the animesh daemon next to {}",
+            launched.display()
+        ))
+    })
+}
 
-    let bundled = dir
-        .parent()
-        .map(|contents| contents.join("MacOS").join("Animesh"));
+/// Locates the daemon relative to the CLI that is running.
+///
+/// `launched` is the path the process was started from, which is not
+/// necessarily the binary: every install path puts a symlink in front of the
+/// CLI — `~/.local/bin/animesh` into the app bundle, and Homebrew's `bin` into
+/// its Cellar — and macOS reports the link, not its target. Resolving it first
+/// is what makes the daemon findable at all; searching next to the link finds
+/// an empty `bin` directory and reports the daemon missing on a correct
+/// install.
+fn resolve_daemon(launched: &Path) -> Option<PathBuf> {
+    let cli = std::fs::canonicalize(launched).unwrap_or_else(|_| launched.to_path_buf());
+    let dir = cli.parent()?;
+
     if dir.ends_with("Helpers") {
+        let bundled = dir
+            .parent()
+            .map(|contents| contents.join("MacOS").join(APP_EXECUTABLE));
         if let Some(path) = bundled.filter(|p| p.exists()) {
-            return Ok(path);
+            return Some(path);
         }
     }
 
     let sibling = dir.join("animesh-app");
-    if sibling.exists() {
-        return Ok(sibling);
-    }
-    Err(failed(format!(
-        "cannot find the animesh daemon next to {}",
-        cli.display()
-    )))
+    sibling.exists().then_some(sibling)
 }
 
 fn write_file(path: &Path, contents: &str) -> Result<(), AppError> {
@@ -314,6 +330,88 @@ pub fn status() -> Outcome {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Builds a file at `path`, creating its parents.
+    fn touch(path: &Path) {
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("create dirs");
+        std::fs::write(path, b"").expect("write");
+    }
+
+    #[cfg(unix)]
+    fn link(target: &Path, at: &Path) {
+        std::fs::create_dir_all(at.parent().expect("parent")).expect("create dirs");
+        std::os::unix::fs::symlink(target, at).expect("symlink");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_daemon_is_found_through_the_bundle_symlink() {
+        // `cargo xtask install` links ~/.local/bin/animesh into the bundle, and
+        // macOS reports the link as the running executable. Resolving from the
+        // link alone finds an empty bin directory, which is the failure this
+        // guards: a correct install reporting the daemon missing.
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path();
+        let contents = root.join("Animesh.app/Contents");
+        let cli = contents.join("Helpers/animesh");
+        let daemon = contents.join("MacOS").join(APP_EXECUTABLE);
+        touch(&cli);
+        touch(&daemon);
+
+        let linked = root.join("bin/animesh");
+        link(&cli, &linked);
+
+        assert_eq!(
+            resolve_daemon(&linked).map(|p| std::fs::canonicalize(p).expect("canonicalize")),
+            Some(std::fs::canonicalize(&daemon).expect("canonicalize"))
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_daemon_is_found_through_the_homebrew_symlink() {
+        // Homebrew's bin is symlinks into the Cellar, so every brew install
+        // reaches `service start` through one.
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path();
+        let cellar = root.join("Cellar/animesh/0.6.0/bin");
+        let cli = cellar.join("animesh");
+        let daemon = cellar.join("animesh-app");
+        touch(&cli);
+        touch(&daemon);
+
+        let linked = root.join("bin/animesh");
+        link(&cli, &linked);
+
+        assert_eq!(
+            resolve_daemon(&linked).map(|p| std::fs::canonicalize(p).expect("canonicalize")),
+            Some(std::fs::canonicalize(&daemon).expect("canonicalize"))
+        );
+    }
+
+    #[test]
+    fn the_daemon_is_found_beside_an_unlinked_cli() {
+        // `target/release/animesh` from a checkout, with no link involved.
+        let temp = tempfile::tempdir().expect("tempdir");
+        let cli = temp.path().join("animesh");
+        let daemon = temp.path().join("animesh-app");
+        touch(&cli);
+        touch(&daemon);
+
+        assert_eq!(
+            resolve_daemon(&cli).map(|p| std::fs::canonicalize(p).expect("canonicalize")),
+            Some(std::fs::canonicalize(&daemon).expect("canonicalize"))
+        );
+    }
+
+    #[test]
+    fn a_cli_with_no_daemon_beside_it_resolves_to_nothing() {
+        // A partial install must be reported, never guessed at.
+        let temp = tempfile::tempdir().expect("tempdir");
+        let cli = temp.path().join("animesh");
+        touch(&cli);
+        assert_eq!(resolve_daemon(&cli), None);
+    }
 
     #[test]
     fn the_unit_launches_the_binary_that_wrote_it() {
