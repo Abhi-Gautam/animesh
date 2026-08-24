@@ -1,3 +1,6 @@
+# typed: false
+# frozen_string_literal: true
+
 # Homebrew formula for animesh.
 #
 # This directory is what makes the repository its own tap: Homebrew looks for
