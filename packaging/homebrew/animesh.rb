@@ -8,11 +8,16 @@
 # Second, the product on Linux is a CLI and a daemon, which is what a formula is
 # for; the cask can come later on macOS once there is a Developer ID.
 #
-# head-only until the first tag. `url` and `sha256` land with v1; nothing here
-# can be pinned to an archive that does not exist yet.
+# Builds from the tagged source archive rather than shipping a prebuilt binary.
+# On macOS the daemon has to live in an app bundle that is signed on the machine
+# it runs on, and a formula that compiles is a shorter path to that than one
+# that downloads, re-signs and hopes. The release also publishes prebuilt
+# tarballs for people who would rather not compile.
 class Animesh < Formula
   desc "Personal release radar for anime and other scheduled media"
   homepage "https://github.com/Abhi-Gautam/animesh"
+  url "https://github.com/Abhi-Gautam/animesh/archive/refs/tags/v0.6.0.tar.gz"
+  sha256 "__SOURCE_SHA256__"
   license "MIT"
   head "https://github.com/Abhi-Gautam/animesh.git", branch: "master"
 
@@ -32,6 +37,10 @@ class Animesh < Formula
       # systemd unit launches. Installing only the CLI would leave
       # `animesh service start` with nothing to register.
       system "cargo", "install", *std_cargo_args(path: ".")
+
+      # What makes a notification server show Animesh by name in its per-app
+      # settings, instead of an unnamed sender.
+      (share/"applications").install "assets/animesh.desktop"
     end
   end
 
@@ -46,6 +55,10 @@ class Animesh < Formula
         animesh search "one piece"
         animesh follow 21
         animesh next
+
+      To let any AI agent read and edit your library, install the agent skill:
+
+        animesh skill install
 
     TEXT
 
@@ -79,5 +92,16 @@ class Animesh < Formula
     # hanging or reporting success: exit 3 is the retryable category.
     output = shell_output("#{bin}/animesh next 2>&1", 3)
     assert_match "not running", output
+
+    # The machine-readable mode is the agent contract, and it has to hold in the
+    # failure case too — one JSON document on stdout, with a stable code.
+    document = JSON.parse(shell_output("#{bin}/animesh --json next", 3))
+    refute document.fetch("ok")
+    assert_equal "unavailable", document.dig("error", "code")
+
+    # The CLI must find the daemon through the symlink Homebrew installs it
+    # behind. Resolving from the link alone finds an empty bin and reports a
+    # correct install as broken.
+    assert_predicate bin/"animesh", :symlink? if OS.mac?
   end
 end

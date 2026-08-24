@@ -22,15 +22,11 @@ every tool that asks.
 
 ## Status
 
-animesh is in active development and not yet packaged for installation.
+animesh is in active development. The daemon, the CLI, notifications and the
+agent skill are shipped; installation is from Homebrew on macOS and Linux.
 
-**Next milestone:** ship v1 as a daemon and CLI on both macOS and Linux —
-installable from Homebrew, with the full search/follow/`next` path usable with or
-without notifications, and native notifications wherever the desktop provides them.
-
-The broader goals—richer local data, backlog and history, TUI and other surfaces,
-streaming availability, and cross-media support—remain unchanged and come after
-this milestone.
+The broader goals—richer local data, backlog and history, a window and other
+surfaces, streaming availability, and cross-media support—remain unchanged.
 
 ## Surfaces
 
@@ -40,15 +36,18 @@ Everything else is a client of it over a user-private Unix socket.
 - **CLI** — complete. Every action is reachable here, with no desktop session.
 - **Menu bar** — a glance at what is next, and a refresh. macOS only.
 - **Notifications** — a reminder at airtime. Optional; nothing else depends on it.
+- **Agents** — the same CLI in JSON, published as an Agent Skill. See below.
 
 ## Install
 
-Not tagged yet, so the tap installs from `master`:
-
 ```bash
-brew install --HEAD Abhi-Gautam/animesh/animesh
+brew install Abhi-Gautam/animesh/animesh
 animesh service start
 ```
+
+Prebuilt tarballs for macOS (Apple Silicon and Intel) and Linux x86_64 are
+attached to each [release](https://github.com/Abhi-Gautam/animesh/releases), and
+each one carries an `INSTALL.txt`.
 
 `service start` registers the daemon with launchd or systemd, starts it, and
 keeps it running across restarts. On macOS it will ask for notification
@@ -66,12 +65,32 @@ animesh list                 # everything you follow
 animesh drop 1               # stop following, by media id
 animesh refresh              # pull schedules now
 animesh status               # health, and what to do about it
+animesh skill install        # let any AI agent read and edit your library
 ```
 
 `service` also takes `stop`, `restart` and `status`. It is a repair tool — the
 daemon is registered at install and is not otherwise your concern.
 
 Exit codes: `0` success, `1` bad input, `2` needs intervention, `3` temporary—retry.
+
+## Agents
+
+Every command takes `--json` and answers with one line: `{"data":..,"kind":..,
+"ok":true}`, or `{"error":{"code":..},"ok":false}` on failure. The `code` is
+stable; the message is prose.
+
+```bash
+animesh --json next -n 3
+```
+
+`animesh skill install` writes an [Agent Skill](https://agentskills.io) to
+`~/.agents/skills/animesh/`, the vendor-neutral location read by Codex, Cursor,
+Gemini CLI, Copilot, OpenCode and Goose, and mirrors it to `~/.claude/skills/`
+when Claude Code is installed. After that, an agent can answer what is airing
+tonight, follow a show for you, or read what you watch before recommending
+anything — against your library, on your machine, with no account anywhere.
+
+`animesh skill status` says where it landed; `animesh skill uninstall` removes it.
 
 ## Development
 
