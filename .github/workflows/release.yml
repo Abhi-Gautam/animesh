@@ -113,8 +113,28 @@ jobs:
             ${{ env.NAME }}.tar.gz
             ${{ env.NAME }}.tar.gz.sha256
 
+  crates-io:
+    name: crates.io
+    needs: [version, build]
+    runs-on: ubuntu-24.04
+    # Trusted Publishing: register this workflow on
+    # https://crates.io/crates/animesh/settings/trusted-publishing
+    # (owner Abhi-Gautam, repo animesh, workflow release.yml). No API token.
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: rust-lang/crates-io-auth-action@v1
+        id: auth
+      - name: Publish
+        run: cargo publish --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+
   release:
-    name: Publish
+    name: GitHub Release
     needs: [version, build]
     runs-on: ubuntu-24.04
     permissions:

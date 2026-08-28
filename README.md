@@ -28,6 +28,16 @@ animesh service start
 
 The tap is this repository, so the formula always matches the code.
 
+From crates.io:
+
+```bash
+cargo install animesh --locked
+animesh service start
+```
+
+On Linux that is the full product. On macOS notifications need an app bundle,
+so prefer Homebrew there.
+
 Prebuilt tarballs for macOS (Apple Silicon and Intel) and Linux x86_64 are
 attached to each [release](https://github.com/Abhi-Gautam/animesh/releases),
 each with an `INSTALL.txt`.
