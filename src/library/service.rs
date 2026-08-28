@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use crate::domain::ids::{
-    AniListId, BoundedText, FetchId, InstallationUuid, MediaId, UnixTimestamp,
+    AniListId, BoundedText, FetchId, InstallationUuid, MediaId, Source, SourceKey, UnixTimestamp,
 };
 use crate::domain::media::{MediaObservation, MAX_TITLE_LEN};
 use crate::domain::notification::{JobOutcome, OsIdentifier, NATIVE_CAPACITY};
@@ -22,11 +22,13 @@ use crate::domain::release::FollowState;
 use crate::domain::time::{JitterSource, WallClock};
 use crate::error::{AppError, ErrorCode};
 use crate::ipc::protocol::PROTOCOL_VERSION;
-use crate::sources::anilist::client::{AniListClient, FetchOutcome, RawResponse};
+use crate::sources::anilist::client::AniListClient;
 use crate::sources::anilist::parser::ItemResult;
 use crate::sources::anilist::{
     decode_batch, decode_detail, decode_search, queries, BatchDecode, DetailDecode, SearchDecode,
 };
+use crate::sources::fetch::{FetchOutcome, RawResponse};
+use crate::sources::tvmaze::TvMazeClient;
 use crate::store::connection::{Store, StoreError};
 use crate::store::{graph, read_models, releases};
 
@@ -39,6 +41,7 @@ use super::reducers::{
 pub struct Library {
     store: Store,
     source: AniListClient,
+    tvmaze: TvMazeClient,
     clock: Arc<dyn WallClock>,
     jitter: Arc<dyn JitterSource>,
     installation: InstallationUuid,
@@ -68,6 +71,7 @@ impl Library {
     pub fn new(
         store: Store,
         source: AniListClient,
+        tvmaze: TvMazeClient,
         clock: Arc<dyn WallClock>,
         jitter: Arc<dyn JitterSource>,
         installation: InstallationUuid,
@@ -77,6 +81,7 @@ impl Library {
         Self {
             store,
             source,
+            tvmaze,
             clock,
             jitter,
             installation,
@@ -201,6 +206,100 @@ impl Library {
         }
     }
 
+    /// Search TVmaze. An empty query lists currently airing English-language
+    /// US broadcasts and streams rather than matching a title.
+    pub async fn search_tv(
+        &self,
+        query: Option<&str>,
+    ) -> Result<Vec<crate::domain::media::SearchCandidate>, AppError> {
+        let now = self.now();
+        self.check_tv_available(now).await?;
+
+        if let Some(query) = query.map(str::trim).filter(|q| !q.is_empty()) {
+            let encoded = crate::sources::tvmaze::client::encode_query(query);
+            let response = self
+                .tvmaze
+                .get(&format!("/search/shows?q={encoded}"), now)
+                .await;
+            self.record_tv_rate_state(&response, now).await?;
+            let body = self.usable_tv_body(&response)?;
+            let hits: Vec<crate::sources::tvmaze::dto::SearchHit> = serde_json::from_str(&body)
+                .map_err(|e| {
+                    AppError::new(
+                        ErrorCode::SourceUnavailable,
+                        format!("TVmaze sent an unreadable search: {e}"),
+                    )
+                })?;
+            return Ok(hits
+                .iter()
+                .filter_map(|hit| crate::sources::tvmaze::parser::parse_candidate(&hit.show).ok())
+                .take(20)
+                .collect());
+        }
+
+        let broadcast = self.tvmaze.get("/schedule?country=US", now).await;
+        self.record_tv_rate_state(&broadcast, now).await?;
+        if broadcast.http_status == Some(429) {
+            return Err(self.tv_rate_limited(&broadcast));
+        }
+        let web = self.tvmaze.get("/schedule/web?country=US", now).await;
+        self.record_tv_rate_state(&web, now).await?;
+        if web.http_status == Some(429) {
+            return Err(self.tv_rate_limited(&web));
+        }
+
+        let broadcast_body = match self.usable_tv_body(&broadcast) {
+            Ok(body) => Some(body),
+            Err(error) if error.code == ErrorCode::SourceRateLimited => return Err(error),
+            Err(_) => None,
+        };
+        let web_body = match self.usable_tv_body(&web) {
+            Ok(body) => Some(body),
+            Err(error) if error.code == ErrorCode::SourceRateLimited => return Err(error),
+            Err(_) => None,
+        };
+        if broadcast_body.is_none() && web_body.is_none() {
+            return Err(AppError::new(
+                ErrorCode::SourceUnavailable,
+                "could not reach TVmaze",
+            ));
+        }
+
+        let mut candidates = crate::sources::tvmaze::parser::parse_simulcast(
+            broadcast_body.as_deref().unwrap_or_default(),
+        );
+        for extra in
+            crate::sources::tvmaze::parser::parse_simulcast(web_body.as_deref().unwrap_or_default())
+        {
+            if !candidates.iter().any(|c| c.source_id == extra.source_id) {
+                candidates.push(extra);
+            }
+        }
+        candidates.truncate(20);
+        Ok(candidates)
+    }
+
+    /// Follow a TVmaze show id.
+    pub async fn follow_tv(
+        &self,
+        id: crate::domain::ids::TvMazeId,
+    ) -> Result<FollowResult, AppError> {
+        let key = SourceKey::tvmaze(id);
+        let now = self.now();
+        let existing = self.existing_follow_key(key).await?;
+        match reduce_follow(existing) {
+            FollowPlan::FetchDetail => self.follow_tv_fetch(id, now).await,
+            FollowPlan::Reactivate => {
+                self.follow_from_cache_key(key, FollowOutcome::Reactivated, now)
+                    .await
+            }
+            FollowPlan::AlreadyActive => {
+                self.follow_from_cache_key(key, FollowOutcome::AlreadyActive, now)
+                    .await
+            }
+        }
+    }
+
     // -----------------------------------------------------------------------
     // Follow
     // -----------------------------------------------------------------------
@@ -228,10 +327,18 @@ impl Library {
         &self,
         anilist_id: AniListId,
     ) -> Result<Option<ExistingFollow>, AppError> {
+        self.existing_follow_key(SourceKey::anilist(anilist_id))
+            .await
+    }
+
+    async fn existing_follow_key(
+        &self,
+        key: SourceKey,
+    ) -> Result<Option<ExistingFollow>, AppError> {
         Ok(self
             .store
             .read(move |conn| {
-                let Some(row) = graph::find_source_media(conn, anilist_id)? else {
+                let Some(row) = graph::find_source_media(conn, key)? else {
                     return Ok(None);
                 };
                 let Some(state) = graph::follow_state(conn, row.media_id)? else {
@@ -299,15 +406,33 @@ impl Library {
 
         let record =
             OwnedFetch::from_response(&response, "detail", &fingerprint).stamped(now, duration_ms);
+        let media_id = self
+            .commit_new_follow(SourceKey::anilist(anilist_id), observation, record, now)
+            .await?;
+
+        self.bump_data();
+        self.bump_plan();
+        self.follow_result(media_id, anilist_id, FollowOutcome::NewlyFollowed)
+            .await
+    }
+
+    /// One transaction that commits evidence, observation, follow, and
+    /// projection together. Shared by every source's first-follow path.
+    async fn commit_new_follow(
+        &self,
+        key: SourceKey,
+        observation: MediaObservation,
+        record: OwnedFetch,
+        now: UnixTimestamp,
+    ) -> Result<MediaId, AppError> {
         let installation = self.installation;
         let jitter = Arc::clone(&self.jitter);
-
-        let media_id = self
+        Ok(self
             .store
             .write(move |tx| {
-                let row = match graph::find_source_media(tx, anilist_id)? {
+                let row = match graph::find_source_media(tx, key)? {
                     Some(row) => row,
-                    None => graph::create_media(tx, anilist_id, &observation.display_title, now)?,
+                    None => graph::create_media(tx, key, &observation.display_title, now)?,
                 };
 
                 let fetch_id = graph::insert_fetch(tx, &record.as_record())?;
@@ -344,12 +469,7 @@ impl Library {
 
                 Ok(row.media_id)
             })
-            .await?;
-
-        self.bump_data();
-        self.bump_plan();
-        self.follow_result(media_id, anilist_id, FollowOutcome::NewlyFollowed)
-            .await
+            .await?)
     }
 
     /// Reactivation and already-active both commit without touching the source.
@@ -359,11 +479,21 @@ impl Library {
         outcome: FollowOutcome,
         now: UnixTimestamp,
     ) -> Result<FollowResult, AppError> {
+        self.follow_from_cache_key(SourceKey::anilist(anilist_id), outcome, now)
+            .await
+    }
+
+    async fn follow_from_cache_key(
+        &self,
+        key: SourceKey,
+        outcome: FollowOutcome,
+        now: UnixTimestamp,
+    ) -> Result<FollowResult, AppError> {
         let installation = self.installation;
         let media_id = self
             .store
             .write(move |tx| {
-                let row = graph::find_source_media(tx, anilist_id)?.ok_or_else(|| {
+                let row = graph::find_source_media(tx, key)?.ok_or_else(|| {
                     StoreError::Integrity("follow vanished between read and write".into())
                 })?;
                 graph::set_follow(tx, row.media_id, FollowState::Active, now)?;
@@ -376,7 +506,7 @@ impl Library {
             self.bump_data();
             self.bump_plan();
         }
-        self.follow_result(media_id, anilist_id, outcome).await
+        self.follow_result_key(media_id, key, outcome).await
     }
 
     async fn follow_result(
@@ -385,17 +515,25 @@ impl Library {
         anilist_id: AniListId,
         outcome: FollowOutcome,
     ) -> Result<FollowResult, AppError> {
-        let now = self.now();
+        self.follow_result_key(media_id, SourceKey::anilist(anilist_id), outcome)
+            .await
+    }
+
+    async fn follow_result_key(
+        &self,
+        media_id: MediaId,
+        key: SourceKey,
+        outcome: FollowOutcome,
+    ) -> Result<FollowResult, AppError> {
         let summaries = self.list_follows().await?;
         let summary = summaries
             .into_iter()
             .find(|s| s.media_id == media_id)
             .ok_or_else(|| AppError::internal("the follow just committed is not readable"))?;
-
-        let _ = now;
         Ok(FollowResult {
             media_id,
-            anilist_id,
+            source: key.source,
+            source_id: key.id,
             display_title: summary.display_title,
             outcome,
             upcoming: summary.upcoming,
@@ -474,7 +612,7 @@ impl Library {
                 let earliest = read_models::upcoming(conn, now, 1, 0)?.into_iter().next();
                 let surface = releases::surface_state(conn)?;
                 let counts = releases::counts(conn, NATIVE_CAPACITY)?;
-                let blocked_until = graph::source_blocked_until(conn)?;
+                let blocked_until = graph::any_source_blocked_until(conn)?;
                 Ok(HealthSnapshot {
                     process_version: crate::PROCESS_VERSION.to_owned(),
                     schema_version,
@@ -509,23 +647,73 @@ impl Library {
     pub async fn refresh_due(&self, budget: u32) -> Result<RefreshPass, AppError> {
         let now = self.now();
 
-        if self.check_source_available(now).await.is_err() {
-            return Ok(RefreshPass::throttled());
-        }
-
         let due = self
             .store
             .read(move |conn| graph::due_for_refresh(conn, now, budget))
             .await?;
 
         if due.is_empty() {
+            // A 429 records retry_after on the rows, so the due set can be
+            // empty on the next tick while the source is still blocked. Report
+            // that as throttled rather than idle.
+            if self.check_source_available(now).await.is_err()
+                || self.check_tv_available(now).await.is_err()
+            {
+                return Ok(RefreshPass::throttled());
+            }
             return Ok(RefreshPass::default());
         }
 
+        let anilist: Vec<_> = due
+            .iter()
+            .copied()
+            .filter(|row| row.source_key.source == Source::AniList)
+            .collect();
+        let tvmaze: Vec<_> = due
+            .iter()
+            .copied()
+            .filter(|row| row.source_key.source == Source::TvMaze)
+            .collect();
+
+        let mut pass = RefreshPass::default();
+        let mut throttled = false;
+
+        if !anilist.is_empty() {
+            if self.check_source_available(now).await.is_err() {
+                throttled = true;
+            } else {
+                pass = self.refresh_anilist_due(&anilist, now).await?;
+            }
+        }
+        if !tvmaze.is_empty() {
+            if self.check_tv_available(now).await.is_err() {
+                throttled = true;
+            } else {
+                let tv = self.refresh_tvmaze_due(&tvmaze, now).await?;
+                pass.applied += tv.applied;
+                pass.stale += tv.stale;
+                pass.failed += tv.failed;
+            }
+        }
+
+        if !pass.did_work() && throttled {
+            return Ok(RefreshPass::throttled());
+        }
+        Ok(pass)
+    }
+
+    async fn refresh_anilist_due(
+        &self,
+        due: &[graph::DueRow],
+        now: UnixTimestamp,
+    ) -> Result<RefreshPass, AppError> {
         // Claim before fetching. A response whose generation no longer matches
         // may still become evidence but must not replace projection.
-        let claims = self.claim_all(&due, now).await?;
-        let ids: Vec<AniListId> = due.iter().map(|row| row.anilist_id).collect();
+        let claims = self.claim_all(due, now).await?;
+        let ids: Vec<AniListId> = due
+            .iter()
+            .map(|row| AniListId::from_numeric(row.source_key.id))
+            .collect();
 
         let response = self
             .source
@@ -547,7 +735,7 @@ impl Library {
             let code = response.outcome.as_str().to_owned();
             let evidence = OwnedFetch::from_response(&response, "batch", &fingerprint)
                 .stamped(now, duration_ms);
-            return self.fail_all(&due, &claims, evidence, now, &code).await;
+            return self.fail_all(due, &claims, evidence, now, &code).await;
         };
 
         let decode = decode_batch(&ids, &body);
@@ -558,14 +746,100 @@ impl Library {
 
         match decode {
             BatchDecode::Items(items) => {
-                self.apply_items(&due, &claims, items, evidence, now).await
+                let items = items
+                    .into_iter()
+                    .map(|(id, result)| (SourceKey::anilist(id), ApplyItem::from(result)))
+                    .collect();
+                self.apply_items(due, &claims, items, evidence, now).await
             }
             // Integrity, decode, and GraphQL failures all preserve projection.
             _ => {
                 let code = failure_code.unwrap_or_else(|| "decode".to_owned());
-                self.fail_all(&due, &claims, evidence, now, &code).await
+                self.fail_all(due, &claims, evidence, now, &code).await
             }
         }
+    }
+
+    async fn refresh_tvmaze_due(
+        &self,
+        due: &[graph::DueRow],
+        now: UnixTimestamp,
+    ) -> Result<RefreshPass, AppError> {
+        let claims = self.claim_all(due, now).await?;
+        let mut pass = RefreshPass::default();
+        for (index, (row, generation)) in due.iter().zip(claims.iter().copied()).enumerate() {
+            let id = crate::domain::ids::TvMazeId::from_numeric(row.source_key.id);
+            let response = self
+                .tvmaze
+                .get(&format!("/shows/{id}?embed=nextepisode"), now)
+                .await;
+            self.record_tv_rate_state(&response, now).await?;
+            let fingerprint = format!("id={id}");
+            let evidence = OwnedFetch::from_response(&response, "detail", &fingerprint)
+                .for_source(Source::TvMaze)
+                .stamped(now, response.duration_ms);
+            if response.http_status == Some(429) {
+                let one = self
+                    .fail_all(
+                        std::slice::from_ref(row),
+                        &[generation],
+                        evidence,
+                        now,
+                        "http",
+                    )
+                    .await?;
+                pass.failed += one.failed;
+                for (rest, gen) in due.iter().zip(claims.iter().copied()).skip(index + 1) {
+                    self.record_item_failure(rest, gen, now, "http").await?;
+                    pass.failed += 1;
+                }
+                break;
+            }
+            let Ok(body) = self.usable_tv_body(&response) else {
+                pass.failed += 1;
+                let _ = self
+                    .fail_all(
+                        std::slice::from_ref(row),
+                        &[generation],
+                        evidence,
+                        now,
+                        "http",
+                    )
+                    .await;
+                continue;
+            };
+            match crate::sources::tvmaze::parse_detail(id, &body) {
+                crate::sources::tvmaze::DetailResult::Observed(observation) => {
+                    let mut items = std::collections::BTreeMap::new();
+                    items.insert(row.source_key, ApplyItem::Observed(observation));
+                    let one = self
+                        .apply_items(
+                            std::slice::from_ref(row),
+                            &[generation],
+                            items,
+                            evidence,
+                            now,
+                        )
+                        .await?;
+                    pass.applied += one.applied;
+                    pass.stale += one.stale;
+                    pass.failed += one.failed;
+                }
+                _ => {
+                    pass.failed += 1;
+                    let _ = self
+                        .fail_all(
+                            std::slice::from_ref(row),
+                            &[generation],
+                            evidence,
+                            now,
+                            "decode",
+                        )
+                        .await;
+                }
+            }
+        }
+        Ok(pass)
     }
 
     async fn claim_all(
@@ -593,7 +867,7 @@ impl Library {
         &self,
         due: &[graph::DueRow],
         claims: &[i64],
-        items: std::collections::BTreeMap<AniListId, ItemResult>,
+        items: std::collections::BTreeMap<SourceKey, ApplyItem>,
         evidence: OwnedFetch,
         now: UnixTimestamp,
     ) -> Result<RefreshPass, AppError> {
@@ -609,12 +883,12 @@ impl Library {
         let mut pass = RefreshPass::default();
 
         for (row, generation) in due.iter().zip(claims.iter().copied()) {
-            let Some(result) = items.get(&row.anilist_id) else {
+            let Some(result) = items.get(&row.source_key) else {
                 continue;
             };
 
             match result {
-                ItemResult::Observed(observation) => {
+                ApplyItem::Observed(observation) => {
                     let observation = (**observation).clone();
                     let row = *row;
                     let installation = self.installation;
@@ -669,7 +943,7 @@ impl Library {
 
                             let source_row = graph::SourceMediaRow {
                                 source_media_id: row.source_media_id,
-                                anilist_id: row.anilist_id,
+                                source_key: row.source_key,
                                 media_id: row.media_id,
                                 current_observation_id: Some(observation_id),
                             };
@@ -695,12 +969,12 @@ impl Library {
 
                 // An omitted or invalid item preserves everything and only
                 // records the failure, so the schedule survives a bad response.
-                ItemResult::Missing => {
+                ApplyItem::Missing => {
                     self.record_item_failure(row, generation, now, "missing")
                         .await?;
                     pass.failed += 1;
                 }
-                ItemResult::Invalid(error) => {
+                ApplyItem::Invalid(error) => {
                     self.record_item_failure(row, generation, now, &format!("item:{error}"))
                         .await?;
                     pass.failed += 1;
@@ -804,8 +1078,117 @@ impl Library {
     ///
     /// The check reads the database rather than memory, so a 429 survives a
     /// restart instead of being forgotten with the process.
+    async fn check_tv_available(&self, now: UnixTimestamp) -> Result<(), AppError> {
+        let blocked = self
+            .store
+            .read(move |conn| graph::source_blocked_until(conn, Source::TvMaze))
+            .await?;
+        match blocked {
+            Some(deadline) if deadline.get() > now.get() => {
+                let wait = u32::try_from(now.seconds_until(deadline)).unwrap_or(u32::MAX);
+                Err(AppError::new(
+                    ErrorCode::SourceRateLimited,
+                    "TVmaze is rate limiting requests",
+                )
+                .with_retry_after(wait))
+            }
+            _ => Ok(()),
+        }
+    }
+
+    async fn record_tv_rate_state(
+        &self,
+        response: &RawResponse,
+        now: UnixTimestamp,
+    ) -> Result<(), AppError> {
+        let rate_limited = response.http_status == Some(429);
+        let blocked_until = rate_limited.then(|| {
+            let wait = i64::from(response.retry_after_secs.unwrap_or(10));
+            now.saturating_add_secs(wait)
+        });
+        if blocked_until.is_none() {
+            return Ok(());
+        }
+        self.store
+            .write(move |tx| {
+                graph::set_source_throttle(tx, Source::TvMaze, blocked_until, None, None, now)
+            })
+            .await?;
+        Ok(())
+    }
+
+    fn tv_rate_limited(&self, response: &RawResponse) -> AppError {
+        AppError::new(
+            ErrorCode::SourceRateLimited,
+            "TVmaze is rate limiting requests",
+        )
+        .with_retry_after(response.retry_after_secs.unwrap_or(10))
+    }
+
+    fn usable_tv_body(&self, response: &RawResponse) -> Result<String, AppError> {
+        if response.http_status == Some(429) {
+            return Err(self.tv_rate_limited(response));
+        }
+        match (&response.body, response.outcome) {
+            (Some(body), _) => Ok(body.clone()),
+            (None, FetchOutcome::Timeout) => Err(AppError::new(
+                ErrorCode::SourceUnavailable,
+                "TVmaze did not respond in time",
+            )),
+            (None, _) => Err(AppError::new(
+                ErrorCode::SourceUnavailable,
+                "could not reach TVmaze",
+            )),
+        }
+    }
+
+    async fn follow_tv_fetch(
+        &self,
+        id: crate::domain::ids::TvMazeId,
+        now: UnixTimestamp,
+    ) -> Result<FollowResult, AppError> {
+        self.check_tv_available(now).await?;
+        let response = self
+            .tvmaze
+            .get(&format!("/shows/{id}?embed=nextepisode"), now)
+            .await;
+        self.record_tv_rate_state(&response, now).await?;
+        let fingerprint = format!("id={id}");
+        let duration_ms = response.duration_ms;
+        let evidence = || {
+            OwnedFetch::from_response(&response, "detail", &fingerprint)
+                .for_source(Source::TvMaze)
+                .stamped(now, duration_ms)
+        };
+        let body = match self.usable_tv_body(&response) {
+            Ok(body) => body,
+            Err(error) => {
+                self.record_fetch(evidence()).await?;
+                return Err(error);
+            }
+        };
+        let observation = match crate::sources::tvmaze::parse_detail(id, &body) {
+            crate::sources::tvmaze::DetailResult::Observed(observation) => *observation,
+            failed => {
+                self.record_fetch(evidence()).await?;
+                return Err(tv_detail_error(id, &failed));
+            }
+        };
+        let key = SourceKey::tvmaze(id);
+        let media_id = self
+            .commit_new_follow(key, observation, evidence(), now)
+            .await?;
+        self.bump_data();
+        self.bump_plan();
+        self.follow_result_key(media_id, key, FollowOutcome::NewlyFollowed)
+            .await
+    }
+
     async fn check_source_available(&self, now: UnixTimestamp) -> Result<(), AppError> {
-        let blocked = self.store.read(graph::source_blocked_until).await?;
+        let blocked = self
+            .store
+            .read(move |conn| graph::source_blocked_until(conn, Source::AniList))
+            .await?;
 
         match blocked {
             Some(deadline) if deadline.get() > now.get() => {
@@ -846,7 +1229,14 @@ impl Library {
         let reset_at = response.rate_limit_reset_at;
         self.store
             .write(move |tx| {
-                graph::set_source_throttle(tx, blocked_until, remaining, reset_at, now)
+                graph::set_source_throttle(
+                    tx,
+                    Source::AniList,
+                    blocked_until,
+                    remaining,
+                    reset_at,
+                    now,
+                )
             })
             .await?;
         Ok(())
@@ -884,6 +1274,26 @@ impl Library {
 
     fn bump_plan(&self) {
         self.plan_generation.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+/// A refresh item keyed by the identity that due rows already carry.
+///
+/// AniList batches and TVmaze per-title GETs both produce this, so apply cannot
+/// confuse AniList 21 with TVmaze 21.
+enum ApplyItem {
+    Observed(Box<MediaObservation>),
+    Missing,
+    Invalid(String),
+}
+
+impl From<ItemResult> for ApplyItem {
+    fn from(result: ItemResult) -> Self {
+        match result {
+            ItemResult::Observed(observation) => Self::Observed(observation),
+            ItemResult::Missing => Self::Missing,
+            ItemResult::Invalid(error) => Self::Invalid(error.to_string()),
+        }
     }
 }
 
@@ -938,6 +1348,31 @@ fn degraded_reasons(
 ///
 /// Separate from the match that stores the evidence so the same decode drives
 /// both, and a new variant cannot be classified two different ways.
+fn tv_detail_error(
+    id: crate::domain::ids::TvMazeId,
+    decode: &crate::sources::tvmaze::DetailResult,
+) -> AppError {
+    match decode {
+        crate::sources::tvmaze::DetailResult::Observed(_) => {
+            AppError::internal("a successful decode reached the failure path")
+        }
+        crate::sources::tvmaze::DetailResult::NotFound => {
+            AppError::not_found(format!("TVmaze has no show with id {id}"))
+        }
+        crate::sources::tvmaze::DetailResult::Invalid(error) => AppError::new(
+            ErrorCode::SourceIntegrity,
+            format!("TVmaze sent an unusable item: {error}"),
+        ),
+        crate::sources::tvmaze::DetailResult::IdMismatch {
+            requested,
+            returned,
+        } => AppError::new(
+            ErrorCode::SourceIntegrity,
+            format!("asked TVmaze for {requested} and it answered about {returned}"),
+        ),
+    }
+}
+
 fn detail_error(anilist_id: AniListId, decode: &DetailDecode) -> AppError {
     match decode {
         DetailDecode::Observed(_) => {
@@ -976,7 +1411,7 @@ fn project(
     let scheduled = releases::scheduled_event(tx, row.source_media_id)?;
     let same_key = match observation.next_airing {
         Some(next) => {
-            let key = crate::domain::release::source_event_key(next.episode)
+            let key = crate::domain::release::source_event_key(next.episode, next.season)
                 .map_err(|e| StoreError::Integrity(e.to_string()))?;
             releases::event_by_key(tx, row.source_media_id, key.as_str())?
         }
@@ -1015,7 +1450,7 @@ fn project(
         existing: existing.as_ref(),
         os_identifier: OsIdentifier::new(&installation, &event.uuid),
         title: observation.display_title.as_str(),
-        anilist_id: row.anilist_id,
+        source_key: row.source_key,
         now,
     };
     let decision =
@@ -1043,7 +1478,7 @@ fn renotify_for(
     now: UnixTimestamp,
 ) -> Result<(), StoreError> {
     let mut stmt = tx.prepare(
-        "SELECT re.release_event_id, sm.source_id, m.display_title
+        "SELECT re.release_event_id, sm.source, sm.source_id, m.display_title
          FROM release_events re
          JOIN source_media sm ON sm.source_media_id = re.source_media_id
          JOIN media m ON m.media_id = re.media_id
@@ -1053,18 +1488,22 @@ fn renotify_for(
         .query_map([media_id.get()], |row| {
             Ok((
                 row.get::<_, i64>(0)?,
-                row.get::<_, i64>(1)?,
-                row.get::<_, String>(2)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, String>(3)?,
             ))
         })?
         .collect::<Result<Vec<_>, _>>()?;
     drop(stmt);
 
-    for (raw_event, raw_anilist, title) in rows {
+    for (raw_event, raw_source, raw_id, title) in rows {
         let event_id = crate::domain::ids::ReleaseEventId::new(raw_event)
             .map_err(|e| StoreError::Integrity(e.to_string()))?;
-        let anilist_id =
-            AniListId::new(raw_anilist).map_err(|e| StoreError::Integrity(e.to_string()))?;
+        let source =
+            Source::parse(&raw_source).map_err(|e| StoreError::Integrity(e.to_string()))?;
+        let id = crate::domain::ids::SourceNumericId::new(raw_id)
+            .map_err(|e| StoreError::Integrity(e.to_string()))?;
+        let source_key = SourceKey { source, id };
 
         let Some(event) = releases::event_by_id(tx, event_id)? else {
             continue;
@@ -1079,7 +1518,7 @@ fn renotify_for(
             existing: Some(&existing),
             os_identifier: OsIdentifier::new(&installation, &event.uuid),
             title: &title,
-            anilist_id,
+            source_key,
             now,
         };
         let decision =
@@ -1101,7 +1540,7 @@ fn summaries(
     )?;
 
     let mut stmt = conn.prepare(
-        "SELECT f.media_id, sm.source_id, m.display_title, f.state,
+        "SELECT f.media_id, sm.source, sm.source_id, m.display_title, f.state,
                 rs.last_success_at, rs.refresh_after, rs.retry_after
          FROM follows f
          JOIN media m ON m.media_id = f.media_id
@@ -1114,19 +1553,20 @@ fn summaries(
         .query_map([], |row| {
             Ok((
                 row.get::<_, i64>(0)?,
-                row.get::<_, i64>(1)?,
-                row.get::<_, String>(2)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
                 row.get::<_, String>(3)?,
-                row.get::<_, Option<i64>>(4)?,
+                row.get::<_, String>(4)?,
                 row.get::<_, Option<i64>>(5)?,
                 row.get::<_, Option<i64>>(6)?,
+                row.get::<_, Option<i64>>(7)?,
             ))
         })?
         .collect::<Result<Vec<_>, _>>()?;
 
     rows.into_iter()
         .map(
-            |(media_id, anilist_id, title, state, success, refresh_after, retry_after)| {
+            |(media_id, source, source_id, title, state, success, refresh_after, retry_after)| {
                 let bad = |e: String| StoreError::Integrity(e);
                 let media_id = MediaId::new(media_id).map_err(|e| bad(e.to_string()))?;
                 let freshness = if retry_after.is_some_and(|d| d > now.get()) {
@@ -1137,9 +1577,13 @@ fn summaries(
                     Freshness::Fresh
                 };
 
+                let source = Source::parse(&source).map_err(|e| bad(e.to_string()))?;
+                let source_id = crate::domain::ids::SourceNumericId::new(source_id)
+                    .map_err(|e| bad(e.to_string()))?;
                 Ok(FollowSummary {
                     media_id,
-                    anilist_id: AniListId::new(anilist_id).map_err(|e| bad(e.to_string()))?,
+                    source,
+                    source_id,
                     display_title: BoundedText::truncating(MAX_TITLE_LEN, &title)
                         .ok_or_else(|| bad("empty title".into()))?,
                     state: FollowState::parse(&state).map_err(|e| bad(e.to_string()))?,
@@ -1161,6 +1605,7 @@ fn summaries(
 /// inside the transaction.
 struct OwnedFetch {
     attempt_uuid: String,
+    source: Source,
     request_kind: String,
     fingerprint: String,
     requested_at: UnixTimestamp,
@@ -1179,6 +1624,7 @@ impl OwnedFetch {
         let completed = UnixTimestamp::EPOCH;
         Self {
             attempt_uuid: uuid::Uuid::new_v4().to_string(),
+            source: Source::AniList,
             request_kind: kind.to_owned(),
             fingerprint: fingerprint.to_owned(),
             requested_at: completed,
@@ -1193,6 +1639,11 @@ impl OwnedFetch {
         }
     }
 
+    fn for_source(mut self, source: Source) -> Self {
+        self.source = source;
+        self
+    }
+
     fn stamped(mut self, now: UnixTimestamp, duration_ms: u64) -> Self {
         let started = now.saturating_add_secs(-(duration_ms as i64 / 1000));
         self.requested_at = started;
@@ -1203,6 +1654,7 @@ impl OwnedFetch {
     fn as_record(&self) -> graph::FetchRecord<'_> {
         graph::FetchRecord {
             attempt_uuid: &self.attempt_uuid,
+            source: self.source,
             request_kind: &self.request_kind,
             request_fingerprint: &self.fingerprint,
             requested_at: self.requested_at,

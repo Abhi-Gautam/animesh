@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 
-use animesh::domain::ids::{AniListId, UnixTimestamp};
+use animesh::domain::ids::{AniListId, TvMazeId, UnixTimestamp};
 use animesh::domain::read_models::Freshness;
 use animesh::domain::time::{ManualClock, NoJitter, WallClock};
 use animesh::library::service::Library;
@@ -68,6 +68,10 @@ impl World {
 }
 
 async fn world(base_url: String) -> World {
+    world_with(base_url, "http://127.0.0.1:1".into()).await
+}
+
+async fn world_with(anilist_url: String, tvmaze_url: String) -> World {
     let dir = tempfile::tempdir().expect("tempdir");
     let db_path = dir.path().join("library.db");
 
@@ -88,7 +92,8 @@ async fn world(base_url: String) -> World {
         db_path,
         library: Arc::new(Library::new(
             store,
-            animesh::sources::anilist::client::AniListClient::new(base_url).expect("client"),
+            animesh::sources::anilist::client::AniListClient::new(anilist_url).expect("client"),
+            animesh::sources::tvmaze::TvMazeClient::new(tvmaze_url).expect("tvmaze"),
             Arc::clone(&clock) as Arc<dyn WallClock>,
             Arc::new(NoJitter),
             installation,
@@ -96,6 +101,17 @@ async fn world(base_url: String) -> World {
         )),
         clock,
     }
+}
+
+fn tv_id(value: i64) -> TvMazeId {
+    TvMazeId::new(value).expect("valid id")
+}
+
+fn tv_show_body(id: i64, name: &str, season: i32, episode: i64, airing_at: i64) -> String {
+    let airstamp = at(airing_at).to_utc().to_rfc3339();
+    format!(
+        r#"{{"id":{id},"name":"{name}","type":"Scripted","language":"English","status":"Running","premiered":"2011-04-17","_embedded":{{"nextepisode":{{"season":{season},"number":{episode},"airstamp":"{airstamp}"}}}}}}"#
+    )
 }
 
 #[tokio::test]
@@ -647,4 +663,90 @@ async fn one_batch_response_is_one_row_however_many_titles_it_covers() {
     // Two detail follows, then one batch covering both titles.
     let outcomes: Vec<String> = world.fetches().into_iter().map(|(o, _)| o).collect();
     assert_eq!(outcomes, vec!["success", "success", "success"]);
+}
+
+#[tokio::test]
+async fn a_due_tv_title_refreshes_by_source_key_not_numeric_id() {
+    let mut anilist = mockito::Server::new_async().await;
+    anilist
+        .mock("POST", "/")
+        .with_status(200)
+        .with_body(detail_body(21, "One Piece", Some((5, NOW + 3_600))))
+        .create_async()
+        .await;
+    let mut tv = mockito::Server::new_async().await;
+    tv.mock("GET", "/shows/21?embed=nextepisode")
+        .with_status(200)
+        .with_body(tv_show_body(21, "The Walking Dead", 1, 2, NOW + 3_600))
+        .create_async()
+        .await;
+
+    let world = world_with(anilist.url(), tv.url()).await;
+    world.library.follow(id(21)).await.expect("anilist");
+    world.library.follow_tv(tv_id(21)).await.expect("tvmaze");
+
+    world.clock.advance(7_200);
+    let later = NOW + 7_200;
+    anilist
+        .mock("POST", "/")
+        .with_status(200)
+        .with_body(batch_body(&[media_json(
+            21,
+            "One Piece",
+            Some((6, later + 604_800)),
+        )]))
+        .create_async()
+        .await;
+    tv.mock("GET", "/shows/21?embed=nextepisode")
+        .with_status(200)
+        .with_body(tv_show_body(21, "The Walking Dead", 1, 3, later + 604_800))
+        .create_async()
+        .await;
+
+    let pass = world.library.refresh_due(10).await.expect("refresh");
+    assert_eq!(pass.applied, 2, "{pass:?}");
+
+    let upcoming = world.library.upcoming(None).await.expect("upcoming");
+    let tv_rows: Vec<_> = upcoming
+        .iter()
+        .filter(|row| row.source.as_str() == "tvmaze")
+        .collect();
+    assert!(
+        tv_rows
+            .iter()
+            .any(|row| row.episode.map(|e| e.get()) == Some(3)),
+        "{upcoming:#?}"
+    );
+}
+
+#[tokio::test]
+async fn a_new_tv_season_advances_instead_of_rewinding() {
+    let mut tv = mockito::Server::new_async().await;
+    tv.mock("GET", "/shows/82?embed=nextepisode")
+        .with_status(200)
+        .with_body(tv_show_body(82, "Game of Thrones", 1, 10, NOW + 3_600))
+        .create_async()
+        .await;
+
+    let world = world_with("http://127.0.0.1:1".into(), tv.url()).await;
+    world.library.follow_tv(tv_id(82)).await.expect("follow");
+
+    world.clock.advance(7_200);
+    let later = NOW + 7_200;
+    tv.mock("GET", "/shows/82?embed=nextepisode")
+        .with_status(200)
+        .with_body(tv_show_body(82, "Game of Thrones", 2, 1, later + 604_800))
+        .create_async()
+        .await;
+
+    let pass = world.library.refresh_due(10).await.expect("refresh");
+    assert_eq!(pass.applied, 1, "{pass:?}");
+
+    let upcoming = world.library.upcoming(None).await.expect("upcoming");
+    assert!(
+        upcoming
+            .iter()
+            .any(|row| row.episode.map(|e| e.get()) == Some(1) && !row.aired),
+        "{upcoming:#?}"
+    );
 }

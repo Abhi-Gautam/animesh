@@ -75,8 +75,12 @@ fn render_human(outcome: &Outcome, now: crate::domain::ids::UnixTimestamp) -> St
     };
 
     match response {
-        Response::SearchAnime(candidates) => render::search(candidates),
-        Response::FollowAnilist(result) => render::follow_result(result, now),
+        Response::SearchAnime(candidates) | Response::SearchTv(candidates) => {
+            render::search(candidates)
+        }
+        Response::FollowAnilist(result) | Response::FollowTv(result) => {
+            render::follow_result(result, now)
+        }
         Response::Upcoming(rows) => {
             warn_about_staleness(rows);
             render::upcoming(rows, now)
@@ -128,10 +132,38 @@ async fn execute(cli: Cli) -> Result<Outcome, AppError> {
     let paths = AppPaths::production().map_err(|e| AppError::internal(e.to_string()))?;
 
     let request = match cli.command {
-        Command::Search { query } => Request::SearchAnime {
-            query: query.join(" "),
+        Command::Search { query, tv } => {
+            let joined = query.join(" ");
+            if tv {
+                Request::SearchTv {
+                    query: {
+                        let trimmed = joined.trim();
+                        if trimmed.is_empty() {
+                            None
+                        } else {
+                            Some(trimmed.to_owned())
+                        }
+                    },
+                }
+            } else {
+                Request::SearchAnime { query: joined }
+            }
+        }
+        Command::Follow { id, tv } => match (id, tv) {
+            (crate::cli::args::FollowTarget::TvMaze(id), _) => Request::FollowTv { id },
+            (crate::cli::args::FollowTarget::AniList(_), true) => {
+                return Err(AppError::invalid_argument(
+                    "anilist:N cannot be combined with --tv; drop the flag or use tvmaze:N",
+                ));
+            }
+            (crate::cli::args::FollowTarget::AniList(id), false) => Request::FollowAnilist { id },
+            (crate::cli::args::FollowTarget::Bare(id), true) => Request::FollowTv {
+                id: crate::domain::ids::TvMazeId::from_numeric(id),
+            },
+            (crate::cli::args::FollowTarget::Bare(id), false) => Request::FollowAnilist {
+                id: crate::domain::ids::AniListId::from_numeric(id),
+            },
         },
-        Command::Follow { id } => Request::FollowAnilist { id },
         Command::Next { limit } => Request::Upcoming { limit },
         Command::List => Request::ListFollows,
         Command::Drop { media_id } => Request::Drop { media_id },

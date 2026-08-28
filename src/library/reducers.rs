@@ -4,7 +4,7 @@
 //! decision the caller writes. Follow and refresh call the same reducers, so
 //! there is exactly one place where a schedule change becomes a state change.
 
-use crate::domain::ids::{AniListId, EpisodeNumber, UnixTimestamp};
+use crate::domain::ids::{EpisodeNumber, UnixTimestamp};
 use crate::domain::media::NextAiring;
 use crate::domain::notification::{
     DeliveryMode, NativeRequest, NotificationJobSnapshot, NotificationJobState,
@@ -23,11 +23,11 @@ pub struct ReleaseInputs<'a> {
     pub scheduled: Option<&'a ReleaseEvent>,
     /// An existing event whose key matches the observed episode, in any state.
     pub same_key: Option<&'a ReleaseEvent>,
-    /// The highest episode number ever recorded for this source media.
+    /// The highest (season, episode) ever recorded for this source media.
     ///
-    /// Separate from `scheduled` so a source that rewinds after an event has
-    /// already elapsed is still caught.
-    pub latest_sequence: Option<EpisodeNumber>,
+    /// Season is `None` for AniList. Separate from `scheduled` so a source that
+    /// rewinds after an event has already elapsed is still caught.
+    pub latest_sequence: Option<(Option<i32>, EpisodeNumber)>,
     /// The schedule the source just reported. `None` means an explicit null.
     pub observed: Option<NextAiring>,
     pub now: UnixTimestamp,
@@ -55,17 +55,17 @@ pub fn reduce_release(inputs: ReleaseInputs<'_>) -> ReleaseTransition {
         };
     };
 
-    if let Some(latest) = latest_sequence {
-        if next.episode < latest {
+    if let Some((latest_season, latest_episode)) = latest_sequence {
+        if sequence_ord(next.season, next.episode) < sequence_ord(latest_season, latest_episode) {
             return ReleaseTransition::IntegrityFailure {
-                latest,
+                latest: latest_episode,
                 observed: next.episode,
             };
         }
     }
 
     if let Some(current) = scheduled {
-        if current.sequence_number == Some(next.episode) {
+        if same_episode(current, next) {
             return if current.scheduled_at == next.airing_at {
                 ReleaseTransition::Touch {
                     event_id: current.id,
@@ -89,6 +89,7 @@ pub fn reduce_release(inputs: ReleaseInputs<'_>) -> ReleaseTransition {
             retire: current.id,
             retire_state,
             episode: next.episode,
+            season: next.season,
             scheduled_at: next.airing_at,
         };
     }
@@ -106,9 +107,20 @@ pub fn reduce_release(inputs: ReleaseInputs<'_>) -> ReleaseTransition {
         Some(event) => ReleaseTransition::Touch { event_id: event.id },
         None => ReleaseTransition::Insert {
             episode: next.episode,
+            season: next.season,
             scheduled_at: next.airing_at,
         },
     }
+}
+
+/// AniList has no season, so `(None, 5)` and `(None, 6)` compare as episode-only.
+/// TVmaze restarts per season, so S2E1 is later than S1E10.
+fn sequence_ord(season: Option<i32>, episode: EpisodeNumber) -> (i32, i64) {
+    (season.unwrap_or(0), episode.get())
+}
+
+fn same_episode(current: &ReleaseEvent, next: NextAiring) -> bool {
+    current.season == next.season && current.sequence_number == Some(next.episode)
 }
 
 // ---------------------------------------------------------------------------
@@ -240,7 +252,7 @@ pub struct NotificationInputs<'a> {
     pub existing: Option<&'a NotificationJobSnapshot>,
     pub os_identifier: OsIdentifier,
     pub title: &'a str,
-    pub anilist_id: AniListId,
+    pub source_key: crate::domain::ids::SourceKey,
     pub now: UnixTimestamp,
 }
 
@@ -258,7 +270,7 @@ fn desired_request(inputs: &NotificationInputs<'_>) -> Option<NativeRequest> {
         inputs.event.scheduled_at,
         inputs.title,
         episode,
-        inputs.anilist_id,
+        inputs.source_key,
     ))
 }
 
@@ -319,7 +331,9 @@ pub fn reduce_notification(
 mod tests {
     use super::*;
 
-    use crate::domain::ids::{EventUuid, MediaId, ObservationId, ReleaseEventId, SourceMediaId};
+    use crate::domain::ids::{
+        AniListId, EventUuid, MediaId, ObservationId, ReleaseEventId, SourceMediaId,
+    };
     use crate::domain::notification::CATCH_UP_GRACE_SECS;
     use crate::domain::release::source_event_key;
 
@@ -335,6 +349,7 @@ mod tests {
         NextAiring {
             episode: ep(episode),
             airing_at: at(airing_at),
+            season: None,
         }
     }
 
@@ -344,8 +359,9 @@ mod tests {
             uuid: EventUuid::generate(),
             media_id: MediaId::new(1).expect("valid id"),
             source_media_id: SourceMediaId::new(1).expect("valid id"),
-            source_event_key: source_event_key(ep(episode)).expect("valid key"),
+            source_event_key: source_event_key(ep(episode), None).expect("valid key"),
             sequence_number: Some(ep(episode)),
+            season: None,
             scheduled_at: at(scheduled_at),
             state,
             schedule_revision: 1,
@@ -358,7 +374,7 @@ mod tests {
     fn inputs<'a>(
         scheduled: Option<&'a ReleaseEvent>,
         same_key: Option<&'a ReleaseEvent>,
-        latest_sequence: Option<EpisodeNumber>,
+        latest_sequence: Option<(Option<i32>, EpisodeNumber)>,
         observed: Option<NextAiring>,
         now: i64,
     ) -> ReleaseInputs<'a> {
@@ -379,6 +395,7 @@ mod tests {
             reduce_release(inputs(None, None, None, Some(airing(1, 5_000)), 1_000)),
             ReleaseTransition::Insert {
                 episode: ep(1),
+                season: None,
                 scheduled_at: at(5_000),
             }
         );
@@ -393,7 +410,7 @@ mod tests {
             reduce_release(inputs(
                 Some(&current),
                 Some(&current),
-                Some(ep(5)),
+                Some((None, ep(5))),
                 Some(airing(5, 5_000)),
                 1_000
             )),
@@ -410,7 +427,7 @@ mod tests {
             reduce_release(inputs(
                 Some(&current),
                 Some(&current),
-                Some(ep(5)),
+                Some((None, ep(5))),
                 Some(airing(5, 6_000)),
                 1_000
             )),
@@ -428,7 +445,7 @@ mod tests {
             reduce_release(inputs(
                 None,
                 Some(&withdrawn),
-                Some(ep(5)),
+                Some((None, ep(5))),
                 Some(airing(5, 5_500)),
                 1_000
             )),
@@ -446,7 +463,7 @@ mod tests {
             reduce_release(inputs(
                 Some(&current),
                 None,
-                Some(ep(5)),
+                Some((None, ep(5))),
                 Some(airing(6, 12_000)),
                 6_000
             )),
@@ -454,6 +471,7 @@ mod tests {
                 retire: current.id,
                 retire_state: ReleaseEventState::Elapsed,
                 episode: ep(6),
+                season: None,
                 scheduled_at: at(12_000),
             }
         );
@@ -468,7 +486,7 @@ mod tests {
             reduce_release(inputs(
                 Some(&current),
                 None,
-                Some(ep(5)),
+                Some((None, ep(5))),
                 Some(airing(6, 12_000)),
                 1_000
             )),
@@ -476,6 +494,7 @@ mod tests {
                 retire: current.id,
                 retire_state: ReleaseEventState::Superseded,
                 episode: ep(6),
+                season: None,
                 scheduled_at: at(12_000),
             }
         );
@@ -488,7 +507,7 @@ mod tests {
             reduce_release(inputs(
                 Some(&current),
                 None,
-                Some(ep(5)),
+                Some((None, ep(5))),
                 Some(airing(4, 4_000)),
                 1_000
             )),
@@ -507,7 +526,7 @@ mod tests {
             reduce_release(inputs(
                 None,
                 None,
-                Some(ep(5)),
+                Some((None, ep(5))),
                 Some(airing(3, 9_000)),
                 6_000
             )),
@@ -520,10 +539,45 @@ mod tests {
     }
 
     #[test]
+    fn a_new_season_is_an_advance_not_a_rewind() {
+        let current = event(1, 10, 5_000, ReleaseEventState::Scheduled);
+        let mut current = current;
+        current.season = Some(1);
+        current.source_event_key = source_event_key(ep(10), Some(1)).expect("key");
+        let next = NextAiring {
+            episode: ep(1),
+            airing_at: at(12_000),
+            season: Some(2),
+        };
+        assert_eq!(
+            reduce_release(inputs(
+                Some(&current),
+                None,
+                Some((Some(1), ep(10))),
+                Some(next),
+                6_000
+            )),
+            ReleaseTransition::Advance {
+                retire: current.id,
+                retire_state: ReleaseEventState::Elapsed,
+                episode: ep(1),
+                season: Some(2),
+                scheduled_at: at(12_000),
+            }
+        );
+    }
+
+    #[test]
     fn explicit_null_on_a_future_event_withdraws_it() {
         let current = event(1, 5, 5_000, ReleaseEventState::Scheduled);
         assert_eq!(
-            reduce_release(inputs(Some(&current), None, Some(ep(5)), None, 1_000)),
+            reduce_release(inputs(
+                Some(&current),
+                None,
+                Some((None, ep(5))),
+                None,
+                1_000
+            )),
             ReleaseTransition::Withdraw {
                 event_id: current.id
             }
@@ -534,7 +588,13 @@ mod tests {
     fn explicit_null_after_airtime_marks_it_elapsed() {
         let current = event(1, 5, 5_000, ReleaseEventState::Scheduled);
         assert_eq!(
-            reduce_release(inputs(Some(&current), None, Some(ep(5)), None, 5_000)),
+            reduce_release(inputs(
+                Some(&current),
+                None,
+                Some((None, ep(5))),
+                None,
+                5_000
+            )),
             ReleaseTransition::MarkElapsed {
                 event_id: current.id
             }
@@ -557,7 +617,7 @@ mod tests {
             reduce_release(inputs(
                 None,
                 Some(&elapsed),
-                Some(ep(5)),
+                Some((None, ep(5))),
                 Some(airing(5, 5_000)),
                 9_000
             )),
@@ -760,7 +820,9 @@ mod tests {
             existing,
             os_identifier: OsIdentifier::from_stored("dev.animesh.release.install.event"),
             title: "One Piece",
-            anilist_id: AniListId::new(21).expect("valid id"),
+            source_key: crate::domain::ids::SourceKey::anilist(
+                AniListId::new(21).expect("valid id"),
+            ),
             now: at(now),
         }
     }

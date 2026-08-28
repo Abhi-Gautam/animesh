@@ -116,8 +116,20 @@ macro_rules! bounded_id {
 }
 
 bounded_id! {
+    /// An integer identifier inside a source. AniList and TVmaze both use this
+    /// range; the source on [`SourceKey`] is what makes the number mean
+    /// something. A bare integer on the CLI is therefore not an identity.
+    SourceNumericId, 1, MAX_SOURCE_INT
+}
+
+bounded_id! {
     /// An AniList media identifier.
     AniListId, 1, MAX_SOURCE_INT
+}
+
+bounded_id! {
+    /// A TVmaze show identifier.
+    TvMazeId, 1, MAX_SOURCE_INT
 }
 
 bounded_id! {
@@ -222,12 +234,13 @@ impl fmt::Display for UnixTimestamp {
 
 /// An external data source.
 ///
-/// AniList is the only source. The enum exists because the stored encoding must
-/// be explicit and fallibly decoded, not because a second source is planned.
+/// The stored encoding is the CHECK value. Adding a variant is a schema
+/// migration; decoding an unknown string is a corrupt or newer database.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Source {
     AniList,
+    TvMaze,
 }
 
 impl Source {
@@ -235,6 +248,15 @@ impl Source {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::AniList => "anilist",
+            Self::TvMaze => "tvmaze",
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Self, IdError> {
+        match value {
+            "anilist" => Ok(Self::AniList),
+            "tvmaze" => Ok(Self::TvMaze),
+            other => Err(IdError::UnknownSource(other.to_owned())),
         }
     }
 }
@@ -246,17 +268,39 @@ impl fmt::Display for Source {
 }
 
 /// A source paired with its identifier within that source.
+///
+/// This is the only identity that may be used to follow. AniList 21 and TVmaze
+/// 21 are different titles; the pair is what makes the integer mean one thing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct SourceKey {
     pub source: Source,
-    pub id: AniListId,
+    pub id: SourceNumericId,
+}
+
+impl AniListId {
+    pub const fn from_numeric(id: SourceNumericId) -> Self {
+        Self(id.0)
+    }
+}
+
+impl TvMazeId {
+    pub const fn from_numeric(id: SourceNumericId) -> Self {
+        Self(id.0)
+    }
 }
 
 impl SourceKey {
     pub const fn anilist(id: AniListId) -> Self {
         Self {
             source: Source::AniList,
-            id,
+            id: SourceNumericId(id.0),
+        }
+    }
+
+    pub const fn tvmaze(id: TvMazeId) -> Self {
+        Self {
+            source: Source::TvMaze,
+            id: SourceNumericId(id.0),
         }
     }
 }
@@ -464,12 +508,21 @@ mod tests {
 
     #[test]
     fn source_encoding_is_stable() {
-        // The schema pins this with `CHECK (source = 'anilist')`, so the encoding
-        // and the constraint have to agree.
         assert_eq!(Source::AniList.as_str(), "anilist");
+        assert_eq!(Source::TvMaze.as_str(), "tvmaze");
+        assert_eq!(Source::parse("tvmaze"), Ok(Source::TvMaze));
+        assert!(Source::parse("imdb").is_err());
         assert_eq!(
             SourceKey::anilist(AniListId::new(21).expect("id")).to_string(),
             "anilist:21"
+        );
+        assert_eq!(
+            SourceKey::tvmaze(TvMazeId::new(82).expect("id")).to_string(),
+            "tvmaze:82"
+        );
+        assert_ne!(
+            SourceKey::anilist(AniListId::new(21).expect("id")),
+            SourceKey::tvmaze(TvMazeId::new(21).expect("id"))
         );
     }
 

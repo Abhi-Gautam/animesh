@@ -119,8 +119,8 @@ fn freshness_note(freshness: Freshness) -> &'static str {
 
 pub fn upcoming(rows: &[UpcomingRelease], now: UnixTimestamp) -> String {
     if rows.is_empty() {
-        return "Nothing scheduled.\n\nFind something with 'animesh search <query>', \
-                then follow it with 'animesh follow <id>'."
+        return "Nothing scheduled.\n\nFind anime with 'animesh search <query>', or what's \
+                on TV with 'animesh search --tv', then follow it."
             .to_owned();
     }
 
@@ -146,7 +146,8 @@ pub fn upcoming(rows: &[UpcomingRelease], now: UnixTimestamp) -> String {
 
 pub fn search(candidates: &[SearchCandidate]) -> String {
     if candidates.is_empty() {
-        return "No matches.".to_owned();
+        return "No matches.\n\nAnime is the default catalog. Try 'animesh search --tv' for TV."
+            .to_owned();
     }
 
     let mut out = String::new();
@@ -159,7 +160,7 @@ pub fn search(candidates: &[SearchCandidate]) -> String {
             .map_or_else(String::new, |e| format!(", {e} episodes"));
         out.push_str(&format!(
             "{:>9}  {}{}\n           {}{}\n",
-            candidate.anilist_id,
+            format!("{}:{}", candidate.source, candidate.source_id),
             candidate.display_title,
             year,
             candidate.status.as_str(),
@@ -367,7 +368,7 @@ mod tests {
     fn the_empty_state_explains_what_to_do_next() {
         let text = upcoming(&[], at(1_000));
         assert!(text.contains("animesh search"), "{text}");
-        assert!(text.contains("animesh follow"), "{text}");
+        assert!(text.contains("animesh search --tv"), "{text}");
     }
 
     #[test]
@@ -380,7 +381,8 @@ mod tests {
 
     #[test]
     fn an_empty_search_says_so() {
-        assert_eq!(search(&[]), "No matches.");
+        assert!(search(&[]).contains("No matches."));
+        assert!(search(&[]).contains("animesh search --tv"));
     }
 
     #[test]

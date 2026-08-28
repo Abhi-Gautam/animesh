@@ -95,6 +95,7 @@ mod tests {
         for response in [
             Response::ListFollows(Vec::new()),
             Response::SearchAnime(Vec::new()),
+            Response::SearchTv(Vec::new()),
             Response::Upcoming(Vec::new()),
         ] {
             let expected = response.name().to_owned();

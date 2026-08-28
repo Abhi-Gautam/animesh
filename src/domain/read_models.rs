@@ -5,7 +5,8 @@ use std::cmp::Ordering;
 use serde::{Deserialize, Serialize};
 
 use super::ids::{
-    AniListId, BoundedText, EpisodeNumber, EventUuid, MediaId, ReleaseEventId, UnixTimestamp,
+    BoundedText, EpisodeNumber, EventUuid, MediaId, ReleaseEventId, Source, SourceNumericId,
+    UnixTimestamp,
 };
 use super::release::FollowState;
 
@@ -38,7 +39,8 @@ pub struct UpcomingRelease {
     pub release_event_id: ReleaseEventId,
     pub event_uuid: EventUuid,
     pub media_id: MediaId,
-    pub anilist_id: AniListId,
+    pub source: Source,
+    pub source_id: SourceNumericId,
     pub display_title: BoundedText,
     pub episode: Option<EpisodeNumber>,
     pub scheduled_at: UnixTimestamp,
@@ -84,7 +86,8 @@ impl PartialOrd for UpcomingRelease {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FollowSummary {
     pub media_id: MediaId,
-    pub anilist_id: AniListId,
+    pub source: Source,
+    pub source_id: SourceNumericId,
     pub display_title: BoundedText,
     pub state: FollowState,
     pub upcoming: Option<UpcomingRelease>,
@@ -105,7 +108,8 @@ pub enum FollowOutcome {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FollowResult {
     pub media_id: MediaId,
-    pub anilist_id: AniListId,
+    pub source: Source,
+    pub source_id: SourceNumericId,
     pub display_title: BoundedText,
     pub outcome: FollowOutcome,
     pub upcoming: Option<UpcomingRelease>,
@@ -177,7 +181,9 @@ impl DegradedReason {
             Self::NotificationCapacityExceeded => {
                 "More releases are scheduled than the system will hold. The nearest ones are registered."
             }
-            Self::SourceRateLimited => "AniList is rate limiting requests. Refreshes resume automatically.",
+            Self::SourceRateLimited => {
+                "A source is rate limiting requests. Refreshes resume automatically."
+            }
         }
     }
 }
@@ -288,7 +294,8 @@ mod tests {
             release_event_id: ReleaseEventId::new(event_id).expect("valid id"),
             event_uuid: EventUuid::generate(),
             media_id: MediaId::new(media_id).expect("valid id"),
-            anilist_id: AniListId::new(21).expect("valid id"),
+            source: Source::AniList,
+            source_id: SourceNumericId::new(21).expect("valid id"),
             display_title: BoundedText::new("t", 512, "Title").expect("valid title"),
             episode: episode.map(|e| EpisodeNumber::new(e).expect("valid episode")),
             scheduled_at: at(scheduled_at),

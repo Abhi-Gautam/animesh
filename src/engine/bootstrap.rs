@@ -26,6 +26,7 @@ use crate::ipc::server;
 use crate::library::service::Library;
 use crate::paths::AppPaths;
 use crate::sources::anilist::client::AniListClient;
+use crate::sources::tvmaze::TvMazeClient;
 use crate::store::connection::{Store, StoreError};
 use crate::store::{graph, migrations};
 
@@ -131,10 +132,13 @@ async fn open_library(paths: &AppPaths) -> Result<Library, StoreError> {
 
     let source = AniListClient::production()
         .map_err(|e| StoreError::Integrity(format!("building the AniList client: {e}")))?;
+    let tvmaze = TvMazeClient::production()
+        .map_err(|e| StoreError::Integrity(format!("building the TVmaze client: {e}")))?;
 
     Ok(Library::new(
         store,
         source,
+        tvmaze,
         Arc::new(SystemClock),
         Arc::new(KeyedJitter::default()),
         installation,

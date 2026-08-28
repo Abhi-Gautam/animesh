@@ -7,11 +7,11 @@ use rusqlite::{Connection, OptionalExtension, Transaction};
 
 use super::connection::StoreError;
 use crate::domain::ids::{
-    AniListId, BoundedText, EpisodeNumber, FetchId, InstallationUuid, MediaId, ObservationId,
-    SourceKey, SourceMediaId, UnixTimestamp,
+    BoundedText, EpisodeNumber, FetchId, InstallationUuid, MediaId, ObservationId, Source,
+    SourceKey, SourceMediaId, SourceNumericId, UnixTimestamp,
 };
 use crate::domain::media::{
-    MediaObservation, MediaStatus, NextAiring, TitleSet, MAX_RAW_LEN, MAX_TITLE_LEN,
+    MediaKind, MediaObservation, MediaStatus, NextAiring, TitleSet, MAX_RAW_LEN, MAX_TITLE_LEN,
 };
 use crate::domain::release::FollowState;
 
@@ -67,41 +67,52 @@ pub fn ensure_installation(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceMediaRow {
     pub source_media_id: SourceMediaId,
-    pub anilist_id: AniListId,
+    pub source_key: SourceKey,
     pub media_id: MediaId,
     pub current_observation_id: Option<ObservationId>,
 }
 
+fn source_media_row(
+    smid: i64,
+    source: &str,
+    sid: i64,
+    mid: i64,
+    obs: Option<i64>,
+) -> Result<SourceMediaRow, StoreError> {
+    let source = Source::parse(source).map_err(|e| StoreError::Integrity(e.to_string()))?;
+    let id = SourceNumericId::new(sid).map_err(|e| StoreError::Integrity(e.to_string()))?;
+    Ok(SourceMediaRow {
+        source_media_id: SourceMediaId::new(smid)
+            .map_err(|e| StoreError::Integrity(e.to_string()))?,
+        source_key: SourceKey { source, id },
+        media_id: MediaId::new(mid).map_err(|e| StoreError::Integrity(e.to_string()))?,
+        current_observation_id: obs
+            .map(ObservationId::new)
+            .transpose()
+            .map_err(|e| StoreError::Integrity(e.to_string()))?,
+    })
+}
+
 pub fn find_source_media(
     conn: &Connection,
-    anilist_id: AniListId,
+    key: SourceKey,
 ) -> Result<Option<SourceMediaRow>, StoreError> {
     conn.query_row(
-        "SELECT source_media_id, source_id, media_id, current_observation_id
-         FROM source_media WHERE source = 'anilist' AND source_id = ?1",
-        [anilist_id.get()],
+        "SELECT source_media_id, source, source_id, media_id, current_observation_id
+         FROM source_media WHERE source = ?1 AND source_id = ?2",
+        rusqlite::params![key.source.as_str(), key.id.get()],
         |row| {
             Ok((
                 row.get::<_, i64>(0)?,
-                row.get::<_, i64>(1)?,
+                row.get::<_, String>(1)?,
                 row.get::<_, i64>(2)?,
-                row.get::<_, Option<i64>>(3)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, Option<i64>>(4)?,
             ))
         },
     )
     .optional()?
-    .map(|(smid, sid, mid, obs)| {
-        Ok(SourceMediaRow {
-            source_media_id: SourceMediaId::new(smid)
-                .map_err(|e| StoreError::Integrity(e.to_string()))?,
-            anilist_id: AniListId::new(sid).map_err(|e| StoreError::Integrity(e.to_string()))?,
-            media_id: MediaId::new(mid).map_err(|e| StoreError::Integrity(e.to_string()))?,
-            current_observation_id: obs
-                .map(ObservationId::new)
-                .transpose()
-                .map_err(|e| StoreError::Integrity(e.to_string()))?,
-        })
-    })
+    .map(|(smid, source, sid, mid, obs)| source_media_row(smid, &source, sid, mid, obs))
     .transpose()
 }
 
@@ -111,14 +122,18 @@ pub fn find_source_media(
 /// exists; the composite foreign key makes any other order impossible.
 pub fn create_media(
     tx: &Transaction<'_>,
-    anilist_id: AniListId,
+    key: SourceKey,
     display_title: &BoundedText,
     now: UnixTimestamp,
 ) -> Result<SourceMediaRow, StoreError> {
     tx.execute(
         "INSERT INTO media (kind, display_title, created_at, updated_at)
-         VALUES ('anime', ?1, ?2, ?2)",
-        rusqlite::params![display_title.as_str(), now.get()],
+         VALUES (?1, ?2, ?3, ?3)",
+        rusqlite::params![
+            MediaKind::for_source(key.source).as_str(),
+            display_title.as_str(),
+            now.get()
+        ],
     )?;
     let media_id =
         MediaId::new(tx.last_insert_rowid()).map_err(|e| StoreError::Integrity(e.to_string()))?;
@@ -126,15 +141,15 @@ pub fn create_media(
     tx.execute(
         "INSERT INTO source_media
             (source, source_id, media_id, current_observation_id, created_at, updated_at)
-         VALUES ('anilist', ?1, ?2, NULL, ?3, ?3)",
-        rusqlite::params![anilist_id.get(), media_id.get(), now.get()],
+         VALUES (?1, ?2, ?3, NULL, ?4, ?4)",
+        rusqlite::params![key.source.as_str(), key.id.get(), media_id.get(), now.get()],
     )?;
     let source_media_id = SourceMediaId::new(tx.last_insert_rowid())
         .map_err(|e| StoreError::Integrity(e.to_string()))?;
 
     Ok(SourceMediaRow {
         source_media_id,
-        anilist_id,
+        source_key: key,
         media_id,
         current_observation_id: None,
     })
@@ -316,7 +331,7 @@ pub fn record_refresh_failure(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DueRow {
     pub source_media_id: SourceMediaId,
-    pub anilist_id: AniListId,
+    pub source_key: SourceKey,
     pub media_id: MediaId,
 }
 
@@ -331,7 +346,7 @@ pub fn due_for_refresh(
     limit: u32,
 ) -> Result<Vec<DueRow>, StoreError> {
     let mut stmt = conn.prepare(
-        "SELECT sm.source_media_id, sm.source_id, sm.media_id
+        "SELECT sm.source_media_id, sm.source, sm.source_id, sm.media_id
          FROM source_media sm
          JOIN follows f ON f.media_id = sm.media_id AND f.state = 'active'
          LEFT JOIN source_refresh_state rs ON rs.source_media_id = sm.source_media_id
@@ -344,18 +359,21 @@ pub fn due_for_refresh(
         .query_map(rusqlite::params![now.get(), limit], |row| {
             Ok((
                 row.get::<_, i64>(0)?,
-                row.get::<_, i64>(1)?,
+                row.get::<_, String>(1)?,
                 row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
             ))
         })?
         .collect::<Result<Vec<_>, _>>()?;
 
     rows.into_iter()
-        .map(|(smid, sid, mid)| {
+        .map(|(smid, source, sid, mid)| {
             let bad = |e: String| StoreError::Integrity(e);
+            let source = Source::parse(&source).map_err(|e| bad(e.to_string()))?;
+            let id = SourceNumericId::new(sid).map_err(|e| bad(e.to_string()))?;
             Ok(DueRow {
                 source_media_id: SourceMediaId::new(smid).map_err(|e| bad(e.to_string()))?,
-                anilist_id: AniListId::new(sid).map_err(|e| bad(e.to_string()))?,
+                source_key: SourceKey { source, id },
                 media_id: MediaId::new(mid).map_err(|e| bad(e.to_string()))?,
             })
         })
@@ -425,10 +443,13 @@ pub fn generation_is_current(
 // source_runtime_state
 // ---------------------------------------------------------------------------
 
-pub fn source_blocked_until(conn: &Connection) -> Result<Option<UnixTimestamp>, StoreError> {
+pub fn source_blocked_until(
+    conn: &Connection,
+    source: Source,
+) -> Result<Option<UnixTimestamp>, StoreError> {
     conn.query_row(
-        "SELECT blocked_until FROM source_runtime_state WHERE source = 'anilist'",
-        [],
+        "SELECT blocked_until FROM source_runtime_state WHERE source = ?1",
+        [source.as_str()],
         |row| row.get::<_, Option<i64>>(0),
     )
     .optional()?
@@ -437,9 +458,21 @@ pub fn source_blocked_until(conn: &Connection) -> Result<Option<UnixTimestamp>, 
     .transpose()
 }
 
+/// The soonest throttle across every source. Drives the health snapshot.
+pub fn any_source_blocked_until(conn: &Connection) -> Result<Option<UnixTimestamp>, StoreError> {
+    conn.query_row(
+        "SELECT min(blocked_until) FROM source_runtime_state WHERE blocked_until IS NOT NULL",
+        [],
+        |row| row.get::<_, Option<i64>>(0),
+    )?
+    .map(ts)
+    .transpose()
+}
+
 /// Persists the source-global throttle so a 429 outlives the process.
 pub fn set_source_throttle(
     tx: &Transaction<'_>,
+    source: Source,
     blocked_until: Option<UnixTimestamp>,
     remaining: Option<u32>,
     reset_at: Option<i64>,
@@ -448,13 +481,14 @@ pub fn set_source_throttle(
     tx.execute(
         "INSERT INTO source_runtime_state
             (source, blocked_until, rate_limit_remaining, rate_limit_reset_at, updated_at)
-         VALUES ('anilist', ?1, ?2, ?3, ?4)
+         VALUES (?1, ?2, ?3, ?4, ?5)
          ON CONFLICT(source) DO UPDATE SET
             blocked_until = excluded.blocked_until,
             rate_limit_remaining = excluded.rate_limit_remaining,
             rate_limit_reset_at = excluded.rate_limit_reset_at,
             updated_at = excluded.updated_at",
         rusqlite::params![
+            source.as_str(),
             blocked_until.map(UnixTimestamp::get),
             remaining,
             reset_at,
@@ -471,6 +505,7 @@ pub fn set_source_throttle(
 #[derive(Debug, Clone)]
 pub struct FetchRecord<'a> {
     pub attempt_uuid: &'a str,
+    pub source: Source,
     pub request_kind: &'a str,
     pub request_fingerprint: &'a str,
     pub requested_at: UnixTimestamp,
@@ -490,9 +525,10 @@ pub fn insert_fetch(tx: &Transaction<'_>, record: &FetchRecord<'_>) -> Result<Fe
             (attempt_uuid, source, request_kind, request_fingerprint, requested_at,
              completed_at, outcome, http_status, retry_after, rate_limit_remaining,
              rate_limit_reset_at, body_json, byte_length, error_code)
-         VALUES (?1, 'anilist', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
         rusqlite::params![
             record.attempt_uuid,
+            record.source.as_str(),
             record.request_kind,
             record.request_fingerprint,
             record.requested_at.get(),
@@ -527,8 +563,8 @@ pub fn insert_observation(
         "INSERT INTO source_observations
             (source_media_id, fetch_id, parser_version, observed_at, display_title,
              title_english, title_romaji, title_native, status, status_raw, format_raw,
-             episode_count, season_year, next_episode, next_airing_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+             episode_count, season_year, next_episode, next_airing_at, next_season)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
         rusqlite::params![
             source_media_id.get(),
             fetch_id.get(),
@@ -545,6 +581,7 @@ pub fn insert_observation(
             observation.season_year,
             observation.next_airing.map(|n| n.episode.get()),
             observation.next_airing.map(|n| n.airing_at.get()),
+            observation.next_airing.and_then(|n| n.season),
         ],
     )?;
     ObservationId::new(tx.last_insert_rowid()).map_err(|e| StoreError::Integrity(e.to_string()))
@@ -558,7 +595,8 @@ pub fn current_observation(
     conn.query_row(
         "SELECT o.display_title, o.title_english, o.title_romaji, o.title_native,
                 o.status, o.status_raw, o.format_raw, o.episode_count, o.season_year,
-                o.next_episode, o.next_airing_at, o.parser_version, sm.source_id
+                o.next_episode, o.next_airing_at, o.parser_version, sm.source, sm.source_id,
+                o.next_season
          FROM source_media sm
          JOIN source_observations o ON o.observation_id = sm.current_observation_id
          WHERE sm.source_media_id = ?1",
@@ -577,7 +615,9 @@ pub fn current_observation(
                 row.get::<_, Option<i64>>(9)?,
                 row.get::<_, Option<i64>>(10)?,
                 row.get::<_, i64>(11)?,
-                row.get::<_, i64>(12)?,
+                row.get::<_, String>(12)?,
+                row.get::<_, i64>(13)?,
+                row.get::<_, Option<i64>>(14)?,
             ))
         },
     )
@@ -596,7 +636,9 @@ pub fn current_observation(
             next_episode,
             next_airing_at,
             parser_version,
+            source,
             source_id,
+            next_season,
         ) = row;
 
         let next_airing = match (next_episode, next_airing_at) {
@@ -604,6 +646,7 @@ pub fn current_observation(
                 episode: EpisodeNumber::new(episode)
                     .map_err(|e| StoreError::Integrity(e.to_string()))?,
                 airing_at: ts(airing_at)?,
+                season: next_season.and_then(|s| i32::try_from(s).ok()),
             }),
             // The schema CHECK makes a half-populated pair unstorable, so this
             // arm is only reachable via a database written by something else.
@@ -611,10 +654,11 @@ pub fn current_observation(
             _ => return Err(StoreError::Integrity("half-populated schedule".into())),
         };
 
+        let source = Source::parse(&source).map_err(|e| StoreError::Integrity(e.to_string()))?;
+        let id =
+            SourceNumericId::new(source_id).map_err(|e| StoreError::Integrity(e.to_string()))?;
         Ok(MediaObservation {
-            source_key: SourceKey::anilist(
-                AniListId::new(source_id).map_err(|e| StoreError::Integrity(e.to_string()))?,
-            ),
+            source_key: SourceKey { source, id },
             display_title: text(display_title, MAX_TITLE_LEN)?,
             titles: TitleSet {
                 english: english.map(|v| text(v, MAX_TITLE_LEN)).transpose()?,
@@ -640,6 +684,7 @@ pub fn current_observation(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::ids::AniListId;
     use crate::domain::media::PARSER_VERSION;
     use crate::store::{connection::configure, migrations};
 
@@ -677,6 +722,7 @@ mod tests {
             episode_count: None,
             season_year: Some(1999),
             next_airing: next.map(|(episode, airing_at)| NextAiring {
+                season: None,
                 episode: EpisodeNumber::new(episode).expect("valid episode"),
                 airing_at: at(airing_at),
             }),
@@ -689,6 +735,7 @@ mod tests {
             tx,
             &FetchRecord {
                 attempt_uuid: uuid,
+                source: Source::AniList,
                 request_kind: "detail",
                 request_fingerprint: "id=21",
                 requested_at: at(100),
@@ -723,21 +770,54 @@ mod tests {
     fn creating_media_wires_up_both_identities() {
         let mut conn = db();
         let tx = conn.transaction().expect("begin");
-        let row = create_media(&tx, id(21), &title("One Piece"), at(100)).expect("create");
+        let row = create_media(
+            &tx,
+            SourceKey::anilist(id(21)),
+            &title("One Piece"),
+            at(100),
+        )
+        .expect("create");
         tx.commit().expect("commit");
 
-        assert_eq!(row.anilist_id, id(21));
+        assert_eq!(row.source_key, SourceKey::anilist(id(21)));
         assert_eq!(row.current_observation_id, None);
-        let found = find_source_media(&conn, id(21))
+        let found = find_source_media(&conn, SourceKey::anilist(id(21)))
             .expect("find")
             .expect("present");
         assert_eq!(found, row);
     }
 
     #[test]
+    fn a_tvmaze_title_does_not_collide_with_the_same_anilist_id() {
+        let mut conn = db();
+        let tx = conn.transaction().expect("begin");
+        let anime = create_media(
+            &tx,
+            SourceKey::anilist(id(21)),
+            &title("One Piece"),
+            at(100),
+        )
+        .expect("anime");
+        let tv = create_media(
+            &tx,
+            SourceKey::tvmaze(crate::domain::ids::TvMazeId::new(21).expect("id")),
+            &title("The Last of Us"),
+            at(100),
+        )
+        .expect("tv");
+        tx.commit().expect("commit");
+        assert_ne!(anime.media_id, tv.media_id);
+        assert_eq!(anime.source_key.source, Source::AniList);
+        assert_eq!(tv.source_key.source, Source::TvMaze);
+    }
+
+    #[test]
     fn an_unknown_anilist_id_is_absent_rather_than_an_error() {
         let conn = db();
-        assert_eq!(find_source_media(&conn, id(999)).expect("find"), None);
+        assert_eq!(
+            find_source_media(&conn, SourceKey::anilist(id(999))).expect("find"),
+            None
+        );
     }
 
     #[test]
@@ -745,7 +825,13 @@ mod tests {
         // The core Bronze/Silver guarantee: repetition is itself evidence.
         let mut conn = db();
         let tx = conn.transaction().expect("begin");
-        let row = create_media(&tx, id(21), &title("One Piece"), at(100)).expect("create");
+        let row = create_media(
+            &tx,
+            SourceKey::anilist(id(21)),
+            &title("One Piece"),
+            at(100),
+        )
+        .expect("create");
         let f1 = fetch(&tx, "a");
         let f2 = fetch(&tx, "b");
         let o1 = insert_observation(
@@ -777,7 +863,13 @@ mod tests {
     fn the_current_observation_round_trips() {
         let mut conn = db();
         let tx = conn.transaction().expect("begin");
-        let row = create_media(&tx, id(21), &title("One Piece"), at(100)).expect("create");
+        let row = create_media(
+            &tx,
+            SourceKey::anilist(id(21)),
+            &title("One Piece"),
+            at(100),
+        )
+        .expect("create");
         let f = fetch(&tx, "a");
         let original = observation(21, Some((1169, 1_783_865_760)));
         let obs =
@@ -795,7 +887,13 @@ mod tests {
     fn an_observation_without_a_schedule_round_trips_as_none() {
         let mut conn = db();
         let tx = conn.transaction().expect("begin");
-        let row = create_media(&tx, id(21), &title("One Piece"), at(100)).expect("create");
+        let row = create_media(
+            &tx,
+            SourceKey::anilist(id(21)),
+            &title("One Piece"),
+            at(100),
+        )
+        .expect("create");
         let f = fetch(&tx, "a");
         let original = observation(21, None);
         let obs =
@@ -813,7 +911,13 @@ mod tests {
     fn follow_state_toggles_without_duplicating_rows() {
         let mut conn = db();
         let tx = conn.transaction().expect("begin");
-        let row = create_media(&tx, id(21), &title("One Piece"), at(100)).expect("create");
+        let row = create_media(
+            &tx,
+            SourceKey::anilist(id(21)),
+            &title("One Piece"),
+            at(100),
+        )
+        .expect("create");
         set_follow(&tx, row.media_id, FollowState::Active, at(100)).expect("follow");
         set_follow(&tx, row.media_id, FollowState::Dropped, at(200)).expect("drop");
         set_follow(&tx, row.media_id, FollowState::Active, at(300)).expect("refollow");
@@ -834,7 +938,13 @@ mod tests {
     fn dropped_follows_do_not_count_as_active() {
         let mut conn = db();
         let tx = conn.transaction().expect("begin");
-        let row = create_media(&tx, id(21), &title("One Piece"), at(100)).expect("create");
+        let row = create_media(
+            &tx,
+            SourceKey::anilist(id(21)),
+            &title("One Piece"),
+            at(100),
+        )
+        .expect("create");
         set_follow(&tx, row.media_id, FollowState::Dropped, at(100)).expect("drop");
         tx.commit().expect("commit");
         assert_eq!(active_follow_count(&conn).expect("count"), 0);
@@ -844,7 +954,13 @@ mod tests {
     fn generations_increase_monotonically() {
         let mut conn = db();
         let tx = conn.transaction().expect("begin");
-        let row = create_media(&tx, id(21), &title("One Piece"), at(100)).expect("create");
+        let row = create_media(
+            &tx,
+            SourceKey::anilist(id(21)),
+            &title("One Piece"),
+            at(100),
+        )
+        .expect("create");
         let first = claim_generation(&tx, row.source_media_id, at(100)).expect("claim");
         let second = claim_generation(&tx, row.source_media_id, at(101)).expect("claim");
         tx.commit().expect("commit");
@@ -858,7 +974,13 @@ mod tests {
         // This is what stops a slow response from rolling state backward.
         let mut conn = db();
         let tx = conn.transaction().expect("begin");
-        let row = create_media(&tx, id(21), &title("One Piece"), at(100)).expect("create");
+        let row = create_media(
+            &tx,
+            SourceKey::anilist(id(21)),
+            &title("One Piece"),
+            at(100),
+        )
+        .expect("create");
         let stale = claim_generation(&tx, row.source_media_id, at(100)).expect("claim");
         let fresh = claim_generation(&tx, row.source_media_id, at(101)).expect("claim");
         tx.commit().expect("commit");
@@ -871,7 +993,13 @@ mod tests {
     fn failures_accumulate_and_success_resets_them() {
         let mut conn = db();
         let tx = conn.transaction().expect("begin");
-        let row = create_media(&tx, id(21), &title("One Piece"), at(100)).expect("create");
+        let row = create_media(
+            &tx,
+            SourceKey::anilist(id(21)),
+            &title("One Piece"),
+            at(100),
+        )
+        .expect("create");
         record_refresh_failure(&tx, row.source_media_id, at(100), "http_503", at(160))
             .expect("fail");
         record_refresh_failure(&tx, row.source_media_id, at(200), "http_503", at(500))
@@ -902,7 +1030,13 @@ mod tests {
         // A failure changes only durable failure state.
         let mut conn = db();
         let tx = conn.transaction().expect("begin");
-        let row = create_media(&tx, id(21), &title("One Piece"), at(100)).expect("create");
+        let row = create_media(
+            &tx,
+            SourceKey::anilist(id(21)),
+            &title("One Piece"),
+            at(100),
+        )
+        .expect("create");
         record_refresh_success(&tx, row.source_media_id, at(100), at(3700)).expect("succeed");
         record_refresh_failure(&tx, row.source_media_id, at(200), "timeout", at(260))
             .expect("fail");
@@ -919,15 +1053,29 @@ mod tests {
     fn the_source_throttle_survives_a_reopen() {
         let mut conn = db();
         let tx = conn.transaction().expect("begin");
-        set_source_throttle(&tx, Some(at(9_000)), Some(0), Some(9_000), at(100)).expect("throttle");
+        set_source_throttle(
+            &tx,
+            Source::AniList,
+            Some(at(9_000)),
+            Some(0),
+            Some(9_000),
+            at(100),
+        )
+        .expect("throttle");
         tx.commit().expect("commit");
 
-        assert_eq!(source_blocked_until(&conn).expect("read"), Some(at(9_000)));
+        assert_eq!(
+            source_blocked_until(&conn, Source::AniList).expect("read"),
+            Some(at(9_000))
+        );
     }
 
     #[test]
     fn no_throttle_reads_as_absent() {
         let conn = db();
-        assert_eq!(source_blocked_until(&conn).expect("read"), None);
+        assert_eq!(
+            source_blocked_until(&conn, Source::AniList).expect("read"),
+            None
+        );
     }
 }

@@ -3,7 +3,7 @@
 A local-first release radar for macOS and Linux. Follow the shows you care
 about, see what is next, and get notified when an episode drops. Everything
 lives in a SQLite database on your machine — no account, no login, nothing
-uploaded. Anime first, with a core that can later carry TV, film and music.
+uploaded. Anime and TV now; the core is built to carry film and music later.
 
 I built it because keeping up meant opening Crunchyroll and a countdown site
 and doing it again an hour later:
@@ -51,6 +51,8 @@ the first time; declining is fine, since nothing in the CLI depends on it.
 ```bash
 animesh search "one piece"   # find a title on AniList
 animesh follow 21            # follow it, by AniList id
+animesh search --tv          # currently airing English-language US TV
+animesh follow tvmaze:82     # follow a TVmaze show (or: follow --tv 82)
 animesh next                 # upcoming episodes; local only, never hits the network
 animesh list                 # everything you follow
 animesh drop 1               # stop following, by media id
@@ -113,6 +115,12 @@ The database lives at `~/Library/Application Support/Animesh/library.db` on
 macOS and `~/.local/share/animesh/library.db` on Linux. Build with
 `--features test-harness` to relocate it; set both `ANIMESH_DATA_ROOT` and
 `ANIMESH_LOG_ROOT`, or neither takes effect.
+
+## Data sources
+
+Anime schedules come from [AniList](https://anilist.co). TV schedules come from
+[TVmaze](https://www.tvmaze.com), used under
+[CC BY-SA](https://creativecommons.org/licenses/by-sa/4.0/).
 
 ## License
 

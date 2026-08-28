@@ -4,7 +4,7 @@ use rusqlite::Connection;
 
 use super::connection::StoreError;
 use crate::domain::ids::{
-    AniListId, BoundedText, EpisodeNumber, EventUuid, MediaId, ReleaseEventId, UnixTimestamp,
+    BoundedText, EpisodeNumber, EventUuid, MediaId, ReleaseEventId, UnixTimestamp,
 };
 use crate::domain::media::MAX_TITLE_LEN;
 use crate::domain::read_models::{Freshness, RefreshCounts, UpcomingRelease};
@@ -15,7 +15,7 @@ use crate::domain::read_models::{Freshness, RefreshCounts, UpcomingRelease};
 /// compares it against the Rust implementation, because a read model whose
 /// order depends on which layer produced it is not a read model.
 const UPCOMING_SQL: &str = "
-    SELECT re.release_event_id, re.event_uuid, re.media_id, sm.source_id,
+    SELECT re.release_event_id, re.event_uuid, re.media_id, sm.source, sm.source_id,
            m.display_title, re.sequence_number, re.scheduled_at, re.schedule_revision,
            rs.last_success_at, rs.refresh_after, rs.retry_after
     FROM release_events re
@@ -78,14 +78,15 @@ pub fn upcoming(
                 row.get::<_, i64>(0)?,
                 row.get::<_, String>(1)?,
                 row.get::<_, i64>(2)?,
-                row.get::<_, i64>(3)?,
-                row.get::<_, String>(4)?,
-                row.get::<_, Option<i64>>(5)?,
-                row.get::<_, i64>(6)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, Option<i64>>(6)?,
                 row.get::<_, i64>(7)?,
-                row.get::<_, Option<i64>>(8)?,
+                row.get::<_, i64>(8)?,
                 row.get::<_, Option<i64>>(9)?,
                 row.get::<_, Option<i64>>(10)?,
+                row.get::<_, Option<i64>>(11)?,
             ))
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -96,7 +97,8 @@ pub fn upcoming(
                 event_id,
                 uuid,
                 media_id,
-                anilist_id,
+                source,
+                source_id,
                 title,
                 sequence,
                 scheduled_at,
@@ -106,6 +108,10 @@ pub fn upcoming(
                 retry_after,
             ) = row;
             let bad = |e: String| StoreError::Integrity(e);
+            let source =
+                crate::domain::ids::Source::parse(&source).map_err(|e| bad(e.to_string()))?;
+            let source_id = crate::domain::ids::SourceNumericId::new(source_id)
+                .map_err(|e| bad(e.to_string()))?;
 
             Ok(UpcomingRelease {
                 release_event_id: ReleaseEventId::new(event_id).map_err(|e| bad(e.to_string()))?,
@@ -113,7 +119,8 @@ pub fn upcoming(
                     uuid.parse().map_err(|e| bad(format!("event uuid: {e}")))?,
                 ),
                 media_id: MediaId::new(media_id).map_err(|e| bad(e.to_string()))?,
-                anilist_id: AniListId::new(anilist_id).map_err(|e| bad(e.to_string()))?,
+                source,
+                source_id,
                 display_title: BoundedText::truncating(MAX_TITLE_LEN, &title)
                     .ok_or_else(|| bad("empty title".into()))?,
                 episode: sequence
@@ -179,7 +186,7 @@ pub fn last_success(conn: &Connection) -> Result<Option<UnixTimestamp>, StoreErr
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::ids::{ObservationId, SourceKey, SourceMediaId};
+    use crate::domain::ids::{AniListId, ObservationId, SourceKey, SourceMediaId};
     use crate::domain::media::{
         MediaObservation, MediaStatus, NextAiring, TitleSet, PARSER_VERSION,
     };
@@ -224,7 +231,7 @@ mod tests {
             let tx = self.conn.transaction().expect("begin");
             let row = graph::create_media(
                 &tx,
-                AniListId::new(anilist_id).expect("id"),
+                SourceKey::anilist(AniListId::new(anilist_id).expect("id")),
                 &title(name),
                 at(100),
             )
@@ -233,6 +240,7 @@ mod tests {
                 &tx,
                 &FetchRecord {
                     attempt_uuid: &format!("attempt-{anilist_id}"),
+                    source: crate::domain::ids::Source::AniList,
                     request_kind: "detail",
                     request_fingerprint: "x",
                     requested_at: at(100),
@@ -259,6 +267,7 @@ mod tests {
                 next_airing: Some(NextAiring {
                     episode: ep(episode),
                     airing_at: at(scheduled_at),
+                    season: None,
                 }),
                 parser_version: PARSER_VERSION,
             };
@@ -274,6 +283,7 @@ mod tests {
                 obs,
                 ReleaseTransition::Insert {
                     episode: ep(episode),
+                    season: None,
                     scheduled_at: at(scheduled_at),
                 },
                 at(101),
@@ -293,7 +303,7 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].display_title.as_str(), "One Piece");
         assert_eq!(rows[0].episode, Some(ep(5)));
-        assert_eq!(rows[0].anilist_id.get(), 21);
+        assert_eq!(rows[0].source_id.get(), 21);
     }
 
     #[test]

@@ -2,7 +2,9 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::ids::{AniListId, BoundedText, EpisodeNumber, IdError, SourceKey, UnixTimestamp};
+use super::ids::{
+    BoundedText, EpisodeNumber, IdError, Source, SourceKey, SourceNumericId, UnixTimestamp,
+};
 
 /// Version of the parser that produced an observation.
 ///
@@ -76,6 +78,17 @@ impl MediaStatus {
         }
     }
 
+    /// Maps a TVmaze `status` string to the normalized form.
+    pub fn normalize_tvmaze(raw: Option<&str>) -> Self {
+        match raw {
+            Some("Running") => Self::Releasing,
+            Some("Ended") => Self::Finished,
+            Some("In Development") => Self::NotYetReleased,
+            Some("To Be Determined") => Self::Unknown,
+            _ => Self::Unknown,
+        }
+    }
+
     /// Whether the title may still produce new episodes.
     ///
     /// Unknown and null are active-but-uncertain, so they refresh on the active
@@ -98,6 +111,9 @@ impl MediaStatus {
 pub struct NextAiring {
     pub episode: EpisodeNumber,
     pub airing_at: UnixTimestamp,
+    /// TVmaze episodes restart each season. AniList has no season on the next
+    /// airing, so this is `None` there.
+    pub season: Option<i32>,
 }
 
 /// Title variants as reported by a source.
@@ -146,16 +162,51 @@ pub struct MediaObservation {
 /// A transient search result.
 ///
 /// Search results are not evidence: they never mutate the user graph, so they
-/// are not persisted and carry no observation identity.
+/// are not persisted and carry no observation identity. Follow identity is
+/// `source` + `source_id`; a bare integer is not.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SearchCandidate {
-    pub anilist_id: AniListId,
+    pub source: Source,
+    pub source_id: SourceNumericId,
     pub display_title: BoundedText,
     pub titles: TitleSet,
     pub status: MediaStatus,
     pub format: Option<BoundedText>,
     pub episode_count: Option<EpisodeNumber>,
     pub season_year: Option<i32>,
+}
+
+/// Kind stored on the canonical media row. Derived from the source that created
+/// it: AniList is anime, TVmaze is tv. Not a user-facing filter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MediaKind {
+    Anime,
+    Tv,
+}
+
+impl MediaKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Anime => "anime",
+            Self::Tv => "tv",
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Self, IdError> {
+        match value {
+            "anime" => Ok(Self::Anime),
+            "tv" => Ok(Self::Tv),
+            other => Err(IdError::UnknownSource(other.to_owned())),
+        }
+    }
+
+    pub const fn for_source(source: Source) -> Self {
+        match source {
+            Source::AniList => Self::Anime,
+            Source::TvMaze => Self::Tv,
+        }
+    }
 }
 
 /// Smallest and largest season years the schema accepts.
@@ -178,6 +229,7 @@ pub fn normalize_season_year(raw: Option<i64>) -> Option<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::ids::AniListId;
 
     fn text(value: &str) -> BoundedText {
         BoundedText::new("test", MAX_TITLE_LEN, value).expect("valid text")
@@ -304,6 +356,7 @@ mod tests {
         let airing = NextAiring {
             episode: EpisodeNumber::new(12).expect("valid episode"),
             airing_at: UnixTimestamp::new(1_783_865_760).expect("valid timestamp"),
+            season: None,
         };
         assert_eq!(airing.episode.get(), 12);
     }
@@ -326,6 +379,7 @@ mod tests {
             next_airing: Some(NextAiring {
                 episode: EpisodeNumber::new(1169).expect("valid episode"),
                 airing_at: UnixTimestamp::new(1_783_865_760).expect("valid timestamp"),
+                season: None,
             }),
             parser_version: PARSER_VERSION,
         };

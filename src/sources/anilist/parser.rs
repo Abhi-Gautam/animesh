@@ -131,7 +131,11 @@ fn next_airing(raw: Option<dto::NextAiringEpisode>) -> Result<Option<NextAiring>
                     episode: Some(episode.get()),
                     airing_at: Some(airing_at),
                 })?;
-            Ok(Some(NextAiring { episode, airing_at }))
+            Ok(Some(NextAiring {
+                episode,
+                airing_at,
+                season: None,
+            }))
         }
         // Half-populated is an item failure, not "no schedule". Treating it as
         // absent would look identical to an explicit null and withdraw a real
@@ -178,7 +182,8 @@ pub fn parse_candidate(media: &dto::Media) -> Result<SearchCandidate, ItemError>
     let display_title = display_title(&titles, anilist_id)?;
 
     Ok(SearchCandidate {
-        anilist_id,
+        source: crate::domain::ids::Source::AniList,
+        source_id: crate::domain::ids::SourceKey::anilist(anilist_id).id,
         display_title,
         titles,
         status: MediaStatus::normalize(media.status.as_deref()),
@@ -196,14 +201,14 @@ pub fn parse_detail(requested: AniListId, data: Option<&dto::DetailData>) -> Det
 
     match parse_media(media) {
         Ok(observation) => {
-            let returned = observation.source_key.id;
-            if returned == requested {
+            let returned = observation.source_key.id.get();
+            if returned == requested.get() {
                 DetailResult::Observed(Box::new(observation))
             } else {
                 // Applying this would write one show's schedule onto another.
                 DetailResult::IdMismatch {
                     requested: requested.get(),
-                    returned: returned.get(),
+                    returned,
                 }
             }
         }
@@ -255,7 +260,10 @@ pub fn parse_batch(
 
         let parsed = parse_media(item);
         let id = match &parsed {
-            Ok(observation) => observation.source_key.id,
+            Ok(observation) => match parse_id(Some(observation.source_key.id.get())) {
+                Ok(id) => id,
+                Err(_) => continue,
+            },
             Err(_) => match parse_id(item.id) {
                 Ok(id) => id,
                 Err(_) => continue,
@@ -315,7 +323,7 @@ mod tests {
     #[test]
     fn parses_a_complete_item() {
         let observation = parse_media(&media(Some(21))).expect("parse");
-        assert_eq!(observation.source_key.id, id(21));
+        assert_eq!(observation.source_key.id.get(), 21);
         assert_eq!(observation.display_title.as_str(), "One Piece");
         assert_eq!(observation.status, MediaStatus::Releasing);
         assert_eq!(observation.status_raw, None);
@@ -605,7 +613,8 @@ mod tests {
         let data = page(vec![Some(media(Some(21))), Some(media(None)), None]);
         let candidates = parse_search(Some(&data));
         assert_eq!(candidates.len(), 1);
-        assert_eq!(candidates[0].anilist_id, id(21));
+        assert_eq!(candidates[0].source_id.get(), 21);
+        assert_eq!(candidates[0].source, crate::domain::ids::Source::AniList);
     }
 
     #[test]

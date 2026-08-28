@@ -10,7 +10,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::domain::ids::{AniListId, MediaId};
+use crate::domain::ids::{AniListId, MediaId, TvMazeId};
 use crate::domain::media::SearchCandidate;
 use crate::domain::read_models::{
     FollowResult, FollowSummary, HealthSnapshot, RefreshAccepted, UpcomingRelease,
@@ -34,6 +34,8 @@ pub enum Request {
     Status,
     SearchAnime { query: String },
     FollowAnilist { id: AniListId },
+    SearchTv { query: Option<String> },
+    FollowTv { id: TvMazeId },
     Drop { media_id: MediaId },
     ListFollows,
     Upcoming { limit: Option<u32> },
@@ -47,6 +49,8 @@ impl Request {
             Self::Status => "status",
             Self::SearchAnime { .. } => "search_anime",
             Self::FollowAnilist { .. } => "follow_anilist",
+            Self::SearchTv { .. } => "search_tv",
+            Self::FollowTv { .. } => "follow_tv",
             Self::Drop { .. } => "drop",
             Self::ListFollows => "list_follows",
             Self::Upcoming { .. } => "upcoming",
@@ -61,7 +65,11 @@ impl Request {
     pub const fn touches_source(&self) -> bool {
         matches!(
             self,
-            Self::SearchAnime { .. } | Self::FollowAnilist { .. } | Self::TriggerRefresh
+            Self::SearchAnime { .. }
+                | Self::FollowAnilist { .. }
+                | Self::SearchTv { .. }
+                | Self::FollowTv { .. }
+                | Self::TriggerRefresh
         )
     }
 
@@ -76,18 +84,9 @@ impl Request {
     /// enforce identical rules; a client-only check is not a check.
     pub fn validate(&self) -> Result<(), AppError> {
         match self {
-            Self::SearchAnime { query } => {
-                let trimmed = query.trim();
-                if trimmed.is_empty() {
-                    return Err(AppError::invalid_argument("search query is empty"));
-                }
-                if trimmed.chars().count() > MAX_QUERY_LEN {
-                    return Err(AppError::invalid_argument(format!(
-                        "search query is longer than {MAX_QUERY_LEN} characters"
-                    )));
-                }
-                Ok(())
-            }
+            Self::SearchAnime { query } => validate_query(query),
+            Self::SearchTv { query: Some(query) } => validate_query(query),
+            Self::SearchTv { query: None } => Ok(()),
             Self::Upcoming { limit: Some(0) } => {
                 Err(AppError::invalid_argument("limit must be at least 1"))
             }
@@ -99,12 +98,27 @@ impl Request {
     }
 }
 
+fn validate_query(query: &str) -> Result<(), AppError> {
+    let trimmed = query.trim();
+    if trimmed.is_empty() {
+        return Err(AppError::invalid_argument("search query is empty"));
+    }
+    if trimmed.chars().count() > MAX_QUERY_LEN {
+        return Err(AppError::invalid_argument(format!(
+            "search query is longer than {MAX_QUERY_LEN} characters"
+        )));
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "data", rename_all = "snake_case")]
 pub enum Response {
     Status(Box<HealthSnapshot>),
     SearchAnime(Vec<SearchCandidate>),
     FollowAnilist(Box<FollowResult>),
+    SearchTv(Vec<SearchCandidate>),
+    FollowTv(Box<FollowResult>),
     Drop(Box<FollowSummary>),
     ListFollows(Vec<FollowSummary>),
     Upcoming(Vec<UpcomingRelease>),
@@ -117,6 +131,8 @@ impl Response {
             Self::Status(_) => "status",
             Self::SearchAnime(_) => "search_anime",
             Self::FollowAnilist(_) => "follow_anilist",
+            Self::SearchTv(_) => "search_tv",
+            Self::FollowTv(_) => "follow_tv",
             Self::Drop(_) => "drop",
             Self::ListFollows(_) => "list_follows",
             Self::Upcoming(_) => "upcoming",
@@ -208,6 +224,10 @@ mod tests {
             Request::FollowAnilist {
                 id: AniListId::new(21).expect("valid id"),
             },
+            Request::SearchTv { query: None },
+            Request::FollowTv {
+                id: TvMazeId::new(82).expect("valid id"),
+            },
             Request::Drop {
                 media_id: MediaId::new(1).expect("valid id"),
             },
@@ -218,10 +238,10 @@ mod tests {
     }
 
     #[test]
-    fn the_surface_is_exactly_seven_requests() {
+    fn the_request_surface_is_closed() {
         // Guards against the deleted notification and change-wait requests
-        // creeping back in.
-        assert_eq!(every_request().len(), 7);
+        // creeping back in. Search and follow exist once per source.
+        assert_eq!(every_request().len(), 9);
     }
 
     #[test]
@@ -284,6 +304,9 @@ mod tests {
             r#"{"kind":"follow_anilist","data":{"id":2147483648}}"#
         )
         .is_err());
+        assert!(
+            serde_json::from_str::<Request>(r#"{"kind":"follow_tv","data":{"id":0}}"#).is_err()
+        );
     }
 
     #[test]
@@ -292,6 +315,11 @@ mod tests {
         assert!(Request::SearchAnime { query: "x".into() }.touches_source());
         assert!(Request::FollowAnilist {
             id: AniListId::new(21).expect("valid id"),
+        }
+        .touches_source());
+        assert!(Request::SearchTv { query: None }.touches_source());
+        assert!(Request::FollowTv {
+            id: TvMazeId::new(82).expect("valid id"),
         }
         .touches_source());
 

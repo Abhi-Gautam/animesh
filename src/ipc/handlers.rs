@@ -46,6 +46,12 @@ async fn handle(library: &Library, request: Request) -> Result<Response, AppErro
             Ok(Response::FollowAnilist(Box::new(library.follow(id).await?)))
         }
 
+        Request::SearchTv { query } => Ok(Response::SearchTv(
+            library.search_tv(query.as_deref()).await?,
+        )),
+
+        Request::FollowTv { id } => Ok(Response::FollowTv(Box::new(library.follow_tv(id).await?))),
+
         Request::Drop { media_id } => Ok(Response::Drop(Box::new(
             library.drop_follow(media_id).await?,
         ))),

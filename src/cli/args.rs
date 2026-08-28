@@ -1,14 +1,39 @@
 //! The `animesh` command surface.
 
+use std::str::FromStr;
+
 use clap::{Parser, Subcommand};
 
-use crate::domain::ids::{AniListId, MediaId};
+use crate::domain::ids::{AniListId, IdError, MediaId, SourceNumericId, TvMazeId};
+
+/// What `follow` accepts: a bare number (AniList unless `--tv`), or `anilist:N` / `tvmaze:N`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FollowTarget {
+    Bare(SourceNumericId),
+    AniList(AniListId),
+    TvMaze(TvMazeId),
+}
+
+impl FromStr for FollowTarget {
+    type Err = IdError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let s = s.trim();
+        if let Some(rest) = s.strip_prefix("tvmaze:") {
+            return Ok(Self::TvMaze(rest.parse()?));
+        }
+        if let Some(rest) = s.strip_prefix("anilist:") {
+            return Ok(Self::AniList(rest.parse()?));
+        }
+        Ok(Self::Bare(s.parse()?))
+    }
+}
 
 #[derive(Debug, Parser)]
 #[command(
     name = "animesh",
     version,
-    about = "Personal release radar for anime",
+    about = "Personal release radar for anime and TV",
     disable_help_subcommand = true
 )]
 pub struct Cli {
@@ -26,16 +51,28 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Search AniList for a title.
+    /// Search for a title. AniList by default; `--tv` uses TVmaze.
     Search {
         /// Free-text query. Quote it if it contains spaces.
+        ///
+        /// With `--tv` and no query, lists currently airing English-language
+        /// US broadcasts and streams.
         query: Vec<String>,
+        /// Search TVmaze instead of AniList.
+        #[arg(long)]
+        tv: bool,
     },
 
-    /// Follow a title by its AniList id.
+    /// Follow a title. AniList by default; ids overlap across sources.
+    ///
+    /// A bare number is AniList. Paste the `tvmaze:82` search prints, or pass
+    /// `--tv 82`. `anilist:21` is the same as `21`.
     Follow {
-        #[arg(value_name = "ANILIST_ID")]
-        id: AniListId,
+        #[arg(value_name = "ID")]
+        id: FollowTarget,
+        /// Follow a bare number as a TVmaze show id.
+        #[arg(long)]
+        tv: bool,
     },
 
     /// Show upcoming episodes. Local-only; never touches the network.
@@ -126,13 +163,50 @@ mod tests {
         assert!(Cli::try_parse_from(["animesh", "follow", "0"]).is_err());
         assert!(Cli::try_parse_from(["animesh", "follow", "banana"]).is_err());
         assert!(Cli::try_parse_from(["animesh", "follow", "21"]).is_ok());
+        assert!(Cli::try_parse_from(["animesh", "follow", "--tv", "0"]).is_err());
+        assert!(Cli::try_parse_from(["animesh", "follow", "tvmaze:0"]).is_err());
+        assert!(Cli::try_parse_from(["animesh", "follow", "anilist:21"]).is_ok());
+    }
+
+    #[test]
+    fn tv_flags_select_tvmaze() {
+        let search = Cli::try_parse_from(["animesh", "search", "--tv"]).expect("parse");
+        match search.command {
+            Command::Search { query, tv } => {
+                assert!(query.is_empty());
+                assert!(tv);
+            }
+            other => panic!("expected search, got {other:?}"),
+        }
+        let follow = Cli::try_parse_from(["animesh", "follow", "--tv", "82"]).expect("parse");
+        match follow.command {
+            Command::Follow { id, tv } => {
+                assert_eq!(
+                    id,
+                    FollowTarget::Bare(SourceNumericId::new(82).expect("id"))
+                );
+                assert!(tv);
+            }
+            other => panic!("expected follow, got {other:?}"),
+        }
+        let prefixed = Cli::try_parse_from(["animesh", "follow", "tvmaze:82"]).expect("parse");
+        match prefixed.command {
+            Command::Follow { id, tv } => {
+                assert_eq!(id, FollowTarget::TvMaze(TvMazeId::new(82).expect("id")));
+                assert!(!tv);
+            }
+            other => panic!("expected follow, got {other:?}"),
+        }
     }
 
     #[test]
     fn search_accepts_unquoted_multiword_queries() {
         let cli = Cli::try_parse_from(["animesh", "search", "one", "piece"]).expect("parse");
         match cli.command {
-            Command::Search { query } => assert_eq!(query, vec!["one", "piece"]),
+            Command::Search { query, tv } => {
+                assert_eq!(query, vec!["one", "piece"]);
+                assert!(!tv);
+            }
             other => panic!("expected search, got {other:?}"),
         }
     }

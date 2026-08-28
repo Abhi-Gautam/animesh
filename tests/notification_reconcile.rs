@@ -244,6 +244,7 @@ async fn world(base_url: String) -> World {
     let library = Arc::new(Library::new(
         store,
         animesh::sources::anilist::client::AniListClient::new(base_url).expect("client"),
+        animesh::sources::tvmaze::TvMazeClient::new("http://127.0.0.1:1").expect("tvmaze"),
         Arc::clone(&clock) as Arc<dyn WallClock>,
         Arc::new(NoJitter),
         installation,
