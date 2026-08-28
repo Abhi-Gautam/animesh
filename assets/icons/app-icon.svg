@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- App icon: graphite field, light rings, amber pip. Square; macOS applies
+       the squircle mask. Same mark as mark.svg, padded for Apple's icon grid. -->
+  <rect width="1024" height="1024" fill="#1C1C1E"/>
+  <g fill="none" stroke="#F5F5F7" stroke-linecap="round">
+    <circle cx="512" cy="512" r="300" stroke-width="52"/>
+    <circle cx="512" cy="512" r="148" stroke-width="44"/>
+  </g>
+  <circle cx="771.808" cy="362" r="58" fill="#FF9F0A"/>
+</svg>

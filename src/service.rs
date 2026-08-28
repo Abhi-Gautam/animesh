@@ -83,6 +83,10 @@ fn resolve_daemon(launched: &Path) -> Option<PathBuf> {
 }
 
 fn write_file(path: &Path, contents: &str) -> Result<(), AppError> {
+    write_bytes(path, contents.as_bytes())
+}
+
+fn write_bytes(path: &Path, contents: &[u8]) -> Result<(), AppError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| failed(format!("creating {}: {e}", parent.display())))?;
@@ -222,10 +226,52 @@ fn unit_contents(daemon: &Path) -> String {
 /// stopping the daemon, so it is installed by the same action that starts it.
 #[cfg(not(target_os = "macos"))]
 fn install_desktop_entry() -> Result<(), AppError> {
-    let path = home()?
-        .join(".local/share/applications")
-        .join("animesh.desktop");
-    write_file(&path, include_str!("../assets/animesh.desktop"))
+    let share = home()?.join(".local/share");
+    write_file(
+        &share.join("applications/animesh.desktop"),
+        include_str!("../assets/animesh.desktop"),
+    )?;
+    install_hicolor(&share)
+}
+
+/// hicolor PNGs that `Icon=animesh` and the Notify `app_icon` both name.
+#[cfg(not(target_os = "macos"))]
+const HICOLOR_ICONS: &[(&str, &[u8])] = &[
+    (
+        "16x16",
+        include_bytes!("../assets/icons/hicolor/16x16/apps/animesh.png"),
+    ),
+    (
+        "24x24",
+        include_bytes!("../assets/icons/hicolor/24x24/apps/animesh.png"),
+    ),
+    (
+        "32x32",
+        include_bytes!("../assets/icons/hicolor/32x32/apps/animesh.png"),
+    ),
+    (
+        "48x48",
+        include_bytes!("../assets/icons/hicolor/48x48/apps/animesh.png"),
+    ),
+    (
+        "256x256",
+        include_bytes!("../assets/icons/hicolor/256x256/apps/animesh.png"),
+    ),
+    (
+        "512x512",
+        include_bytes!("../assets/icons/hicolor/512x512/apps/animesh.png"),
+    ),
+];
+
+#[cfg(not(target_os = "macos"))]
+fn install_hicolor(data_home: &Path) -> Result<(), AppError> {
+    for (size, bytes) in HICOLOR_ICONS {
+        write_bytes(
+            &data_home.join(format!("icons/hicolor/{size}/apps/animesh.png")),
+            bytes,
+        )?;
+    }
+    Ok(())
 }
 
 /// Whether the user's services keep running when they are not logged in.
@@ -457,6 +503,21 @@ mod tests {
         let unit = unit_contents(Path::new("/usr/local/bin/animesh-app"));
         let restarts = unit.contains("KeepAlive") || unit.contains("Restart=on-failure");
         assert!(restarts, "unit does not restart on failure:\n{unit}");
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn hicolor_icons_are_written_under_data_home() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        install_hicolor(temp.path()).expect("install");
+        for size in ["16x16", "24x24", "32x32", "48x48", "256x256", "512x512"] {
+            let path = temp
+                .path()
+                .join(format!("icons/hicolor/{size}/apps/animesh.png"));
+            assert!(path.exists(), "missing {size}");
+            let bytes = std::fs::read(&path).expect("read");
+            assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n", "{size} is not a PNG");
+        }
     }
 
     #[test]

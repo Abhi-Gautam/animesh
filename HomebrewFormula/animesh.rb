@@ -47,8 +47,12 @@ class Animesh < Formula
       system "cargo", "install", *std_cargo_args(path: ".")
 
       # What makes a notification server show Animesh by name in its per-app
-      # settings, instead of an unnamed sender.
+      # settings, instead of an unnamed sender. The hicolor PNGs are the icon
+      # that `Icon=animesh` and the Notify app_icon both name.
       (share/"applications").install "assets/animesh.desktop"
+      %w[16x16 24x24 32x32 48x48 256x256 512x512].each do |size|
+        (share/"icons/hicolor/#{size}/apps").install "assets/icons/hicolor/#{size}/apps/animesh.png"
+      end
     end
   end
 
@@ -114,5 +118,11 @@ class Animesh < Formula
     # resolving from the link alone finds an empty bin and reports a correct
     # install as missing its daemon.
     assert_predicate bin/"animesh", :symlink? if OS.mac?
+
+    if OS.mac?
+      assert_predicate prefix/"Animesh.app/Contents/Resources/AppIcon.icns", :exist?
+    else
+      assert_predicate share/"icons/hicolor/256x256/apps/animesh.png", :exist?
+    end
   end
 end

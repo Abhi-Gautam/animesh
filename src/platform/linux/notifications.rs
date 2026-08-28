@@ -31,6 +31,10 @@ use crate::engine::reconciler::{NotificationSurface, PendingRequest, SurfaceErro
 /// off switch.
 pub const DESKTOP_ENTRY: &str = "animesh";
 
+/// Freedesktop icon name. Must match `Icon=` in the desktop file and the
+/// hicolor filename, or the server shows a generic blob.
+const APP_ICON: &str = "animesh";
+
 /// Shown by the server as the sending application.
 const APP_NAME: &str = "Animesh";
 
@@ -141,7 +145,7 @@ impl NotificationSurface for DesktopNotifier {
                     // Never replace: each episode is its own banner, and the
                     // ids the server hands back do not survive a restart.
                     0,
-                    "",
+                    APP_ICON,
                     &request.title,
                     &request.body,
                     &[],
@@ -166,5 +170,19 @@ impl NotificationSurface for DesktopNotifier {
     /// later would be worse than leaving it.
     fn remove(&self, _identifiers: Vec<String>) -> SurfaceFuture<'_, ()> {
         Box::pin(async move { Ok(()) })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn notify_icon_matches_the_desktop_file() {
+        let desktop = include_str!("../../../assets/animesh.desktop");
+        assert!(
+            desktop.contains(&format!("Icon={}\n", super::APP_ICON)),
+            "desktop file does not name {icon}",
+            icon = super::APP_ICON
+        );
+        assert_eq!(super::APP_ICON, super::DESKTOP_ENTRY);
     }
 }

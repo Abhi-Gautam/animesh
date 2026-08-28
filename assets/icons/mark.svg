@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 18 18">
+  <!-- Template mark: two rings and a pip at 2 o'clock. Black on clear so
+       macOS can invert it as an NSImage template in the menu bar. -->
+  <g fill="none" stroke="#000" stroke-width="1.35" stroke-linecap="round">
+    <circle cx="9" cy="9" r="6.25"/>
+    <circle cx="9" cy="9" r="3.05"/>
+  </g>
+  <circle cx="14.413" cy="5.875" r="1.55" fill="#000"/>
+</svg>

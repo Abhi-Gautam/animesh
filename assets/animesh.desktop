@@ -4,6 +4,7 @@ Version=1.0
 Name=Animesh
 GenericName=Release radar
 Comment=Personal release radar for anime and other scheduled media
+Icon=animesh
 Exec=animesh next
 Terminal=true
 Categories=Utility;AudioVideo;

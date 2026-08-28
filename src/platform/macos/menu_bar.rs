@@ -10,13 +10,16 @@ use std::sync::{Arc, Mutex};
 
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject, Sel};
-use objc2::{define_class, msg_send, sel, DefinedClass, MainThreadOnly};
+use objc2::{define_class, msg_send, sel, AnyThread, DefinedClass, MainThreadOnly};
 use objc2_app_kit::{
-    NSApplication, NSMenu, NSMenuDelegate, NSMenuItem, NSStatusBar, NSStatusItem,
-    NSVariableStatusItemLength,
+    NSApplication, NSCellImagePosition, NSImage, NSMenu, NSMenuDelegate, NSMenuItem, NSStatusBar,
+    NSStatusItem, NSVariableStatusItemLength,
 };
-use objc2_foundation::{MainThreadMarker, NSObject, NSObjectProtocol, NSString};
+use objc2_foundation::{MainThreadMarker, NSData, NSObject, NSObjectProtocol, NSString};
 use tokio::sync::mpsc::UnboundedSender;
+
+/// Template PDF of the radar-pip mark. Black-on-clear; AppKit inverts it.
+const MENU_BAR_TEMPLATE: &[u8] = include_bytes!("../../../assets/icons/menubar-template.pdf");
 
 /// What a menu click asks the engine to do.
 ///
@@ -149,6 +152,11 @@ impl std::fmt::Debug for MenuBar {
     }
 }
 
+fn menu_bar_image() -> Option<Retained<NSImage>> {
+    let data = NSData::with_bytes(MENU_BAR_TEMPLATE);
+    NSImage::initWithData(NSImage::alloc(), &data)
+}
+
 impl MenuBar {
     pub fn install(
         mtm: MainThreadMarker,
@@ -158,10 +166,16 @@ impl MenuBar {
         let bar = NSStatusBar::systemStatusBar();
         let item = bar.statusItemWithLength(NSVariableStatusItemLength);
 
-        // A text title rather than an icon asset: it renders identically on
-        // every appearance and needs no .icns to exist.
         if let Some(button) = item.button(mtm) {
-            button.setTitle(&NSString::from_str("◈"));
+            match menu_bar_image() {
+                Some(image) => {
+                    image.setTemplate(true);
+                    button.setImage(Some(&image));
+                    button.setImagePosition(NSCellImagePosition::ImageOnly);
+                    button.setTitle(&NSString::from_str(""));
+                }
+                None => tracing::error!("menu bar template did not decode"),
+            }
         }
 
         let target = MenuTarget::new(mtm, commands, model.clone());

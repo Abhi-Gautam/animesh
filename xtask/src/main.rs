@@ -195,11 +195,12 @@ fn bundle(release: bool) -> Result<PathBuf, String> {
     )?;
 
     let icon = root.join("assets/AppIcon.icns");
-    if icon.exists() {
-        copy(&icon, &contents.join("Resources/AppIcon.icns"))?;
-    } else {
-        eprintln!("xtask: no assets/AppIcon.icns; the bundle will use the generic icon");
+    if !icon.exists() {
+        return Err(
+            "assets/AppIcon.icns is missing; the bundle would ship the generic icon".to_owned(),
+        );
     }
+    copy(&icon, &contents.join("Resources/AppIcon.icns"))?;
 
     sign(&app)?;
     println!("bundled {} {version} at {}", APP_NAME, app.display());
@@ -325,6 +326,7 @@ fn verify(app: &Path) -> Fallible {
         PathBuf::from("MacOS").join(APP_NAME),
         PathBuf::from("Helpers").join(CLI_NAME),
         PathBuf::from("Library/LaunchAgents").join(AGENT_PLIST),
+        PathBuf::from("Resources").join("AppIcon.icns"),
     ] {
         if !contents.join(&required).exists() {
             return Err(format!("missing {}", required.display()));
@@ -342,6 +344,10 @@ fn verify(app: &Path) -> Fallible {
     let id = plist_value(&contents.join("Info.plist"), "CFBundleIdentifier")?;
     if id != BUNDLE_ID {
         return Err(format!("bundle id is {id}, expected {BUNDLE_ID}"));
+    }
+    let icon_file = plist_value(&contents.join("Info.plist"), "CFBundleIconFile")?;
+    if icon_file != "AppIcon" {
+        return Err(format!("CFBundleIconFile is {icon_file}, expected AppIcon"));
     }
     let ui_element = plist_value(&contents.join("Info.plist"), "LSUIElement")?;
     if ui_element != "true" && ui_element != "1" {
