@@ -24,8 +24,8 @@
 class Animesh < Formula
   desc "Personal release radar for anime and other scheduled media"
   homepage "https://github.com/Abhi-Gautam/animesh"
-  url "https://github.com/Abhi-Gautam/animesh/archive/refs/tags/v0.6.0.tar.gz"
-  sha256 "3f0266d52c744341f49f22ad9ec0a3a97be9455458db86707e9268f850759958"
+  url "https://github.com/Abhi-Gautam/animesh/archive/refs/tags/v0.6.1.tar.gz"
+  sha256 "24dc4a6493cfa9773e60a96dd24981fc01171df22b8fe1d2d9be5fa3a6bbaea9"
   license "MIT"
   head "https://github.com/Abhi-Gautam/animesh.git", branch: "master"
 
