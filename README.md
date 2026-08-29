@@ -50,9 +50,10 @@ the first time; declining is fine, since nothing in the CLI depends on it.
 
 ```bash
 animesh search "one piece"   # find a title on AniList
-animesh follow 21            # follow it, by AniList id
+animesh follow anilist:21    # follow it
 animesh search --tv          # currently airing English-language US TV
 animesh follow tvmaze:82     # follow a TVmaze show (or: follow --tv 82)
+animesh drop media:1         # stop following, by the token list/next print
 animesh next                 # upcoming episodes; local only, never hits the network
 animesh list                 # everything you follow
 animesh drop 1               # stop following, by media id

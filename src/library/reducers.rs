@@ -270,6 +270,7 @@ fn desired_request(inputs: &NotificationInputs<'_>) -> Option<NativeRequest> {
         inputs.event.scheduled_at,
         inputs.title,
         episode,
+        inputs.event.season,
         inputs.source_key,
     ))
 }

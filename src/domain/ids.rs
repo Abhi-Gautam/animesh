@@ -39,6 +39,9 @@ pub enum IdError {
         max: usize,
         len: usize,
     },
+
+    #[error("{0}")]
+    Identity(&'static str),
 }
 
 /// Defines a newtype over `i64` that can only hold values within `$min..=$max`.
@@ -287,6 +290,13 @@ impl AniListId {
 impl TvMazeId {
     pub const fn from_numeric(id: SourceNumericId) -> Self {
         Self(id.0)
+    }
+}
+
+impl MediaId {
+    /// The token `drop` and serving rows print. Distinct from a source id.
+    pub fn key(self) -> String {
+        format!("media:{self}")
     }
 }
 

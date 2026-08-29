@@ -179,9 +179,10 @@ fn summary(health: &HealthSnapshot) -> String {
 fn row(release: &UpcomingRelease, now: UnixTimestamp) -> MenuRow {
     use crate::cli::render::{when, Whenish};
 
-    let episode = release
-        .episode
-        .map_or_else(|| "next ep".to_owned(), |e| format!("Ep {e}"));
+    let episode = release.episode.map_or_else(
+        || "next ep".to_owned(),
+        |e| crate::domain::read_models::episode_label(e, release.season),
+    );
 
     let timing = match when(now, release.scheduled_at) {
         Whenish::Aired(ago) => format!("dropped {ago} ago"),

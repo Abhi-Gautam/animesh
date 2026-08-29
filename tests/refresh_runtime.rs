@@ -181,16 +181,16 @@ async fn a_due_title_refreshes_and_advances_its_episode() {
     // Both rows serve: episode 5 aired two hours ago and stays visible inside
     // the 24h window, episode 6 is the newly scheduled one.
     let upcoming = world.library.upcoming(None).await.expect("upcoming");
-    assert_eq!(upcoming.len(), 2, "{upcoming:#?}");
-
-    let aired = &upcoming[0];
-    assert_eq!(aired.episode.map(|e| e.get()), Some(5));
-    assert!(aired.aired, "the elapsed episode should be marked as aired");
-
-    let next = &upcoming[1];
+    assert_eq!(upcoming.len(), 1, "{upcoming:#?}");
+    let next = &upcoming[0];
     assert_eq!(next.episode.map(|e| e.get()), Some(6));
     assert!(!next.aired);
     assert_eq!(next.freshness, Freshness::Fresh);
+
+    let dropped = world.library.recently_aired(None).await.expect("dropped");
+    assert_eq!(dropped.len(), 1, "{dropped:#?}");
+    assert_eq!(dropped[0].episode.map(|e| e.get()), Some(5));
+    assert!(dropped[0].aired);
 }
 
 #[tokio::test]
@@ -487,10 +487,19 @@ async fn an_aired_episode_stays_visible_and_creates_no_new_notification_intent()
     // Past the airtime, before any refresh has retired the event.
     world.clock.advance(5_400);
 
-    let upcoming = world.library.upcoming(None).await.expect("upcoming");
-    assert_eq!(upcoming.len(), 1, "the aired episode vanished");
-    assert!(upcoming[0].aired, "it should be marked as aired");
-    assert_eq!(upcoming[0].episode.map(|e| e.get()), Some(5));
+    assert!(
+        world
+            .library
+            .upcoming(None)
+            .await
+            .expect("upcoming")
+            .is_empty(),
+        "future next must not include an aired episode"
+    );
+    let dropped = world.library.recently_aired(None).await.expect("dropped");
+    assert_eq!(dropped.len(), 1, "the aired episode vanished");
+    assert!(dropped[0].aired, "it should be marked as aired");
+    assert_eq!(dropped[0].episode.map(|e| e.get()), Some(5));
 
     // Reading must not change desired notification state.
     assert_eq!(world.library.plan_generation(), plan_before);
@@ -512,7 +521,12 @@ async fn an_episode_older_than_the_window_falls_off() {
     // Just inside the window.
     world.clock.advance(3_600 + 23 * 3_600);
     assert_eq!(
-        world.library.upcoming(None).await.expect("upcoming").len(),
+        world
+            .library
+            .recently_aired(None)
+            .await
+            .expect("dropped")
+            .len(),
         1
     );
 
@@ -520,9 +534,9 @@ async fn an_episode_older_than_the_window_falls_off() {
     world.clock.advance(2 * 3_600);
     assert!(world
         .library
-        .upcoming(None)
+        .recently_aired(None)
         .await
-        .expect("upcoming")
+        .expect("dropped")
         .is_empty());
 }
 
@@ -553,9 +567,21 @@ async fn health_reports_only_genuinely_future_episodes() {
         health.earliest_upcoming.is_none(),
         "health surfaced an already-aired episode"
     );
-    // But the serving view still has it.
+    assert!(
+        world
+            .library
+            .upcoming(None)
+            .await
+            .expect("upcoming")
+            .is_empty()
+    );
     assert_eq!(
-        world.library.upcoming(None).await.expect("upcoming").len(),
+        world
+            .library
+            .recently_aired(None)
+            .await
+            .expect("dropped")
+            .len(),
         1
     );
 }

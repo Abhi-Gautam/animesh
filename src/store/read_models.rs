@@ -16,7 +16,7 @@ use crate::domain::read_models::{Freshness, RefreshCounts, UpcomingRelease};
 /// order depends on which layer produced it is not a read model.
 const UPCOMING_SQL: &str = "
     SELECT re.release_event_id, re.event_uuid, re.media_id, sm.source, sm.source_id,
-           m.display_title, re.sequence_number, re.scheduled_at, re.schedule_revision,
+           m.display_title, re.sequence_number, re.season, re.scheduled_at, re.schedule_revision,
            rs.last_success_at, rs.refresh_after, rs.retry_after
     FROM release_events re
     JOIN follows f       ON f.media_id = re.media_id AND f.state = 'active'
@@ -82,11 +82,12 @@ pub fn upcoming(
                 row.get::<_, i64>(4)?,
                 row.get::<_, String>(5)?,
                 row.get::<_, Option<i64>>(6)?,
-                row.get::<_, i64>(7)?,
+                row.get::<_, Option<i64>>(7)?,
                 row.get::<_, i64>(8)?,
-                row.get::<_, Option<i64>>(9)?,
+                row.get::<_, i64>(9)?,
                 row.get::<_, Option<i64>>(10)?,
                 row.get::<_, Option<i64>>(11)?,
+                row.get::<_, Option<i64>>(12)?,
             ))
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -101,6 +102,7 @@ pub fn upcoming(
                 source_id,
                 title,
                 sequence,
+                season,
                 scheduled_at,
                 revision,
                 last_success,
@@ -127,6 +129,9 @@ pub fn upcoming(
                     .map(EpisodeNumber::new)
                     .transpose()
                     .map_err(|e| bad(e.to_string()))?,
+                season: season
+                    .and_then(|s| i32::try_from(s).ok())
+                    .filter(|s| *s >= 1),
                 scheduled_at: ts(scheduled_at)?,
                 schedule_revision: revision,
                 last_success_at: last_success.map(ts).transpose()?,

@@ -22,6 +22,22 @@ pub const MAX_UPCOMING_LIMIT: u32 = 500;
 /// Rows inside this band are returned with [`UpcomingRelease::aired`] set.
 pub const AIRED_VISIBILITY_SECS: i64 = 24 * 60 * 60;
 
+/// How many just-aired rows the human `next` band shows. Does not count
+/// against `-n`, which is the future list.
+pub const DROPPED_BAND: u32 = 5;
+
+/// Phrase an episode the way a person reads it.
+///
+/// Seasonal sources (TVmaze) restart numbering; AniList does not. The same
+/// string is used on `next`, `list`, and the notification body so the three
+/// cannot drift.
+pub fn episode_label(episode: EpisodeNumber, season: Option<i32>) -> String {
+    match season {
+        Some(season) => format!("S{season}E{episode}"),
+        None => format!("Episode {episode}"),
+    }
+}
+
 /// How current the source data behind a row is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -43,6 +59,8 @@ pub struct UpcomingRelease {
     pub source_id: SourceNumericId,
     pub display_title: BoundedText,
     pub episode: Option<EpisodeNumber>,
+    /// TVmaze season. `None` for AniList, where episode numbers do not restart.
+    pub season: Option<i32>,
     pub scheduled_at: UnixTimestamp,
     pub schedule_revision: i64,
     pub last_success_at: Option<UnixTimestamp>,
@@ -298,6 +316,7 @@ mod tests {
             source_id: SourceNumericId::new(21).expect("valid id"),
             display_title: BoundedText::new("t", 512, "Title").expect("valid title"),
             episode: episode.map(|e| EpisodeNumber::new(e).expect("valid episode")),
+            season: None,
             scheduled_at: at(scheduled_at),
             schedule_revision: 1,
             last_success_at: None,
@@ -361,6 +380,18 @@ mod tests {
         assert_eq!(
             forward.iter().map(|r| r.sort_key()).collect::<Vec<_>>(),
             reversed.iter().map(|r| r.sort_key()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn episode_label_is_seasonal_only_when_a_season_exists() {
+        assert_eq!(
+            episode_label(EpisodeNumber::new(1176).expect("ep"), None),
+            "Episode 1176"
+        );
+        assert_eq!(
+            episode_label(EpisodeNumber::new(4).expect("ep"), Some(18)),
+            "S18E4"
         );
     }
 

@@ -209,6 +209,7 @@ impl NativeRequest {
         airtime: UnixTimestamp,
         title: &str,
         episode: EpisodeNumber,
+        season: Option<i32>,
         source_key: SourceKey,
     ) -> Self {
         Self {
@@ -217,7 +218,10 @@ impl NativeRequest {
             fire_at: airtime,
             original_airtime: airtime,
             title: title.to_owned(),
-            body: format!("Episode {episode} is now airing."),
+            body: format!(
+                "{} is now airing.",
+                crate::domain::read_models::episode_label(episode, season)
+            ),
             sound: true,
             url: source_url(source_key),
         }
@@ -444,6 +448,7 @@ mod tests {
             at(airtime),
             title,
             EpisodeNumber::new(12).expect("valid episode"),
+            None,
             SourceKey::anilist(AniListId::new(21).expect("valid id")),
         )
     }
@@ -499,6 +504,16 @@ mod tests {
     #[test]
     fn body_names_the_episode() {
         assert_eq!(request("One Piece", 1).body, "Episode 12 is now airing.");
+        let seasonal = NativeRequest::build(
+            OsIdentifier::from_stored("dev.animesh.release.a.b"),
+            DeliveryMode::Scheduled,
+            at(1_000),
+            "It's Always Sunny in Philadelphia",
+            EpisodeNumber::new(4).expect("valid episode"),
+            Some(18),
+            SourceKey::tvmaze(TvMazeId::new(347).expect("id")),
+        );
+        assert_eq!(seasonal.body, "S18E4 is now airing.");
     }
 
     #[test]

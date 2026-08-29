@@ -58,7 +58,11 @@ async fn handle(library: &Library, request: Request) -> Result<Response, AppErro
 
         Request::ListFollows => Ok(Response::ListFollows(library.list_follows().await?)),
 
-        Request::Upcoming { limit } => Ok(Response::Upcoming(library.upcoming(limit).await?)),
+        Request::Upcoming { limit, dropped } => Ok(Response::Upcoming(if dropped {
+            library.recently_aired(limit).await?
+        } else {
+            library.upcoming(limit).await?
+        })),
 
         Request::TriggerRefresh => Ok(Response::TriggerRefresh(library.trigger_refresh().await?)),
     }

@@ -47,34 +47,31 @@ prose for a person and may change between releases. Never branch on `message`.
 
 ## The ID types — read this before calling anything
 
-Three different IDs, and mixing them is the most common failure:
+Two tokens, printed on every row. A bare integer is not an identity.
 
-- **`source` + `source_id`** — the public identity of a title. `source` is
-  `anilist` (anime) or `tvmaze` (TV). `source_id` is that source's integer.
-  AniList 21 and TVmaze 21 are different shows. Follow with the token search
-  prints (`anilist:21` or `tvmaze:82`), or `follow --tv SOURCE_ID` when
-  `source` is `tvmaze`.
-- **`media_id`** — a small local row ID, unique to this user's library.
-  `drop` takes this one.
+- **`anilist:N` / `tvmaze:N`** — the public identity of a title. AniList 21
+  and TVmaze 21 are different shows. `follow` takes this token (or
+  `follow --tv N` as the same as `tvmaze:N`). `drop` accepts it too.
+- **`media:N`** — a local row ID, unique to this user's library. `drop`
+  also accepts this. JSON still carries numeric `media_id`, `source`, and
+  `source_id`; the tokens are those fields joined, not a third number space.
 
-Never guess an ID. Get `source` and `source_id` from `search`, and `media_id`
-from `list` or `next`. A bare integer is AniList. Never pass a TVmaze id as
-a bare number.
+Never guess an ID. Get the source token from `search`. Get `media:N` from
+`list` or `next`. Never pass a bare number to `follow` or `drop`.
 
 ## Commands
 
 ### `animesh --json next [-n LIMIT]`
 
-Upcoming episodes, soonest first. Local only — never touches the network, so it
-is cheap and safe to call often. This is the right answer to almost every
-"what's airing" question.
+**Future** episodes, soonest first. `next -n 1` is the actual next airing,
+never something that already dropped. Local only — never touches the network.
 
 ```
 $ animesh --json next -n 1
 {"data":[{"aired":false,"display_title":"Re:ZERO -Starting Life in Another World- Season 4",
   "episode":14,"event_uuid":"8eb1bce4-...","freshness":"fresh",
   "last_success_at":1787572804,"media_id":4,"release_event_id":11,
-  "schedule_revision":1,"scheduled_at":1787749200,"source":"anilist",
+  "schedule_revision":1,"scheduled_at":1787749200,"season":null,"source":"anilist",
   "source_id":189046}],
  "kind":"upcoming","ok":true}
 ```
@@ -83,8 +80,13 @@ $ animesh --json next -n 1
 
 `scheduled_at` is a Unix timestamp in UTC. Convert it to the user's local
 timezone before saying a time out loud. `freshness` is `fresh`, `stale`, or
-`unknown` — anything other than `fresh` means the schedule has not been
-confirmed recently, so hedge. `aired: true` means the airtime has passed.
+`backing_off` — anything other than `fresh` means hedge. `season` is set for
+TVmaze (say "S18E4"); AniList is `null` (say "Episode 1176").
+
+### `animesh --json next --dropped`
+
+Just-aired episodes from the last 24 hours, newest first. Use this for "did
+it drop?", not `next -n 1`.
 
 ### `animesh --json list`
 
@@ -108,29 +110,27 @@ This is a lookup step, not an answer. Run it to turn a title into a
 
 Searches TVmaze for TV. With a query, title search. With no query, currently
 airing English-language US broadcasts and streams — this is the answer to
-"what's on TV", not a lookup you have to invent a query for. Candidates have
-`source: "tvmaze"`. Follow those with `follow --tv SOURCE_ID`. Never pass a
-TVmaze `source_id` to `follow` without `--tv`.
+"what's on TV", not a lookup you have to invent a query for. Candidates have `source: "tvmaze"`. Follow with `follow tvmaze:SOURCE_ID`.
+This is discovery of the US linear grid, not the user's library. `next` is
+what they actually follow.
 
 ### `animesh --json follow ID`
 
-Starts following. `ID` is `anilist:N`, `tvmaze:N`, or a bare AniList number.
+Starts following. `ID` is `anilist:N` or `tvmaze:N`. A bare number is rejected.
 `follow --tv N` is the same as `follow tvmaze:N`. Returns `outcome`:
 `newly_followed`, `reactivated`, or `already_active`, plus `source` and
 `source_id`. If `source` is not the catalog you meant, you followed the wrong
 show — `drop` it.
 
-Always `search` first. Route by the candidate's `source` field, not by whether
-the user said "TV": if `source` is `tvmaze`, follow `tvmaze:SOURCE_ID` (or
-`--tv SOURCE_ID`). If AniList returns nothing or a bad fit for a live-action
-title, search `--tv` before following. Confirm the match every time — a unique
-AniList hit is not proof it is the right show. AniList and TVmaze ids overlap.
+Always `search` first. Route by the candidate's `source` field: if `source`
+is `tvmaze`, follow `tvmaze:SOURCE_ID`. If AniList returns nothing or a bad
+fit for a live-action title, search `--tv` before following. Confirm the
+match every time — a unique AniList hit is not proof it is the right show.
 
-### `animesh --json drop MEDIA_ID`
+### `animesh --json drop ID`
 
-Stops following, by **local media** ID from `list`. This is destructive from the
-user's point of view — confirm before calling it, and never infer the ID from a
-title without checking `list` first.
+Stops following. `ID` is `media:N` from `list`/`next`, or `anilist:N` /
+`tvmaze:N`. Confirm before calling it. A bare number is rejected.
 
 ### `animesh --json status`
 

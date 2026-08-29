@@ -9,7 +9,8 @@ use chrono::{Local, TimeZone};
 use crate::domain::ids::UnixTimestamp;
 use crate::domain::media::SearchCandidate;
 use crate::domain::read_models::{
-    BootstrapState, FollowResult, FollowSummary, Freshness, HealthSnapshot, UpcomingRelease,
+    episode_label, BootstrapState, FollowResult, FollowSummary, Freshness, HealthSnapshot,
+    UpcomingRelease,
 };
 
 /// Formats an absolute instant in the viewer's local timezone, naming the zone.
@@ -117,31 +118,65 @@ fn freshness_note(freshness: Freshness) -> &'static str {
     }
 }
 
+fn identity_line(row: &UpcomingRelease) -> String {
+    format!(
+        "{}  {}",
+        crate::domain::ids::SourceKey {
+            source: row.source,
+            id: row.source_id,
+        },
+        row.media_id.key()
+    )
+}
+
+fn episode_phrase(row: &UpcomingRelease) -> String {
+    row.episode
+        .map(|e| episode_label(e, row.season))
+        .unwrap_or_else(|| "?".to_owned())
+}
+
 pub fn upcoming(rows: &[UpcomingRelease], now: UnixTimestamp) -> String {
-    if rows.is_empty() {
+    schedule(&[], rows, now)
+}
+
+/// Human `next`: just-aired band, then the future list. `-n` applies only to
+/// the future list.
+pub fn schedule(
+    dropped: &[UpcomingRelease],
+    upcoming: &[UpcomingRelease],
+    now: UnixTimestamp,
+) -> String {
+    if dropped.is_empty() && upcoming.is_empty() {
         return "Nothing scheduled.\n\nFind anime with 'animesh search <query>', or what's \
                 on TV with 'animesh search --tv', then follow it."
             .to_owned();
     }
 
     let mut out = String::new();
+    if !dropped.is_empty() {
+        out.push_str("Dropped\n");
+        write_upcoming_rows(&mut out, dropped, now);
+        if !upcoming.is_empty() {
+            out.push_str("\nUp next\n");
+        }
+    }
+    write_upcoming_rows(&mut out, upcoming, now);
+    out.trim_end().to_owned()
+}
+
+fn write_upcoming_rows(out: &mut String, rows: &[UpcomingRelease], now: UnixTimestamp) {
     for row in rows {
-        let episode = row
-            .episode
-            .map_or_else(|| "?".to_owned(), |e| e.get().to_string());
-        // A leading mark so an already-aired episode is findable by shape
-        // rather than by reading every timestamp.
         let mark = if row.aired { "*" } else { " " };
         out.push_str(&format!(
-            "{mark} {}\n    Episode {}  {}  {}{}\n",
+            "{mark} {}  ·  {}\n    {}  {}  {}{}\n",
             row.display_title,
-            episode,
+            identity_line(row),
+            episode_phrase(row),
             local_time(row.scheduled_at),
             relative(now, row.scheduled_at),
             freshness_note(row.freshness),
         ));
     }
-    out.trim_end().to_owned()
 }
 
 pub fn search(candidates: &[SearchCandidate]) -> String {
@@ -181,16 +216,21 @@ pub fn follows(summaries: &[FollowSummary], now: UnixTimestamp) -> String {
             || "  no scheduled episode".to_owned(),
             |u| {
                 format!(
-                    "  Episode {}  {}",
+                    "  {}  {}",
                     u.episode
-                        .map_or_else(|| "?".to_owned(), |e| e.get().to_string()),
+                        .map(|e| episode_label(e, u.season))
+                        .unwrap_or_else(|| "?".to_owned()),
                     relative(now, u.scheduled_at)
                 )
             },
         );
         out.push_str(&format!(
-            "{:>9}  {}\n{}{}\n",
-            summary.media_id,
+            "{}  {}  {}\n{}{}\n",
+            summary.media_id.key(),
+            crate::domain::ids::SourceKey {
+                source: summary.source,
+                id: summary.source_id,
+            },
             summary.display_title,
             next,
             freshness_note(summary.freshness),
@@ -210,9 +250,10 @@ pub fn follow_result(result: &FollowResult, now: UnixTimestamp) -> String {
         || "  No scheduled episode yet.".to_owned(),
         |u| {
             format!(
-                "  Episode {} airs {} ({}).",
+                "  {} airs {} ({}).",
                 u.episode
-                    .map_or_else(|| "?".to_owned(), |e| e.get().to_string()),
+                    .map(|e| episode_label(e, u.season))
+                    .unwrap_or_else(|| "?".to_owned()),
                 local_time(u.scheduled_at),
                 relative(now, u.scheduled_at)
             )
@@ -220,8 +261,13 @@ pub fn follow_result(result: &FollowResult, now: UnixTimestamp) -> String {
     );
 
     format!(
-        "{verb}: {} (media {})\n{next}",
-        result.display_title, result.media_id
+        "{verb}: {}\n  {}  {}\n{next}",
+        result.display_title,
+        crate::domain::ids::SourceKey {
+            source: result.source,
+            id: result.source_id,
+        },
+        result.media_id.key(),
     )
 }
 
@@ -243,10 +289,11 @@ pub fn health(snapshot: &HealthSnapshot, now: UnixTimestamp) -> String {
 
     match &snapshot.earliest_upcoming {
         Some(next) => out.push_str(&format!(
-            "Next: {} episode {} {}\n",
+            "Next: {} {} {}\n",
             next.display_title,
             next.episode
-                .map_or_else(|| "?".to_owned(), |e| e.get().to_string()),
+                .map(|e| episode_label(e, next.season))
+                .unwrap_or_else(|| "?".to_owned()),
             relative(now, next.scheduled_at)
         )),
         None => out.push_str("Next: nothing scheduled\n"),

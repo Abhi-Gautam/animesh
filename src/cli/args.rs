@@ -4,9 +4,13 @@ use std::str::FromStr;
 
 use clap::{Parser, Subcommand};
 
-use crate::domain::ids::{AniListId, IdError, MediaId, SourceNumericId, TvMazeId};
+use crate::domain::ids::{AniListId, IdError, MediaId, SourceKey, SourceNumericId, TvMazeId};
 
-/// What `follow` accepts: a bare number (AniList unless `--tv`), or `anilist:N` / `tvmaze:N`.
+pub(crate) const BARE_FOLLOW: &str = "a bare number is not an identity; use anilist:N or tvmaze:N";
+const BARE_DROP: &str =
+    "drop wants media:N (from list) or the same anilist:N / tvmaze:N search printed";
+
+/// What `follow` accepts: `anilist:N`, `tvmaze:N`, or a bare number with `--tv`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FollowTarget {
     Bare(SourceNumericId),
@@ -19,13 +23,46 @@ impl FromStr for FollowTarget {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let s = s.trim();
+        if s.starts_with("media:") {
+            return Err(IdError::Identity(
+                "follow takes anilist:N or tvmaze:N; media:N is for drop",
+            ));
+        }
         if let Some(rest) = s.strip_prefix("tvmaze:") {
             return Ok(Self::TvMaze(rest.parse()?));
         }
         if let Some(rest) = s.strip_prefix("anilist:") {
             return Ok(Self::AniList(rest.parse()?));
         }
+        if s.contains(':') {
+            return Err(IdError::UnknownSource(s.to_owned()));
+        }
         Ok(Self::Bare(s.parse()?))
+    }
+}
+
+/// What `drop` accepts: `media:N`, `anilist:N`, or `tvmaze:N`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DropTarget {
+    Media(MediaId),
+    Source(SourceKey),
+}
+
+impl FromStr for DropTarget {
+    type Err = IdError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let s = s.trim();
+        if let Some(rest) = s.strip_prefix("media:") {
+            return Ok(Self::Media(rest.parse()?));
+        }
+        if let Some(rest) = s.strip_prefix("anilist:") {
+            return Ok(Self::Source(SourceKey::anilist(rest.parse()?)));
+        }
+        if let Some(rest) = s.strip_prefix("tvmaze:") {
+            return Ok(Self::Source(SourceKey::tvmaze(rest.parse()?)));
+        }
+        Err(IdError::Identity(BARE_DROP))
     }
 }
 
@@ -63,10 +100,9 @@ pub enum Command {
         tv: bool,
     },
 
-    /// Follow a title. AniList by default; ids overlap across sources.
+    /// Follow a title by source key (`anilist:21` or `tvmaze:82`).
     ///
-    /// A bare number is AniList. Paste the `tvmaze:82` search prints, or pass
-    /// `--tv 82`. `anilist:21` is the same as `21`.
+    /// A bare number is not an identity. `--tv 82` is the same as `tvmaze:82`.
     Follow {
         #[arg(value_name = "ID")]
         id: FollowTarget,
@@ -76,18 +112,26 @@ pub enum Command {
     },
 
     /// Show upcoming episodes. Local-only; never touches the network.
+    ///
+    /// Future only. Just-aired titles are a short dropped band (human) or
+    /// `--dropped` (JSON).
     Next {
         #[arg(long, short = 'n')]
         limit: Option<u32>,
+        /// Just-aired episodes from the last 24h, newest first.
+        #[arg(long)]
+        dropped: bool,
     },
 
     /// List everything you follow.
     List,
 
     /// Stop following a title.
+    ///
+    /// Takes `media:N` from list, or `anilist:N` / `tvmaze:N`.
     Drop {
-        #[arg(value_name = "MEDIA_ID")]
-        media_id: MediaId,
+        #[arg(value_name = "ID")]
+        id: DropTarget,
     },
 
     /// Ask the app to refresh schedules now.
@@ -163,6 +207,10 @@ mod tests {
         assert!(Cli::try_parse_from(["animesh", "follow", "0"]).is_err());
         assert!(Cli::try_parse_from(["animesh", "follow", "banana"]).is_err());
         assert!(Cli::try_parse_from(["animesh", "follow", "21"]).is_ok());
+        assert!(Cli::try_parse_from(["animesh", "follow", "anilist:21"]).is_ok());
+        assert!(Cli::try_parse_from(["animesh", "drop", "1"]).is_err());
+        assert!(Cli::try_parse_from(["animesh", "drop", "media:1"]).is_ok());
+        assert!(Cli::try_parse_from(["animesh", "drop", "anilist:21"]).is_ok());
         assert!(Cli::try_parse_from(["animesh", "follow", "--tv", "0"]).is_err());
         assert!(Cli::try_parse_from(["animesh", "follow", "tvmaze:0"]).is_err());
         assert!(Cli::try_parse_from(["animesh", "follow", "anilist:21"]).is_ok());
@@ -235,7 +283,10 @@ mod tests {
     fn next_accepts_a_limit() {
         let cli = Cli::try_parse_from(["animesh", "next", "-n", "5"]).expect("parse");
         match cli.command {
-            Command::Next { limit } => assert_eq!(limit, Some(5)),
+            Command::Next { limit, dropped } => {
+                assert_eq!(limit, Some(5));
+                assert!(!dropped);
+            }
             other => panic!("expected next, got {other:?}"),
         }
     }

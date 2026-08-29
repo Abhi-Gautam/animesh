@@ -1141,6 +1141,7 @@ mod tests {
             at(scheduled_at),
             "One Piece",
             ep(episode),
+            None,
             crate::domain::ids::SourceKey::anilist(AniListId::new(21).expect("id")),
         );
 

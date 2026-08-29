@@ -532,22 +532,17 @@ async fn tv_search_percent_encodes_the_query() {
 #[tokio::test]
 async fn empty_tv_search_hits_us_broadcast_and_web_schedules() {
     let mut tv = mockito::Server::new_async().await;
-    let row = |id, name, language, status| {
-        format!(
-            r#"{{"_embedded":{{"show":{{"id":{id},"name":"{name}","language":"{language}","status":"{status}"}}}}}}"#
-        )
-    };
     let broadcast = tv
         .mock("GET", "/schedule?country=US")
         .with_status(200)
-        .with_body(format!("[{}]", row(1, "Network", "English", "Running")))
+        .with_body(r#"[{"show":{"id":1,"name":"Network","type":"Scripted","language":"English","status":"Running"}}]"#)
         .expect(1)
         .create_async()
         .await;
     let web = tv
         .mock("GET", "/schedule/web?country=US")
         .with_status(200)
-        .with_body(format!("[{}]", row(2, "Stream", "English", "Running")))
+        .with_body(r#"[{"_embedded":{"show":{"id":2,"name":"Stream","type":"Animation","language":"English","status":"Running"}}}]"#)
         .expect(1)
         .create_async()
         .await;

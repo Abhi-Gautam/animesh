@@ -32,13 +32,28 @@ pub const MAX_QUERY_LEN: usize = 128;
 #[serde(tag = "kind", content = "data", rename_all = "snake_case")]
 pub enum Request {
     Status,
-    SearchAnime { query: String },
-    FollowAnilist { id: AniListId },
-    SearchTv { query: Option<String> },
-    FollowTv { id: TvMazeId },
-    Drop { media_id: MediaId },
+    SearchAnime {
+        query: String,
+    },
+    FollowAnilist {
+        id: AniListId,
+    },
+    SearchTv {
+        query: Option<String>,
+    },
+    FollowTv {
+        id: TvMazeId,
+    },
+    Drop {
+        media_id: MediaId,
+    },
     ListFollows,
-    Upcoming { limit: Option<u32> },
+    Upcoming {
+        limit: Option<u32>,
+        /// Just-aired rows inside the visibility window. Default is the future.
+        #[serde(default)]
+        dropped: bool,
+    },
     TriggerRefresh,
 }
 
@@ -87,12 +102,14 @@ impl Request {
             Self::SearchAnime { query } => validate_query(query),
             Self::SearchTv { query: Some(query) } => validate_query(query),
             Self::SearchTv { query: None } => Ok(()),
-            Self::Upcoming { limit: Some(0) } => {
+            Self::Upcoming { limit: Some(0), .. } => {
                 Err(AppError::invalid_argument("limit must be at least 1"))
             }
-            Self::Upcoming { limit: Some(limit) } if *limit > MAX_UPCOMING_LIMIT => Err(
-                AppError::invalid_argument(format!("limit must be at most {MAX_UPCOMING_LIMIT}")),
-            ),
+            Self::Upcoming {
+                limit: Some(limit), ..
+            } if *limit > MAX_UPCOMING_LIMIT => Err(AppError::invalid_argument(format!(
+                "limit must be at most {MAX_UPCOMING_LIMIT}"
+            ))),
             _ => Ok(()),
         }
     }
@@ -232,7 +249,10 @@ mod tests {
                 media_id: MediaId::new(1).expect("valid id"),
             },
             Request::ListFollows,
-            Request::Upcoming { limit: Some(10) },
+            Request::Upcoming {
+                limit: Some(10),
+                dropped: false,
+            },
             Request::TriggerRefresh,
         ]
     }
@@ -325,7 +345,11 @@ mod tests {
 
         // `next` must never acquire a network path; this is the assertion that
         // would fail if it did.
-        assert!(!Request::Upcoming { limit: None }.touches_source());
+        assert!(!Request::Upcoming {
+            limit: None,
+            dropped: false,
+        }
+        .touches_source());
         assert!(!Request::ListFollows.touches_source());
         assert!(!Request::Status.touches_source());
     }
@@ -377,18 +401,43 @@ mod tests {
 
     #[test]
     fn limit_bounds_are_enforced_server_side() {
-        assert!(Request::Upcoming { limit: Some(0) }.validate().is_err());
         assert!(Request::Upcoming {
-            limit: Some(MAX_UPCOMING_LIMIT + 1)
+            limit: Some(0),
+            dropped: false,
         }
         .validate()
         .is_err());
         assert!(Request::Upcoming {
-            limit: Some(MAX_UPCOMING_LIMIT)
+            limit: Some(MAX_UPCOMING_LIMIT + 1),
+            dropped: false,
+        }
+        .validate()
+        .is_err());
+        assert!(Request::Upcoming {
+            limit: Some(MAX_UPCOMING_LIMIT),
+            dropped: false,
         }
         .validate()
         .is_ok());
-        assert!(Request::Upcoming { limit: None }.validate().is_ok());
+        assert!(Request::Upcoming {
+            limit: None,
+            dropped: false,
+        }
+        .validate()
+        .is_ok());
+    }
+
+    #[test]
+    fn upcoming_defaults_dropped_to_false() {
+        let decoded: Request =
+            serde_json::from_str(r#"{"kind":"upcoming","data":{"limit":10}}"#).expect("decode");
+        assert_eq!(
+            decoded,
+            Request::Upcoming {
+                limit: Some(10),
+                dropped: false,
+            }
+        );
     }
 
     #[test]

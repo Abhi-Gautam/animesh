@@ -591,12 +591,40 @@ impl Library {
     // -----------------------------------------------------------------------
 
     /// Local-only. No network, no writes.
+    /// Future episodes only. `next -n 1` is the actual next airing.
     pub async fn upcoming(&self, limit: Option<u32>) -> Result<Vec<UpcomingRelease>, AppError> {
         let now = self.now();
         let limit = limit.unwrap_or(DEFAULT_UPCOMING_LIMIT);
         Ok(self
             .store
-            .read(move |conn| read_models::upcoming(conn, now, limit, AIRED_VISIBILITY_SECS))
+            .read(move |conn| read_models::upcoming(conn, now, limit, 0))
+            .await?)
+    }
+
+    /// Episodes that aired inside the visibility window. Human `next` shows
+    /// these as a dropped band; they do not count against `-n`.
+    pub async fn recently_aired(
+        &self,
+        limit: Option<u32>,
+    ) -> Result<Vec<UpcomingRelease>, AppError> {
+        let now = self.now();
+        let limit = limit.unwrap_or(crate::domain::read_models::DROPPED_BAND);
+        Ok(self
+            .store
+            .read(move |conn| {
+                let rows = read_models::upcoming(
+                    conn,
+                    now,
+                    crate::domain::read_models::MAX_UPCOMING_LIMIT,
+                    AIRED_VISIBILITY_SECS,
+                )?;
+                Ok(rows
+                    .into_iter()
+                    .filter(|row| row.aired)
+                    .rev()
+                    .take(limit as usize)
+                    .collect())
+            })
             .await?)
     }
 
