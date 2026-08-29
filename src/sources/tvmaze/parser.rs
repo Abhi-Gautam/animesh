@@ -145,7 +145,7 @@ pub fn parse_simulcast(body: &str) -> Vec<SearchCandidate> {
     let mut seen = std::collections::BTreeSet::new();
     let mut out = Vec::new();
     for row in rows {
-        let Some(show) = row.embedded.as_ref().and_then(|e| e.show.as_ref()) else {
+        let Some(show) = row.show() else {
             continue;
         };
         if show.language.as_deref() != Some("English") {
@@ -153,6 +153,11 @@ pub fn parse_simulcast(body: &str) -> Vec<SearchCandidate> {
         }
         if show.status.as_deref() != Some("Running") {
             continue;
+        }
+        // News/sports/talk dominate a US calendar day. The radar is for shows.
+        match show.show_type.as_deref() {
+            Some("Scripted" | "Animation") => {}
+            _ => continue,
         }
         let Ok(id) = parse_id(show.id) else {
             continue;
@@ -201,10 +206,11 @@ mod tests {
     #[test]
     fn simulcast_keeps_english_running_shows_and_drops_the_rest() {
         let body = r#"[
-            {"_embedded":{"show":{"id":1,"name":"Network","language":"English","status":"Running"}}},
-            {"_embedded":{"show":{"id":2,"name":"Donghua","language":"Chinese","status":"Running"}}},
-            {"_embedded":{"show":{"id":3,"name":"Ended","language":"English","status":"Ended"}}},
-            {"_embedded":{"show":{"id":1,"name":"Network","language":"English","status":"Running"}}}
+            {"show":{"id":1,"name":"Network","type":"Scripted","language":"English","status":"Running"}},
+            {"show":{"id":2,"name":"Donghua","type":"Scripted","language":"Chinese","status":"Running"}},
+            {"show":{"id":3,"name":"Ended","type":"Scripted","language":"English","status":"Ended"}},
+            {"show":{"id":4,"name":"News","type":"News","language":"English","status":"Running"}},
+            {"show":{"id":1,"name":"Network","type":"Scripted","language":"English","status":"Running"}}
         ]"#;
         let hits = parse_simulcast(body);
         assert_eq!(hits.len(), 1);
@@ -212,11 +218,23 @@ mod tests {
     }
 
     #[test]
+    fn simulcast_reads_an_inlined_broadcast_show_and_an_embedded_web_show() {
+        let body = r#"[
+            {"show":{"id":10,"name":"Broadcast","type":"Scripted","language":"English","status":"Running"}},
+            {"_embedded":{"show":{"id":11,"name":"Stream","type":"Animation","language":"English","status":"Running"}}}
+        ]"#;
+        let hits = parse_simulcast(body);
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].source_id.get(), 10);
+        assert_eq!(hits[1].source_id.get(), 11);
+    }
+
+    #[test]
     fn simulcast_caps_at_twenty() {
         let rows: Vec<String> = (1..=25)
             .map(|id| {
                 format!(
-                    r#"{{"_embedded":{{"show":{{"id":{id},"name":"S{id}","language":"English","status":"Running"}}}}}}"#
+                    r#"{{"_embedded":{{"show":{{"id":{id},"name":"S{id}","type":"Scripted","language":"English","status":"Running"}}}}}}"#
                 )
             })
             .collect();

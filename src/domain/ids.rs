@@ -237,9 +237,10 @@ impl fmt::Display for UnixTimestamp {
 /// The stored encoding is the CHECK value. Adding a variant is a schema
 /// migration; decoding an unknown string is a corrupt or newer database.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
 pub enum Source {
+    #[serde(rename = "anilist")]
     AniList,
+    #[serde(rename = "tvmaze")]
     TvMaze,
 }
 
@@ -510,6 +511,14 @@ mod tests {
     fn source_encoding_is_stable() {
         assert_eq!(Source::AniList.as_str(), "anilist");
         assert_eq!(Source::TvMaze.as_str(), "tvmaze");
+        assert_eq!(
+            serde_json::to_string(&Source::AniList).expect("ser"),
+            "\"anilist\""
+        );
+        assert_eq!(
+            serde_json::to_string(&Source::TvMaze).expect("ser"),
+            "\"tvmaze\""
+        );
         assert_eq!(Source::parse("tvmaze"), Ok(Source::TvMaze));
         assert!(Source::parse("imdb").is_err());
         assert_eq!(
