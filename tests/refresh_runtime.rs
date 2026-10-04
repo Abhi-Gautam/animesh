@@ -567,14 +567,12 @@ async fn health_reports_only_genuinely_future_episodes() {
         health.earliest_upcoming.is_none(),
         "health surfaced an already-aired episode"
     );
-    assert!(
-        world
-            .library
-            .upcoming(None)
-            .await
-            .expect("upcoming")
-            .is_empty()
-    );
+    assert!(world
+        .library
+        .upcoming(None)
+        .await
+        .expect("upcoming")
+        .is_empty());
     assert_eq!(
         world
             .library

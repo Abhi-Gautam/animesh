@@ -4,6 +4,7 @@
 //! requirement: with nothing due there must be no wake, no request, no write.
 
 pub mod bootstrap;
+pub mod discovery;
 pub mod notifier;
 pub mod reconciler;
 
@@ -58,7 +59,9 @@ pub async fn run_scheduler(
     mut wake: watch::Receiver<u64>,
     mut shutdown: watch::Receiver<bool>,
 ) {
+    let mut changes = library.subscribe_changes();
     loop {
+        changes.borrow_and_update();
         if *shutdown.borrow() {
             break;
         }
@@ -83,6 +86,7 @@ pub async fn run_scheduler(
             Ok(None) => {
                 tokio::select! {
                     _ = wake.changed() => {}
+                    _ = changes.changed() => {}
                     _ = shutdown.changed() => {}
                 }
                 continue;
@@ -93,6 +97,7 @@ pub async fn run_scheduler(
         tokio::select! {
             _ = tokio::time::sleep(sleep_for) => {}
             _ = wake.changed() => {}
+            _ = changes.changed() => {}
             _ = shutdown.changed() => {}
         }
     }

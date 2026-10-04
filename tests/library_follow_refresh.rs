@@ -19,6 +19,77 @@ use animesh::store::migrations;
 
 const NOW: i64 = 1_700_000_000;
 
+#[tokio::test]
+async fn revision_wait_observes_a_commit_that_precedes_subscription() {
+    let mut server = mockito::Server::new_async().await;
+    server
+        .mock("POST", "/")
+        .with_status(200)
+        .with_body(detail_body(21, 2, NOW + 5000))
+        .create_async()
+        .await;
+    let world = world(server.url()).await;
+    let before = world.library.revision_stamp();
+    world.library.follow(id(21)).await.expect("follow");
+    let after = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        world
+            .library
+            .wait_for_revision(&before.instance_id, before.revision),
+    )
+    .await
+    .expect("must not lose the earlier commit");
+    assert!(after.revision > before.revision);
+}
+
+#[tokio::test]
+async fn concurrent_clients_observe_the_same_follow_and_drop() {
+    let mut server = mockito::Server::new_async().await;
+    server
+        .mock("POST", "/")
+        .with_status(200)
+        .with_body(detail_body(21, 2, NOW + 5000))
+        .create_async()
+        .await;
+    let world = world(server.url()).await;
+    let before = world.library.revision_stamp();
+    let (a, b, follow) = tokio::join!(
+        world
+            .library
+            .wait_for_revision(&before.instance_id, before.revision),
+        world
+            .library
+            .wait_for_revision(&before.instance_id, before.revision),
+        world.library.follow(id(21)),
+    );
+    assert!(a.revision > before.revision);
+    assert_eq!(a, b);
+    let follow = follow.expect("follow");
+    let mut changes = world.library.subscribe_changes();
+    world
+        .library
+        .drop_follow(follow.media_id)
+        .await
+        .expect("drop");
+    tokio::time::timeout(std::time::Duration::from_secs(1), changes.changed())
+        .await
+        .expect("drop wakes subscribers")
+        .expect("channel open");
+    assert!(world.library.list_follows().await.expect("list").is_empty());
+}
+
+#[tokio::test]
+async fn restart_identity_returns_immediately_even_if_revision_is_lower() {
+    let world = world("http://127.0.0.1:1".into()).await;
+    let stamp = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        world.library.wait_for_revision("previous-daemon", 1000),
+    )
+    .await
+    .expect("restart resets the revision");
+    assert_eq!(stamp, world.library.revision_stamp());
+}
+
 fn at(seconds: i64) -> UnixTimestamp {
     UnixTimestamp::new(seconds).expect("valid timestamp")
 }
@@ -576,4 +647,178 @@ async fn following_the_same_tv_show_twice_makes_no_second_request() {
     let second = world.library.follow_tv(tv_id(82)).await.expect("second");
     assert_eq!(second.outcome, FollowOutcome::AlreadyActive);
     mock.assert_async().await;
+}
+
+fn catalog_body(items: Vec<serde_json::Value>) -> String {
+    serde_json::json!({"data": {"Page": {"media": items}}}).to_string()
+}
+
+fn catalog_item(id: i64, title: &str) -> serde_json::Value {
+    let body: serde_json::Value =
+        serde_json::from_str(&detail_body(id, 5, NOW + 1000)).expect("fixture");
+    let mut item = body["data"]["Media"].clone();
+    item["title"]["english"] = title.into();
+    item
+}
+
+#[tokio::test]
+async fn discovery_is_durable_without_following_or_notification_intent() {
+    use animesh::domain::command_center::{FeedKey, ViewData, ViewQuery};
+    let mut server = mockito::Server::new_async().await;
+    let mock = server
+        .mock("POST", "/")
+        .with_status(200)
+        .with_body(catalog_body(vec![catalog_item(21, "One Piece")]))
+        .expect(1)
+        .create_async()
+        .await;
+    let world = world(server.url()).await;
+    world
+        .library
+        .refresh_discovery(FeedKey::AnimeAiringThisWeek)
+        .await
+        .expect("ingest");
+    let snapshot = world
+        .library
+        .view(ViewQuery::Discovery {
+            feed: FeedKey::AnimeAiringThisWeek,
+        })
+        .await
+        .expect("offline projection");
+    let ViewData::Discovery(feed) = snapshot.view else {
+        panic!("feed")
+    };
+    assert_eq!(feed.items.len(), 1);
+    assert_eq!(feed.items[0].follow_state, None);
+    assert_eq!(snapshot.health.active_follows, 0);
+    assert_eq!(snapshot.health.notifications.desired, 0);
+    assert!(world
+        .library
+        .upcoming(None)
+        .await
+        .expect("no followed events")
+        .is_empty());
+    assert!(world
+        .library
+        .list_follows()
+        .await
+        .expect("no follows")
+        .is_empty());
+    mock.assert_async().await;
+    let reopened = rusqlite::Connection::open(&world.db_path).expect("reopen");
+    assert_eq!(
+        animesh::store::command_center::discovery(&reopened, FeedKey::AnimeAiringThisWeek, at(NOW))
+            .expect("saved feed")
+            .items,
+        feed.items
+    );
+}
+
+#[tokio::test]
+async fn failed_and_partial_discovery_preserve_the_last_complete_contents() {
+    use animesh::domain::command_center::{FeedKey, SnapshotCompleteness};
+    let mut server = mockito::Server::new_async().await;
+    let initial = server
+        .mock("POST", "/")
+        .with_status(200)
+        .with_body(catalog_body(vec![catalog_item(21, "Original title")]))
+        .create_async()
+        .await;
+    let world = world(server.url()).await;
+    let key = FeedKey::AnimeThisSeason;
+    world
+        .library
+        .refresh_discovery(key)
+        .await
+        .expect("complete");
+    initial.remove_async().await;
+    let partial = server
+        .mock("POST", "/")
+        .with_status(200)
+        .with_body(catalog_body(vec![
+            catalog_item(21, "Partial title"),
+            serde_json::Value::Null,
+        ]))
+        .create_async()
+        .await;
+    world
+        .library
+        .refresh_discovery(key)
+        .await
+        .expect_err("partial");
+    partial.remove_async().await;
+    let conn = rusqlite::Connection::open(&world.db_path).expect("open");
+    let partial_feed =
+        animesh::store::command_center::discovery(&conn, key, at(NOW)).expect("feed");
+    assert_eq!(
+        partial_feed.last_attempt,
+        Some(SnapshotCompleteness::Partial)
+    );
+    assert_eq!(
+        partial_feed.items[0].facts.display_title.as_str(),
+        "Original title"
+    );
+    let failed = server
+        .mock("POST", "/")
+        .with_status(503)
+        .with_body("offline")
+        .expect(5)
+        .create_async()
+        .await;
+    for _ in 0..5 {
+        world
+            .library
+            .refresh_discovery(key)
+            .await
+            .expect_err("offline");
+    }
+    let saved = animesh::store::command_center::discovery(&conn, key, at(NOW)).expect("saved");
+    assert_eq!(saved.last_attempt, Some(SnapshotCompleteness::Failed));
+    assert_eq!(saved.items, partial_feed.items);
+    assert!(saved.last_error.is_some());
+    assert_eq!(
+        conn.query_row(
+            "SELECT COUNT(*) FROM discovery_snapshots WHERE feed_key = ?1",
+            [key.as_str()],
+            |row| row.get::<_, i64>(0)
+        )
+        .expect("bounded history"),
+        4
+    );
+    failed.assert_async().await;
+}
+
+#[tokio::test]
+async fn every_local_desktop_view_works_without_source_requests() {
+    use animesh::domain::command_center::{FeedKey, FollowSort, ViewQuery};
+    use animesh::domain::release::FollowState;
+    let world = world("http://127.0.0.1:1".into()).await;
+    let before = world.library.revision_stamp();
+    for query in [
+        ViewQuery::Home,
+        ViewQuery::Health,
+        ViewQuery::Discovery {
+            feed: FeedKey::TvOnNow,
+        },
+        ViewQuery::Schedule {
+            kind: None,
+            cursor: None,
+        },
+        ViewQuery::Library {
+            kind: None,
+            state: FollowState::Active,
+            sort: FollowSort::Alphabetical,
+            cursor: None,
+        },
+    ] {
+        let snapshot = world.library.view(query).await.expect("local view");
+        assert_eq!(snapshot.stamp, before);
+    }
+    let conn = rusqlite::Connection::open(&world.db_path).expect("open");
+    assert_eq!(
+        conn.query_row("SELECT COUNT(*) FROM source_fetches", [], |row| row
+            .get::<_, i64>(0))
+            .expect("no source traffic"),
+        0
+    );
 }

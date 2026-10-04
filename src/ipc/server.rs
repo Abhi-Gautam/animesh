@@ -4,7 +4,7 @@ use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 use tokio::sync::{watch, Semaphore};
 
 use crate::error::{AppError, ErrorCode};
@@ -74,7 +74,18 @@ where
         _ => return,
     };
 
-    let reply = build_reply(&frame, instance_id, handler).await;
+    let waiting = serde_json::from_slice::<RequestEnvelope>(&frame)
+        .is_ok_and(|envelope| matches!(envelope.body, Request::WaitForRevision { .. }));
+    let reply = if waiting {
+        let mut extra = [0; 1];
+        tokio::select! {
+            reply = build_reply(&frame, instance_id, handler) => reply,
+            _ = stream.read(&mut extra) => return,
+        }
+    } else {
+        // Once started, a mutation completes even if its client disconnects.
+        build_reply(&frame, instance_id, handler).await
+    };
 
     if let Ok(bytes) = serde_json::to_vec(&reply) {
         let _ = tokio::time::timeout(FRAME_TIMEOUT, write_frame(&mut stream, &bytes)).await;

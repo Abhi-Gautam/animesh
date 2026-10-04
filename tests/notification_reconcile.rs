@@ -308,11 +308,23 @@ async fn a_settled_plan_makes_no_further_os_calls() {
 
     world.reconciler.settle().await.expect("first");
     world.centre.clear_ops();
+    let stamp = world.library.revision_stamp();
+    let mut changes = world.library.subscribe_changes();
 
     let report = world.reconciler.settle().await.expect("second");
     assert!(report.is_quiet());
     assert_eq!(report.confirmed, 1);
     assert!(world.centre.ops().is_empty());
+    assert_eq!(world.library.revision_stamp(), stamp);
+    assert!(!changes.has_changed().expect("revision channel"));
+    // The menu listens to this channel and reconciles on changes. Re-observing
+    // already registered jobs must not trigger another pass or rebuild the UI.
+    world.reconciler.settle().await.expect("third");
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(30), changes.changed())
+            .await
+            .is_err()
+    );
 }
 
 #[tokio::test]

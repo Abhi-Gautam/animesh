@@ -5,5 +5,6 @@
 //! every transaction boundary.
 
 pub mod anilist;
+pub mod discovery;
 pub mod fetch;
 pub mod tvmaze;

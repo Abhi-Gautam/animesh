@@ -35,6 +35,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "V0002__multi_source",
         sql: include_str!("../../migrations/V0002__multi_source.sql"),
     },
+    Migration {
+        version: 3,
+        name: "V0003__command_center",
+        sql: include_str!("../../migrations/V0003__command_center.sql"),
+    },
 ];
 
 /// The newest schema version this build can operate.
@@ -181,8 +186,8 @@ mod tests {
     #[test]
     fn apply_creates_the_schema_and_records_it() {
         let mut conn = db();
-        assert_eq!(apply(&mut conn, 100).expect("apply"), 2);
-        assert_eq!(current_version(&conn).expect("version"), 2);
+        assert_eq!(apply(&mut conn, 100).expect("apply"), 3);
+        assert_eq!(current_version(&conn).expect("version"), 3);
 
         let count: i64 = conn
             .query_row(
@@ -197,9 +202,9 @@ mod tests {
     #[test]
     fn apply_is_idempotent() {
         let mut conn = db();
-        assert_eq!(apply(&mut conn, 100).expect("first"), 2);
+        assert_eq!(apply(&mut conn, 100).expect("first"), 3);
         assert_eq!(apply(&mut conn, 200).expect("second"), 0);
-        assert_eq!(current_version(&conn).expect("version"), 2);
+        assert_eq!(current_version(&conn).expect("version"), 3);
     }
 
     #[test]
@@ -218,7 +223,7 @@ mod tests {
             error,
             StoreError::SchemaTooNew {
                 found: 99,
-                supported: 2
+                supported: 3
             }
         ));
 

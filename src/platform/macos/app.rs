@@ -36,6 +36,7 @@ pub async fn run_surface(
     mut commands: UnboundedReceiver<MenuCommand>,
     shutdown: watch::Sender<bool>,
 ) {
+    let mut changes = library.subscribe_changes();
     let centre = match NotificationCenter::new() {
         Ok(centre) => Some(centre),
         Err(reason) => {
@@ -71,6 +72,7 @@ pub async fn run_surface(
         let command = tokio::select! {
             command = commands.recv() => command,
             _ = tokio::time::sleep(SAFETY_TICK) => Some(MenuCommand::Opened),
+            _ = changes.changed() => Some(MenuCommand::Opened),
         };
 
         match command {

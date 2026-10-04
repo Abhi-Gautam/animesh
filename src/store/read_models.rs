@@ -26,12 +26,14 @@ const UPCOMING_SQL: &str = "
     WHERE re.state IN ('scheduled', 'elapsed')
       AND re.scheduled_at >= ?1 - ?3
       AND (re.state = 'scheduled' OR re.scheduled_at < ?1)
+      AND (?4 IS NULL OR m.kind = ?4)
+      AND (?6 = 0 OR re.scheduled_at < ?1)
     ORDER BY re.scheduled_at ASC,
              re.media_id ASC,
              (re.sequence_number IS NULL) ASC,
              re.sequence_number ASC,
              re.release_event_id ASC
-    LIMIT ?2
+    LIMIT ?2 OFFSET ?5
 ";
 
 fn ts(value: i64) -> Result<UnixTimestamp, StoreError> {
@@ -39,7 +41,7 @@ fn ts(value: i64) -> Result<UnixTimestamp, StoreError> {
 }
 
 /// Classifies how current the source data behind a row is.
-fn freshness(
+pub(crate) fn freshness(
     now: UnixTimestamp,
     refresh_after: Option<i64>,
     retry_after: Option<i64>,
@@ -71,25 +73,47 @@ pub fn upcoming(
     limit: u32,
     lookback_secs: i64,
 ) -> Result<Vec<UpcomingRelease>, StoreError> {
+    upcoming_page(conn, now, limit, lookback_secs, None, 0, false)
+}
+
+pub fn upcoming_page(
+    conn: &Connection,
+    now: UnixTimestamp,
+    limit: u32,
+    lookback_secs: i64,
+    kind: Option<crate::domain::media::MediaKind>,
+    offset: u32,
+    dropped: bool,
+) -> Result<Vec<UpcomingRelease>, StoreError> {
     let mut stmt = conn.prepare(UPCOMING_SQL)?;
     let rows = stmt
-        .query_map(rusqlite::params![now.get(), limit, lookback_secs], |row| {
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, i64>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, i64>(4)?,
-                row.get::<_, String>(5)?,
-                row.get::<_, Option<i64>>(6)?,
-                row.get::<_, Option<i64>>(7)?,
-                row.get::<_, i64>(8)?,
-                row.get::<_, i64>(9)?,
-                row.get::<_, Option<i64>>(10)?,
-                row.get::<_, Option<i64>>(11)?,
-                row.get::<_, Option<i64>>(12)?,
-            ))
-        })?
+        .query_map(
+            rusqlite::params![
+                now.get(),
+                limit,
+                lookback_secs,
+                kind.map(crate::domain::media::MediaKind::as_str),
+                offset,
+                dropped
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, Option<i64>>(6)?,
+                    row.get::<_, Option<i64>>(7)?,
+                    row.get::<_, i64>(8)?,
+                    row.get::<_, i64>(9)?,
+                    row.get::<_, Option<i64>>(10)?,
+                    row.get::<_, Option<i64>>(11)?,
+                    row.get::<_, Option<i64>>(12)?,
+                ))
+            },
+        )?
         .collect::<Result<Vec<_>, _>>()?;
 
     rows.into_iter()
@@ -186,6 +210,47 @@ pub fn last_success(conn: &Connection) -> Result<Option<UnixTimestamp>, StoreErr
     )?
     .map(ts)
     .transpose()
+}
+
+/// One local health projection; callers may compose it inside a read transaction.
+pub fn health(
+    conn: &Connection,
+    now: UnixTimestamp,
+    instance_id: String,
+    started_at: UnixTimestamp,
+    schema_version: i64,
+    protocol_version: u32,
+) -> Result<crate::domain::read_models::HealthSnapshot, StoreError> {
+    use super::{graph, releases};
+    use crate::domain::notification::NATIVE_CAPACITY;
+    use crate::domain::read_models::{BootstrapState, HealthSnapshot};
+    let earliest = upcoming(conn, now, 1, 0)?.into_iter().next();
+    let surface = releases::surface_state(conn)?;
+    let counts = releases::counts(conn, NATIVE_CAPACITY)?;
+    let blocked_until = graph::any_source_blocked_until(conn)?.filter(|until| *until > now);
+    Ok(HealthSnapshot {
+        process_version: crate::PROCESS_VERSION.to_owned(),
+        schema_version,
+        protocol_version,
+        app_instance_id: instance_id,
+        started_at,
+        bootstrap: BootstrapState::Ready,
+        database_ready: true,
+        active_follows: graph::active_follow_count(conn)?,
+        earliest_upcoming: earliest,
+        last_success_at: last_success(conn)?,
+        refresh: refresh_counts(conn, now)?,
+        source_blocked_until: blocked_until,
+        notifications: counts,
+        last_reconciled_at: surface.last_reconciled_at,
+        authorization: surface.authorization,
+        authorization_observed_at: surface.authorization_observed_at,
+        degraded: crate::domain::read_models::degraded_reasons(
+            surface.authorization,
+            &counts,
+            blocked_until,
+        ),
+    })
 }
 
 #[cfg(test)]

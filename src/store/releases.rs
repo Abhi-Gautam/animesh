@@ -467,21 +467,23 @@ fn set_job_state(
     Ok(())
 }
 
-/// Marks a job as present in the OS at a given revision.
+/// Marks a job as present in the OS at a given revision, returning whether it changed.
 pub fn mark_registered(
     tx: &Transaction<'_>,
     key: &NotificationKey,
     revision: i64,
     now: UnixTimestamp,
-) -> Result<(), StoreError> {
-    tx.execute(
+) -> Result<bool, StoreError> {
+    let changed = tx.execute(
         "UPDATE notification_jobs
          SET state = 'registered', registered_revision = ?1, registered_at = ?2,
              retry_after = NULL, last_error_code = NULL, updated_at = ?2
-         WHERE notification_key = ?3 AND desired_revision = ?1",
+         WHERE notification_key = ?3 AND desired_revision = ?1
+           AND (state <> 'registered' OR registered_revision IS NOT ?1
+                OR retry_after IS NOT NULL OR last_error_code IS NOT NULL)",
         rusqlite::params![revision, now.get(), key.as_str()],
     )?;
-    Ok(())
+    Ok(changed != 0)
 }
 
 pub fn mark_delivered(

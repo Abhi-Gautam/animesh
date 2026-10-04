@@ -86,6 +86,19 @@ fn render_human(outcome: &Outcome, now: crate::domain::ids::UnixTimestamp) -> St
     };
 
     match response {
+        Response::Search(results) => render::search(
+            &results
+                .items
+                .iter()
+                .map(|hit| hit.candidate.clone())
+                .collect::<Vec<_>>(),
+        ),
+        Response::ResolveSearch(items) => render::search(
+            &items
+                .iter()
+                .map(|hit| hit.candidate.clone())
+                .collect::<Vec<_>>(),
+        ),
         Response::SearchAnime(candidates) | Response::SearchTv(candidates) => {
             render::search(candidates)
         }
@@ -106,6 +119,9 @@ fn render_human(outcome: &Outcome, now: crate::domain::ids::UnixTimestamp) -> St
                 "Skipped: AniList is rate limiting. It will resume automatically.".to_owned()
             }
         },
+        Response::View(snapshot) => format!("Data revision {}.", snapshot.stamp.revision),
+        Response::Refresh(operation) => format!("Refresh {:?}.", operation.state),
+        Response::WaitForRevision(stamp) => format!("Data revision {}.", stamp.revision),
         Response::Status(snapshot) => render::health(snapshot, now),
     }
 }

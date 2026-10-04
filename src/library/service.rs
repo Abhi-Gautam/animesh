@@ -12,11 +12,11 @@ use crate::domain::ids::{
     AniListId, BoundedText, FetchId, InstallationUuid, MediaId, Source, SourceKey, UnixTimestamp,
 };
 use crate::domain::media::{MediaObservation, MAX_TITLE_LEN};
-use crate::domain::notification::{JobOutcome, OsIdentifier, NATIVE_CAPACITY};
+use crate::domain::notification::{JobOutcome, OsIdentifier};
 use crate::domain::read_models::{
-    AuthorizationState, BootstrapState, DegradedReason, FollowOutcome, FollowResult, FollowSummary,
-    Freshness, HealthSnapshot, NotificationCounts, RefreshAccepted, RefreshDisposition,
-    UpcomingRelease, AIRED_VISIBILITY_SECS, DEFAULT_UPCOMING_LIMIT,
+    AuthorizationState, FollowOutcome, FollowResult, FollowSummary, Freshness, HealthSnapshot,
+    RefreshAccepted, RefreshDisposition, UpcomingRelease, AIRED_VISIBILITY_SECS,
+    DEFAULT_UPCOMING_LIMIT,
 };
 use crate::domain::release::FollowState;
 use crate::domain::time::{JitterSource, WallClock};
@@ -40,22 +40,23 @@ use super::reducers::{
 /// Everything the Library needs, assembled once at bootstrap.
 pub struct Library {
     store: Store,
-    source: AniListClient,
-    tvmaze: TvMazeClient,
+    pub(super) source: AniListClient,
+    pub(super) tvmaze: TvMazeClient,
     clock: Arc<dyn WallClock>,
     jitter: Arc<dyn JitterSource>,
-    installation: InstallationUuid,
+    pub(super) installation: InstallationUuid,
     instance_id: Arc<str>,
-    started_at: UnixTimestamp,
-    schema_version: i64,
+    pub(super) started_at: UnixTimestamp,
+    pub(super) schema_version: i64,
     /// Bumped whenever committed data changes what a surface would display.
-    data_revision: AtomicU64,
+    data_revision: tokio::sync::watch::Sender<u64>,
     /// Bumped whenever the effective desired notification set changes.
     ///
     /// In memory rather than in the database: nothing needs it to survive a
     /// restart, because a fresh process reconciles against OS truth on its
     /// first pass anyway.
     plan_generation: AtomicU64,
+    pub(super) discovery_lock: tokio::sync::Mutex<()>,
 }
 
 impl std::fmt::Debug for Library {
@@ -88,8 +89,9 @@ impl Library {
             instance_id: Arc::from(uuid::Uuid::new_v4().to_string().as_str()),
             started_at,
             schema_version,
-            data_revision: AtomicU64::new(0),
+            data_revision: tokio::sync::watch::channel(0).0,
             plan_generation: AtomicU64::new(0),
+            discovery_lock: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -98,7 +100,12 @@ impl Library {
     }
 
     pub fn data_revision(&self) -> u64 {
-        self.data_revision.load(Ordering::SeqCst)
+        *self.data_revision.borrow()
+    }
+
+    /// Subscribe before reading a snapshot so a commit between read and wait is retained.
+    pub fn subscribe_changes(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.data_revision.subscribe()
     }
 
     pub fn plan_generation(&self) -> u64 {
@@ -139,13 +146,13 @@ impl Library {
             .write(move |tx| {
                 let mut changed = false;
                 for outcome in &outcomes {
-                    changed = true;
                     match outcome {
                         JobOutcome::Registered { key, revision } => {
-                            releases::mark_registered(tx, key, *revision, now)?;
+                            changed |= releases::mark_registered(tx, key, *revision, now)?;
                         }
                         JobOutcome::Delivered { key } => {
                             releases::mark_delivered(tx, key, now)?;
+                            changed = true;
                         }
                         JobOutcome::Failed {
                             key,
@@ -153,6 +160,7 @@ impl Library {
                             retry_after,
                         } => {
                             releases::mark_failed(tx, key, error_code, *retry_after, now)?;
+                            changed = true;
                         }
                     }
                 }
@@ -637,29 +645,14 @@ impl Library {
         Ok(self
             .store
             .read(move |conn| {
-                let earliest = read_models::upcoming(conn, now, 1, 0)?.into_iter().next();
-                let surface = releases::surface_state(conn)?;
-                let counts = releases::counts(conn, NATIVE_CAPACITY)?;
-                let blocked_until = graph::any_source_blocked_until(conn)?;
-                Ok(HealthSnapshot {
-                    process_version: crate::PROCESS_VERSION.to_owned(),
-                    schema_version,
-                    protocol_version: PROTOCOL_VERSION,
-                    app_instance_id: instance_id,
+                read_models::health(
+                    conn,
+                    now,
+                    instance_id,
                     started_at,
-                    bootstrap: BootstrapState::Ready,
-                    database_ready: true,
-                    active_follows: graph::active_follow_count(conn)?,
-                    earliest_upcoming: earliest,
-                    last_success_at: read_models::last_success(conn)?,
-                    refresh: read_models::refresh_counts(conn, now)?,
-                    source_blocked_until: blocked_until,
-                    notifications: counts,
-                    last_reconciled_at: surface.last_reconciled_at,
-                    authorization: surface.authorization,
-                    authorization_observed_at: surface.authorization_observed_at,
-                    degraded: degraded_reasons(surface.authorization, &counts, blocked_until),
-                })
+                    schema_version,
+                    PROTOCOL_VERSION,
+                )
             })
             .await?)
     }
@@ -1010,7 +1003,7 @@ impl Library {
             }
         }
 
-        if pass.applied > 0 {
+        if pass.applied > 0 || pass.failed > 0 {
             self.bump_data();
             self.bump_plan();
         }
@@ -1106,7 +1099,7 @@ impl Library {
     ///
     /// The check reads the database rather than memory, so a 429 survives a
     /// restart instead of being forgotten with the process.
-    async fn check_tv_available(&self, now: UnixTimestamp) -> Result<(), AppError> {
+    pub(super) async fn check_tv_available(&self, now: UnixTimestamp) -> Result<(), AppError> {
         let blocked = self
             .store
             .read(move |conn| graph::source_blocked_until(conn, Source::TvMaze))
@@ -1124,7 +1117,7 @@ impl Library {
         }
     }
 
-    async fn record_tv_rate_state(
+    pub(super) async fn record_tv_rate_state(
         &self,
         response: &RawResponse,
         now: UnixTimestamp,
@@ -1142,6 +1135,7 @@ impl Library {
                 graph::set_source_throttle(tx, Source::TvMaze, blocked_until, None, None, now)
             })
             .await?;
+        self.bump_data();
         Ok(())
     }
 
@@ -1153,7 +1147,7 @@ impl Library {
         .with_retry_after(response.retry_after_secs.unwrap_or(10))
     }
 
-    fn usable_tv_body(&self, response: &RawResponse) -> Result<String, AppError> {
+    pub(super) fn usable_tv_body(&self, response: &RawResponse) -> Result<String, AppError> {
         if response.http_status == Some(429) {
             return Err(self.tv_rate_limited(response));
         }
@@ -1212,7 +1206,7 @@ impl Library {
             .await
     }
 
-    async fn check_source_available(&self, now: UnixTimestamp) -> Result<(), AppError> {
+    pub(super) async fn check_source_available(&self, now: UnixTimestamp) -> Result<(), AppError> {
         let blocked = self
             .store
             .read(move |conn| graph::source_blocked_until(conn, Source::AniList))
@@ -1233,7 +1227,7 @@ impl Library {
 
     /// Persists whatever the response said about the rate limit, including on
     /// failure, before the result is interpreted.
-    async fn record_source_rate_state(
+    pub(super) async fn record_source_rate_state(
         &self,
         response: &RawResponse,
         now: UnixTimestamp,
@@ -1267,10 +1261,11 @@ impl Library {
                 )
             })
             .await?;
+        self.bump_data();
         Ok(())
     }
 
-    fn usable_body(&self, response: &RawResponse) -> Result<String, AppError> {
+    pub(super) fn usable_body(&self, response: &RawResponse) -> Result<String, AppError> {
         if response.http_status == Some(429) {
             return Err(AppError::new(
                 ErrorCode::SourceRateLimited,
@@ -1296,11 +1291,11 @@ impl Library {
         }
     }
 
-    fn bump_data(&self) {
-        self.data_revision.fetch_add(1, Ordering::SeqCst);
+    pub(super) fn bump_data(&self) {
+        self.data_revision.send_modify(|revision| *revision += 1);
     }
 
-    fn bump_plan(&self) {
+    pub(super) fn bump_plan(&self) {
         self.plan_generation.fetch_add(1, Ordering::SeqCst);
     }
 }
@@ -1348,28 +1343,6 @@ impl RefreshPass {
     pub const fn did_work(&self) -> bool {
         self.applied > 0 || self.stale > 0 || self.failed > 0
     }
-}
-
-/// What the owner needs to act on, most actionable first.
-///
-/// Only `Denied` is reported: an authorization that was never requested is the
-/// normal state before the first follow, not a fault.
-fn degraded_reasons(
-    authorization: AuthorizationState,
-    counts: &NotificationCounts,
-    blocked_until: Option<UnixTimestamp>,
-) -> Vec<DegradedReason> {
-    let mut reasons = Vec::new();
-    if authorization == AuthorizationState::Denied {
-        reasons.push(DegradedReason::NotificationsDenied);
-    }
-    if counts.deferred_capacity > 0 {
-        reasons.push(DegradedReason::NotificationCapacityExceeded);
-    }
-    if blocked_until.is_some() {
-        reasons.push(DegradedReason::SourceRateLimited);
-    }
-    reasons
 }
 
 /// The error a detail decode that produced no observation reports to the caller.
@@ -1427,7 +1400,7 @@ fn detail_error(anilist_id: AniListId, decode: &DetailDecode) -> AppError {
 }
 
 /// Runs the release and notification reducers and writes their decisions.
-fn project(
+pub(super) fn project(
     tx: &rusqlite::Transaction<'_>,
     row: &graph::SourceMediaRow,
     observation_id: crate::domain::ids::ObservationId,
@@ -1631,7 +1604,7 @@ fn summaries(
 /// The borrowed [`graph::FetchRecord`] cannot cross into the `'static` closure
 /// the writer thread requires, so the strings are owned here and re-borrowed
 /// inside the transaction.
-struct OwnedFetch {
+pub(super) struct OwnedFetch {
     attempt_uuid: String,
     source: Source,
     request_kind: String,
@@ -1648,7 +1621,7 @@ struct OwnedFetch {
 }
 
 impl OwnedFetch {
-    fn from_response(response: &RawResponse, kind: &str, fingerprint: &str) -> Self {
+    pub(super) fn from_response(response: &RawResponse, kind: &str, fingerprint: &str) -> Self {
         let completed = UnixTimestamp::EPOCH;
         Self {
             attempt_uuid: uuid::Uuid::new_v4().to_string(),
@@ -1667,19 +1640,19 @@ impl OwnedFetch {
         }
     }
 
-    fn for_source(mut self, source: Source) -> Self {
+    pub(super) fn for_source(mut self, source: Source) -> Self {
         self.source = source;
         self
     }
 
-    fn stamped(mut self, now: UnixTimestamp, duration_ms: u64) -> Self {
+    pub(super) fn stamped(mut self, now: UnixTimestamp, duration_ms: u64) -> Self {
         let started = now.saturating_add_secs(-(duration_ms as i64 / 1000));
         self.requested_at = started;
         self.completed_at = now;
         self
     }
 
-    fn as_record(&self) -> graph::FetchRecord<'_> {
+    pub(super) fn as_record(&self) -> graph::FetchRecord<'_> {
         graph::FetchRecord {
             attempt_uuid: &self.attempt_uuid,
             source: self.source,

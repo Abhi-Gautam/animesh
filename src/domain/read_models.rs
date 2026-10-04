@@ -294,6 +294,25 @@ pub struct HealthSnapshot {
     pub degraded: Vec<DegradedReason>,
 }
 
+/// Human-actionable degradation shared by every serving surface.
+pub fn degraded_reasons(
+    authorization: AuthorizationState,
+    counts: &NotificationCounts,
+    blocked_until: Option<UnixTimestamp>,
+) -> Vec<DegradedReason> {
+    let mut reasons = Vec::new();
+    if authorization == AuthorizationState::Denied {
+        reasons.push(DegradedReason::NotificationsDenied);
+    }
+    if counts.deferred_capacity > 0 {
+        reasons.push(DegradedReason::NotificationCapacityExceeded);
+    }
+    if blocked_until.is_some() {
+        reasons.push(DegradedReason::SourceRateLimited);
+    }
+    reasons
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

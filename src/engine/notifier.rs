@@ -34,7 +34,9 @@ pub async fn run(
     reconciler: Arc<Reconciler>,
     mut shutdown: watch::Receiver<bool>,
 ) {
+    let mut changes = library.subscribe_changes();
     loop {
+        changes.borrow_and_update();
         if *shutdown.borrow() {
             break;
         }
@@ -55,6 +57,7 @@ pub async fn run(
         tokio::select! {
             _ = tokio::time::sleep(sleep_for) => {}
             _ = shutdown.changed() => {}
+            _ = changes.changed() => {}
         }
     }
 }

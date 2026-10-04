@@ -1,162 +1,24 @@
 //! The frozen IPC contract between the CLI and the app.
 //!
-//! Seven requests, all plain request/reply. The notification-plan snapshot
-//! protocol, the change-wait long poll, and the attempt CAS that earlier
-//! revisions carried here are gone: they existed only to move state across a
-//! daemon/menu process boundary that no longer exists.
+//! Commands and local queries use plain request/reply. Long-lived surfaces wait
+//! on data revisions and re-query snapshots; notification reconciliation remains
+//! inside the daemon.
 //!
 //! Every enum is adjacently tagged, so an unknown variant fails to decode
 //! rather than silently matching a neighbour.
 
 use serde::{Deserialize, Serialize};
 
-use crate::domain::ids::{AniListId, MediaId, TvMazeId};
-use crate::domain::media::SearchCandidate;
-use crate::domain::read_models::{
-    FollowResult, FollowSummary, HealthSnapshot, RefreshAccepted, UpcomingRelease,
-    MAX_UPCOMING_LIMIT,
-};
 use crate::error::{AppError, ErrorCode};
+
+pub use crate::application::commands::{Request, Response, MAX_QUERY_LEN};
 
 /// Bumped only for an incompatible change. A mismatch is reported, never
 /// negotiated: two versions guessing at each other is worse than a clear stop.
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// Largest frame either side will read or write.
 pub const MAX_FRAME_BYTES: usize = 1024 * 1024;
-
-/// Longest accepted search query.
-pub const MAX_QUERY_LEN: usize = 128;
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", content = "data", rename_all = "snake_case")]
-pub enum Request {
-    Status,
-    SearchAnime {
-        query: String,
-    },
-    FollowAnilist {
-        id: AniListId,
-    },
-    SearchTv {
-        query: Option<String>,
-    },
-    FollowTv {
-        id: TvMazeId,
-    },
-    Drop {
-        media_id: MediaId,
-    },
-    ListFollows,
-    Upcoming {
-        limit: Option<u32>,
-        /// Just-aired rows inside the visibility window. Default is the future.
-        #[serde(default)]
-        dropped: bool,
-    },
-    TriggerRefresh,
-}
-
-impl Request {
-    /// Stable label for logs and metrics.
-    pub const fn name(&self) -> &'static str {
-        match self {
-            Self::Status => "status",
-            Self::SearchAnime { .. } => "search_anime",
-            Self::FollowAnilist { .. } => "follow_anilist",
-            Self::SearchTv { .. } => "search_tv",
-            Self::FollowTv { .. } => "follow_tv",
-            Self::Drop { .. } => "drop",
-            Self::ListFollows => "list_follows",
-            Self::Upcoming { .. } => "upcoming",
-            Self::TriggerRefresh => "trigger_refresh",
-        }
-    }
-
-    /// Whether this request may reach the source.
-    ///
-    /// Used to reject source work while bootstrap is degraded, and asserted by
-    /// a test so `upcoming` can never quietly acquire a network path.
-    pub const fn touches_source(&self) -> bool {
-        matches!(
-            self,
-            Self::SearchAnime { .. }
-                | Self::FollowAnilist { .. }
-                | Self::SearchTv { .. }
-                | Self::FollowTv { .. }
-                | Self::TriggerRefresh
-        )
-    }
-
-    /// Whether this request is answerable while bootstrap has failed.
-    pub const fn served_when_degraded(&self) -> bool {
-        matches!(self, Self::Status)
-    }
-
-    /// Rejects input the handler should never see.
-    ///
-    /// Validation lives on the protocol type so both the client and the server
-    /// enforce identical rules; a client-only check is not a check.
-    pub fn validate(&self) -> Result<(), AppError> {
-        match self {
-            Self::SearchAnime { query } => validate_query(query),
-            Self::SearchTv { query: Some(query) } => validate_query(query),
-            Self::SearchTv { query: None } => Ok(()),
-            Self::Upcoming { limit: Some(0), .. } => {
-                Err(AppError::invalid_argument("limit must be at least 1"))
-            }
-            Self::Upcoming {
-                limit: Some(limit), ..
-            } if *limit > MAX_UPCOMING_LIMIT => Err(AppError::invalid_argument(format!(
-                "limit must be at most {MAX_UPCOMING_LIMIT}"
-            ))),
-            _ => Ok(()),
-        }
-    }
-}
-
-fn validate_query(query: &str) -> Result<(), AppError> {
-    let trimmed = query.trim();
-    if trimmed.is_empty() {
-        return Err(AppError::invalid_argument("search query is empty"));
-    }
-    if trimmed.chars().count() > MAX_QUERY_LEN {
-        return Err(AppError::invalid_argument(format!(
-            "search query is longer than {MAX_QUERY_LEN} characters"
-        )));
-    }
-    Ok(())
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", content = "data", rename_all = "snake_case")]
-pub enum Response {
-    Status(Box<HealthSnapshot>),
-    SearchAnime(Vec<SearchCandidate>),
-    FollowAnilist(Box<FollowResult>),
-    SearchTv(Vec<SearchCandidate>),
-    FollowTv(Box<FollowResult>),
-    Drop(Box<FollowSummary>),
-    ListFollows(Vec<FollowSummary>),
-    Upcoming(Vec<UpcomingRelease>),
-    TriggerRefresh(RefreshAccepted),
-}
-
-impl Response {
-    pub const fn name(&self) -> &'static str {
-        match self {
-            Self::Status(_) => "status",
-            Self::SearchAnime(_) => "search_anime",
-            Self::FollowAnilist(_) => "follow_anilist",
-            Self::SearchTv(_) => "search_tv",
-            Self::FollowTv(_) => "follow_tv",
-            Self::Drop(_) => "drop",
-            Self::ListFollows(_) => "list_follows",
-            Self::Upcoming(_) => "upcoming",
-            Self::TriggerRefresh(_) => "trigger_refresh",
-        }
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "status", content = "data", rename_all = "snake_case")]
@@ -231,10 +93,25 @@ pub fn check_version(peer: u32) -> Result<(), AppError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::ids::{AniListId, MediaId, TvMazeId};
+    use crate::domain::read_models::MAX_UPCOMING_LIMIT;
 
     fn every_request() -> Vec<Request> {
         vec![
             Request::Status,
+            Request::Search {
+                query: "one piece".into(),
+                kind: None,
+            },
+            Request::ResolveSearch {
+                candidates: Vec::new(),
+            },
+            Request::View {
+                query: crate::domain::command_center::ViewQuery::Home,
+            },
+            Request::Refresh {
+                target: crate::domain::command_center::RefreshTarget::Library,
+            },
             Request::SearchAnime {
                 query: "one piece".into(),
             },
@@ -254,14 +131,11 @@ mod tests {
                 dropped: false,
             },
             Request::TriggerRefresh,
+            Request::WaitForRevision {
+                instance_id: "instance".into(),
+                after: 42,
+            },
         ]
-    }
-
-    #[test]
-    fn the_request_surface_is_closed() {
-        // Guards against the deleted notification and change-wait requests
-        // creeping back in. Search and follow exist once per source.
-        assert_eq!(every_request().len(), 9);
     }
 
     #[test]
@@ -474,7 +348,7 @@ mod tests {
     }
 
     #[test]
-    fn protocol_version_is_frozen_at_one() {
-        assert_eq!(PROTOCOL_VERSION, 1);
+    fn protocol_version_is_frozen_at_two() {
+        assert_eq!(PROTOCOL_VERSION, 2);
     }
 }
