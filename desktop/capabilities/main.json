@@ -1,0 +1,6 @@
+{
+  "identifier": "main",
+  "description": "Local Command Center events only; no filesystem, shell or remote access.",
+  "windows": ["main"],
+  "permissions": ["core:event:allow-listen", "core:event:allow-unlisten"]
+}

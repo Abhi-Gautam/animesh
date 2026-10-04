@@ -13,9 +13,11 @@ use objc2::runtime::{AnyObject, ProtocolObject, Sel};
 use objc2::{define_class, msg_send, sel, AnyThread, DefinedClass, MainThreadOnly};
 use objc2_app_kit::{
     NSApplication, NSCellImagePosition, NSImage, NSMenu, NSMenuDelegate, NSMenuItem, NSStatusBar,
-    NSStatusItem, NSVariableStatusItemLength,
+    NSStatusItem, NSVariableStatusItemLength, NSWorkspace,
 };
-use objc2_foundation::{MainThreadMarker, NSData, NSObject, NSObjectProtocol, NSString};
+use objc2_foundation::{
+    MainThreadMarker, NSBundle, NSData, NSObject, NSObjectProtocol, NSSize, NSString,
+};
 use tokio::sync::mpsc::UnboundedSender;
 
 /// Template PDF of the radar-pip mark. Black-on-clear; AppKit inverts it.
@@ -110,6 +112,19 @@ define_class!(
     }
 
     impl MenuTarget {
+        #[unsafe(method(openAnimesh:))]
+        fn open_animesh(&self, _sender: Option<&AnyObject>) {
+            let Some(desktop) = NSBundle::mainBundle().bundleURL().URLByAppendingPathComponent_isDirectory(
+                &NSString::from_str("Contents/Helpers/Animesh Desktop.app"), true,
+            ) else {
+                tracing::error!("could not locate the bundled Animesh desktop app");
+                return;
+            };
+            if !NSWorkspace::sharedWorkspace().openURL(&desktop) {
+                tracing::error!("could not open the bundled Animesh desktop app");
+            }
+        }
+
         #[unsafe(method(refreshNow:))]
         fn refresh_now(&self, _sender: Option<&AnyObject>) {
             let _ = self.ivars().commands.send(MenuCommand::RefreshNow);
@@ -154,7 +169,10 @@ impl std::fmt::Debug for MenuBar {
 
 fn menu_bar_image() -> Option<Retained<NSImage>> {
     let data = NSData::with_bytes(MENU_BAR_TEMPLATE);
-    NSImage::initWithData(NSImage::alloc(), &data)
+    let image = NSImage::initWithData(NSImage::alloc(), &data)?;
+    // SVG pixels become 0.75 PDF points; use an explicit menu-bar point size.
+    image.setSize(NSSize::new(18.0, 18.0));
+    Some(image)
 }
 
 impl MenuBar {
@@ -201,6 +219,8 @@ impl MenuBar {
 fn populate(menu: &NSMenu, target: &MenuTarget, model: &MenuModel, mtm: MainThreadMarker) {
     menu.removeAllItems();
 
+    add_action(menu, target, "Open Animesh", sel!(openAnimesh:), "o", mtm);
+    menu.addItem(&NSMenuItem::separatorItem(mtm));
     add_label(menu, &model.summary, mtm);
 
     if let Some(attention) = &model.attention {

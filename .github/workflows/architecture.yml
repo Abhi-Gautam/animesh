@@ -92,6 +92,14 @@ jobs:
             exit 1
           fi
 
+      - name: the desktop stays a daemon client
+        run: |
+          set -euo pipefail
+          if grep -rnE --include='*.rs' 'animesh::(store|sources|engine|library)\b|rusqlite::|reqwest::' desktop/src ; then
+            echo "::error::The desktop must use application contracts over IPC."
+            exit 1
+          fi
+
       - name: release builds never enable the test harness
         run: |
           set -euo pipefail

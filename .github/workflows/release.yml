@@ -57,6 +57,17 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
+      - uses: actions/setup-node@v4
+        if: runner.os == 'macOS'
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/ui/package-lock.json
+
+      - name: Frontend dependencies
+        if: runner.os == 'macOS'
+        run: npm ci --prefix desktop/ui
+
       # macOS ships the bundle, because the daemon cannot post a notification
       # without a bundle identifier. Linux ships the two binaries, which is the
       # whole product there.

@@ -1,0 +1,25 @@
+[package]
+name = "animesh-desktop"
+version = "0.7.0"
+edition = "2021"
+rust-version = "1.96"
+publish = false
+
+[workspace]
+
+[features]
+test-harness = ["animesh/test-harness"]
+
+[dependencies]
+animesh = { path = ".." }
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["time", "sync", "process"] }
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[profile.release]
+strip = true
+lto = "thin"
+codegen-units = 1

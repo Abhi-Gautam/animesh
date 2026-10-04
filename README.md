@@ -90,6 +90,24 @@ watch before recommending anything, against your library, on your machine.
 
 ## Development
 
+The desktop Command Center uses Tauri 2 with plain HTML, CSS, and TypeScript.
+It connects to the existing daemon; the daemon owns the library, source calls,
+refresh policy, and notifications. Home, Discover, Search, Schedule, Library,
+and Health share a fixed header and footer with scrolling content between them.
+On macOS, **Open Animesh** in the menu bar opens the bundled desktop app.
+
+Desktop builds need Node.js and the TypeScript dependency:
+
+```bash
+npm ci --prefix desktop/ui
+npm run build --prefix desktop/ui
+cargo build --manifest-path desktop/Cargo.toml --locked
+```
+
+Linux desktop builds also need the [Tauri system dependencies](https://v2.tauri.app/start/prerequisites/#linux).
+The macOS installer below builds and signs the desktop app inside the main
+bundle, so the menu bar, CLI, and desktop are installed together.
+
 ```bash
 cargo build
 cargo test

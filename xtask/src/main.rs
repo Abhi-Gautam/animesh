@@ -17,6 +17,8 @@ const AGENT_LABEL: &str = "dev.animesh.agent";
 const AGENT_PLIST: &str = "dev.animesh.agent.plist";
 const CLI_NAME: &str = "animesh";
 const APP_BIN: &str = "animesh-app";
+const DESKTOP_APP: &str = "Animesh Desktop.app";
+const DESKTOP_BIN: &str = "animesh-desktop";
 const MIN_MACOS: &str = "13.0";
 const INSTALL_DIR: &str = "/Applications";
 
@@ -106,8 +108,12 @@ fn staging_app() -> PathBuf {
 
 /// The version in the root manifest, which every bundled plist must match.
 fn crate_version() -> Result<String, String> {
-    let manifest = std::fs::read_to_string(workspace_root().join("Cargo.toml"))
-        .map_err(|e| format!("cannot read the root Cargo.toml: {e}"))?;
+    manifest_version(&workspace_root().join("Cargo.toml"))
+}
+
+fn manifest_version(path: &Path) -> Result<String, String> {
+    let manifest = std::fs::read_to_string(path)
+        .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
 
     manifest
         .lines()
@@ -202,9 +208,58 @@ fn bundle(release: bool) -> Result<PathBuf, String> {
     }
     copy(&icon, &contents.join("Resources/AppIcon.icns"))?;
 
+    bundle_desktop(&root, &contents.join("Helpers").join(DESKTOP_APP), release)?;
+
     sign(&app)?;
     println!("bundled {} {version} at {}", APP_NAME, app.display());
     Ok(app)
+}
+
+fn bundle_desktop(root: &Path, app: &Path, release: bool) -> Fallible {
+    let desktop = root.join("desktop");
+    run(
+        "npm",
+        &[
+            "--prefix",
+            &desktop.join("ui").to_string_lossy(),
+            "run",
+            "build",
+        ],
+    )?;
+    let manifest = desktop.join("Cargo.toml").to_string_lossy().into_owned();
+    let mut build = vec![
+        "build",
+        "--manifest-path",
+        &manifest,
+        "--bin",
+        DESKTOP_BIN,
+        "--locked",
+    ];
+    if release {
+        build.push("--release");
+    }
+    run("cargo", &build)?;
+
+    let contents = app.join("Contents");
+    for dir in ["MacOS", "Resources"] {
+        std::fs::create_dir_all(contents.join(dir))
+            .map_err(|e| format!("cannot create desktop {dir}: {e}"))?;
+    }
+    let profile = if release { "release" } else { "debug" };
+    copy(
+        &desktop.join("target").join(profile).join(DESKTOP_BIN),
+        &contents.join("MacOS").join(DESKTOP_BIN),
+    )?;
+    copy(
+        &root.join("assets/AppIcon.icns"),
+        &contents.join("Resources/AppIcon.icns"),
+    )?;
+    let version = manifest_version(&desktop.join("Cargo.toml"))?;
+    let info = std::fs::read_to_string(desktop.join("Info.plist"))
+        .map_err(|e| format!("cannot read desktop Info.plist: {e}"))?
+        .replace("__VERSION__", &version);
+    std::fs::write(contents.join("Info.plist"), info)
+        .map_err(|e| format!("cannot write desktop Info.plist: {e}"))
 }
 
 fn copy(from: &Path, to: &Path) -> Fallible {
@@ -233,6 +288,22 @@ fn sign(app: &Path) -> Fallible {
     run(
         "codesign",
         &["--force", "--sign", &identity, "--timestamp=none", &helper],
+    )?;
+    let desktop = app
+        .join("Contents/Helpers")
+        .join(DESKTOP_APP)
+        .to_string_lossy()
+        .into_owned();
+    run(
+        "codesign",
+        &[
+            "--force",
+            "--sign",
+            &identity,
+            "--timestamp=none",
+            "--options=runtime",
+            &desktop,
+        ],
     )?;
     run(
         "codesign",
@@ -291,6 +362,14 @@ fn stop_installed_app(target: &Path) {
     let _ = Command::new("pkill")
         .args(["-f", &executable.to_string_lossy()])
         .status();
+    let desktop = target
+        .join("Contents/Helpers")
+        .join(DESKTOP_APP)
+        .join("Contents/MacOS")
+        .join(DESKTOP_BIN);
+    let _ = Command::new("pkill")
+        .args(["-f", &desktop.to_string_lossy()])
+        .status();
 }
 
 fn link_cli(app: &Path) -> Fallible {
@@ -327,6 +406,16 @@ fn verify(app: &Path) -> Fallible {
         PathBuf::from("Helpers").join(CLI_NAME),
         PathBuf::from("Library/LaunchAgents").join(AGENT_PLIST),
         PathBuf::from("Resources").join("AppIcon.icns"),
+        PathBuf::from("Helpers")
+            .join(DESKTOP_APP)
+            .join("Contents/MacOS")
+            .join(DESKTOP_BIN),
+        PathBuf::from("Helpers")
+            .join(DESKTOP_APP)
+            .join("Contents/Info.plist"),
+        PathBuf::from("Helpers")
+            .join(DESKTOP_APP)
+            .join("Contents/Resources/AppIcon.icns"),
     ] {
         if !contents.join(&required).exists() {
             return Err(format!("missing {}", required.display()));
@@ -376,6 +465,13 @@ fn verify(app: &Path) -> Fallible {
     )?;
 
     verify_deployment_target(&contents.join("MacOS").join(APP_NAME))?;
+    let desktop = contents.join("Helpers").join(DESKTOP_APP).join("Contents");
+    verify_deployment_target(&desktop.join("MacOS").join(DESKTOP_BIN))?;
+    if plist_value(&desktop.join("Info.plist"), "CFBundleIdentifier")?
+        != "dev.animesh.command-center"
+    {
+        return Err("desktop bundle identifier does not match the Command Center".to_owned());
+    }
 
     println!("verified {}", app.display());
     Ok(())

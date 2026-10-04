@@ -1,5 +1,9 @@
 # Ignore build outputs
 /target/
+/desktop/target/
+/desktop/ui/dist/
+/desktop/ui/node_modules/
+/desktop/gen/
 
 # Cargo.lock is tracked: this is an application, not a library, and CI builds
 # with --locked.
