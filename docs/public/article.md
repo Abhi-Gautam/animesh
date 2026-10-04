@@ -1,35 +1,29 @@
 ---
 title: I just wanted to know when an episode dropped
-description: How a manual anime countdown habit became a notification pipeline, a local daemon, and the beginning of a personal data system.
+description: A notification for new anime episodes, and why it needs one process that stays running.
 published: 2026-08-10
 project: Animesh
 repository: https://github.com/Abhi-Gautam/animesh
-sourceCommit: 3daa7006b613e08e38ce7160efed5c776f738273
+sourceCommit: aaa616424d286409a9aa7035e3464ca53292efff
 ---
 
-I watch a small set of anime at a time. Keeping up with them used to mean opening Crunchyroll, scrolling around, and checking whether a new episode had appeared. If I cared about the exact time, I would open one of the countdown sites and look it up there.
+I watch a small set of anime at a time. Keeping up with them used to mean opening Crunchyroll and checking whether a new episode had appeared. If I wanted the exact time, I opened a countdown site as well.
 
-Then I would do it again later.
+Then I did it again later.
 
-The problem was not that release information was unavailable. It was that I had to keep pulling it from several places. What I wanted was much simpler: when an episode drops, tell me.
+What I wanted was simpler: when an episode drops, tell me. I did not want a command I had to remember to run.
 
-> I did not want a CLI that I had to remember to run. I wanted a notification pipeline.
+A command can start, fetch something, print it, and exit. A notification has to remain available, remember what I follow, survive a restart, and fire at the right time. That is why Animesh has a long-running process.
 
-That requirement changed the shape of the project. A command can start, fetch something, print it, and disappear. A notification system has to remain alive, remember what I follow, survive restarts, refresh incomplete information, and deliver something at the right time without me asking.
+## One process owns the schedule
 
-That is how a small anime utility pulled me into daemon architecture, service managers, Unix sockets, native notification systems, and the same questions I found while reading how software such as Tailscale and Docker structures long-running local processes.
+Animesh has a command-line client, a macOS menu bar, and notifications. If each one opened the database and called AniList independently, two refreshes could run at once, or one could read the database while another was writing to it.
 
-## One process has to own the truth
+The long-running process owns the database, AniList requests, refresh schedule, and notification decisions. The other parts send it requests.
 
-Animesh has several visible surfaces: a CLI, a macOS menu bar, and native notifications. Letting each surface open the database and fetch AniList independently would look simpler at first. It would also create several owners of the same state.
+![Animesh architecture showing the CLI and menu bar communicating through one daemon, which owns SQLite, AniList refreshes, scheduling, and native notification adapters.](/media/animesh/architecture.svg)
 
-Two commands could refresh at once. The menu could read halfway through a write. Notification policy would slowly split across every surface. None of those failures needs scale; they can happen on one laptop.
-
-So one long-lived process owns the database, the AniList client, refresh scheduling, and notification policy. Everything else is a client or an adapter.
-
-![Animesh architecture showing the CLI and menu bar communicating through one daemon, which owns SQLite, AniList refreshes, scheduling, and native notification adapters.](/media/animesh/architecture.svg "One owner, several surfaces. The diagram keeps a fixed readable coordinate system; narrow screens scroll inside the figure instead of shrinking its labels.")
-
-The CLI is intentionally thin. It parses one command, sends one versioned request over a user-private Unix socket, prints one response, and exits. It never opens SQLite and it never constructs an AniList client.
+The command-line client sends each command to that process over a Unix socket and then exits. It does not open the database or call AniList itself.
 
 ```text
 $ animesh --help
@@ -46,65 +40,30 @@ Commands:
   service  Run Animesh in the background, or stop it
 ```
 
-The important promise is attached to `next`: it is local-only.
+`next` reads the stored schedule. It does not make a network request, so it still works when AniList is unavailable.
 
-## “Local-first” has to survive failure
+## The stored schedule has to remain usable
 
-Putting SQLite on a laptop is not enough to make a system local-first. The useful test is what still works when everything around the database becomes unreliable.
+Animesh records the response it received, the schedule it derived from that response, and the notifications it wants to show. A failed or rate-limited response stays in the database instead of being discarded. The next refresh can use that record, including the time it should wait before trying again.
 
-- **AniList is unavailable:** `animesh next` still reads the last known schedule locally.
-- **The source rate-limits a refresh:** the throttle is persisted, so restarting the daemon does not conveniently forget it.
-- **The database cannot finish booting:** the daemon stays reachable and serves health instead of disappearing into a service-manager crash loop.
-- **The process dies during notification work:** the next pass reads what the operating system actually holds and converges again.
+If the process stops while changing notifications, the next pass does not trust its previous record of what it registered. It reads the pending and delivered notifications from the operating system, compares them with the current schedule, and updates the difference. A rescheduled episode keeps its identifier but has a new air time, so comparing only the identifier would leave the old notification in place.
 
-The local database is therefore not a cache in front of AniList. It is the record Animesh serves. AniList is one source that supplies new observations.
+If the database cannot finish opening, the process stays running and answers a status request. The service manager does not have to restart it in a loop while the database is unavailable.
 
-## The notification needed a data pipeline
+## macOS and Linux do not schedule notifications the same way
 
-A remote API response is not yet something a person—or an AI agent—can safely reason from. It can be late, malformed, contradictory, incomplete, or valid but older than a concurrent response.
+macOS can hold a notification request and deliver it later, even if Animesh is not running. The freedesktop notification interface used on Linux displays a notification when Animesh submits it. It does not keep a future notification for the application.
 
-Animesh keeps three concerns separate:
+Animesh therefore asks the operating-system adapter whether it can hold a scheduled notification. On macOS, it registers the future request with macOS. On Linux, the process waits until the episode time and submits the notification then.
 
-1. **What arrived:** the fetch occurrence, body, outcome, timing, and rate-limit evidence.
-2. **What it means:** normalized media, observations, release events, and follow state.
-3. **What the product uses:** upcoming releases, health, refresh decisions, and notification intent.
+A notification change is saved only after the complete pass succeeds. Saving part of the pass would leave Animesh's record and the operating system's notifications disagreeing about what should happen next.
 
-This is a small local version of the bronze, silver, and gold separation used in larger data platforms. The names matter less than the boundary: failed responses remain evidence instead of disappearing because they produced no projection.
+## What is not in the released version
 
-That separation also matters when an episode is rescheduled. An identifier can remain the same while its airing time changes. Animesh compares the canonical desired request with the request held by the operating system; matching only the identifier would quietly accept a stale trigger.
+Animesh 0.6.1, released on August 28, 2026, supports this AniList-backed anime workflow. It is available from GitHub and crates.io.
 
-## Notifications are reconciliation, not delivery
-
-macOS and Linux expose different semantics. macOS can hold a future notification request and fire it even if Animesh is not running. The freedesktop interface used on Linux displays a notification when it is submitted; it does not hold a future schedule for the application.
-
-A useful abstraction cannot pretend those systems behave the same. The notification surface tells the reconciler whether it can hold a schedule. On macOS, Animesh can register future work with the OS. On Linux, the daemon waits until airtime and submits then.
-
-The reconciler follows an observe–converge–record loop:
-
-1. **Observe:** read authorization, pending requests, delivered requests, and the desired local plan.
-2. **Converge:** add missing requests, replace stale revisions, and remove requests Animesh no longer wants.
-3. **Record:** commit the complete pass as one transaction. A partial pass is worse than no pass.
-
-The OS is authoritative about what it currently holds. SQLite is authoritative about what Animesh wants. Reconciliation is the function that makes those two facts agree again after a crash, a reschedule, a permission change, or an upgrade.
-
-## The schedule is the wedge
-
-The notification solved the immediate annoyance. The more important thing accumulating underneath is a structured, local history of what I follow, watch, miss, drop, and return to.
-
-That record has two readers. The first is me asking a direct question such as “what drops tonight?” The second is an AI system that should understand my taste before recommending anything.
-
-Most personalized AI experiences start by asking the same questions again or inferring taste from a short conversation. A user-owned data system can provide durable context instead: what I actually followed, where I stopped, which genres persist, how my taste changes, and eventually the same kind of history for television, films, and music.
-
-Anime is the first source because it created the real need. It does not have to be the boundary of the system.
-
-## Where this goes next
-
-The current system establishes the difficult base: one owner process, durable local evidence, normalized observations, read models, source-aware refresh policy, and notification reconciliation across two operating systems.
-
-The next layers are not “add AI” as a feature. They are better personal data: backlog and history, richer taste signals, more media sources, and interfaces that can answer useful questions without exporting the underlying record to somebody else’s account.
-
-The first version started because I was tired of refreshing a webpage. The reason to keep building it is that a notification pipeline can become something more useful: a private, structured memory of what I like.
+Television support and the desktop command center are on separate branches. They are not part of that release, so this article does not describe them as available features.
 
 ---
 
-This article was checked against Animesh commit [`3daa700`](https://github.com/Abhi-Gautam/animesh/tree/3daa7006b613e08e38ce7160efed5c776f738273). The relevant implementation trails are the [daemon composition root](https://github.com/Abhi-Gautam/animesh/blob/3daa7006b613e08e38ce7160efed5c776f738273/src/bin/app.rs), [library boundaries](https://github.com/Abhi-Gautam/animesh/blob/3daa7006b613e08e38ce7160efed5c776f738273/src/library/service.rs), [notification reconciler](https://github.com/Abhi-Gautam/animesh/blob/3daa7006b613e08e38ce7160efed5c776f738273/src/engine/reconciler.rs), and [SQLite connection model](https://github.com/Abhi-Gautam/animesh/blob/3daa7006b613e08e38ce7160efed5c776f738273/src/store/connection.rs).
+Checked against Animesh commit [`aaa6164`](https://github.com/Abhi-Gautam/animesh/tree/aaa616424d286409a9aa7035e3464ca53292efff), the current `master` commit. The relevant code is the [command-line client](https://github.com/Abhi-Gautam/animesh/blob/aaa616424d286409a9aa7035e3464ca53292efff/src/bin/animesh.rs), [daemon composition](https://github.com/Abhi-Gautam/animesh/blob/aaa616424d286409a9aa7035e3464ca53292efff/src/service.rs), [notification reconciler](https://github.com/Abhi-Gautam/animesh/blob/aaa616424d286409a9aa7035e3464ca53292efff/src/engine/reconciler.rs), and [library service](https://github.com/Abhi-Gautam/animesh/blob/aaa616424d286409a9aa7035e3464ca53292efff/src/library/service.rs).
