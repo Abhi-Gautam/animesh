@@ -7,10 +7,10 @@ HTTP server. The build validates every referenced asset and creates download
 metadata from the latest public GitHub release. Use `--release-json FILE` to
 build from saved GitHub release metadata without a network request.
 
-The intended address is `https://animesh.syntropicsystems.dev/`. Hosting and DNS
-are a separate final step; this repository does not change existing sites.
-Cloudflare Pages build command: `python3 scripts/build-site.py`; output
-directory: `target/site`. The same output can be hosted as Worker static assets.
+The address is `https://animesh.syntropicsystems.dev/`, served by the
+`animesh-website` Cloudflare Worker. Build with `python3 scripts/build-site.py`,
+then deploy with `npx wrangler deploy` using the root `wrangler.jsonc`.
+The Worker serves only static assets; downloads remain on GitHub.
 
 Screenshots are real app captures. macOS captures use the maintainer’s library;
 Linux captures come from the native WebKit release smoke test. Terminal images
