@@ -108,7 +108,6 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get install -y ./target/packages/animesh_*.deb
-          cargo install tauri-driver --version 2.1.0 --locked
           animesh-app &
           APP=$!
           trap 'kill -TERM "$APP" 2>/dev/null || true' EXIT

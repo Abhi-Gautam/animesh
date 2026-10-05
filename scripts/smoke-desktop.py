@@ -3,6 +3,7 @@
 import argparse
 import base64
 import json
+import os
 from pathlib import Path
 import subprocess
 import time
@@ -16,18 +17,8 @@ ELEMENT = "element-6066-11e4-a52e-4f735466cecf"
 def request(method, path, data=None):
     payload = json.dumps(data).encode() if data is not None else None
     req = urllib.request.Request(URL + path, payload, {"Content-Type": "application/json"}, method=method)
-    # WebKit's HTTP connection can close between read-only commands. Retry
-    # only observations, never clicks or session creation.
-    observation = method == "GET" or path.endswith(("/execute/sync", "/execute/async"))
-    for attempt in range(3):
-        try:
-            with urllib.request.urlopen(req, timeout=40) as response:
-                result = json.load(response)["value"]
-            break
-        except ConnectionResetError:
-            if not observation or attempt == 2:
-                raise
-            time.sleep(0.05)
+    with urllib.request.urlopen(req, timeout=40) as response:
+        result = json.load(response)["value"]
     if isinstance(result, dict) and "error" in result:
         raise RuntimeError(result)
     return result
@@ -48,11 +39,14 @@ def wait(check, label):
 def smoke(binary, screenshots):
     session = None
     with open(screenshots / "driver.log", "w") as log:
-        driver = subprocess.Popen(["tauri-driver"], stdout=log, stderr=log)
+        # Connect directly to the same native driver Tauri uses. Its proxy can
+        # reuse a closed upstream connection and lose a navigation command.
+        env = dict(os.environ, TAURI_WEBVIEW_AUTOMATION="true")
+        driver = subprocess.Popen(["WebKitWebDriver", "--port=4444", "--host=127.0.0.1"], env=env, stdout=log, stderr=log)
         try:
             wait(lambda: request("GET", "/status"), "WebDriver startup")
             session = request("POST", "/session", {"capabilities": {"alwaysMatch": {
-                "tauri:options": {"application": str(binary.resolve())}}}})["sessionId"]
+                "webkitgtk:browserOptions": {"binary": str(binary.resolve())}}}})["sessionId"]
             base = f"/session/{session}"
 
             def execute(script, args=None):
@@ -93,14 +87,16 @@ def smoke(binary, screenshots):
             wait(lambda: execute("return location.hash === '#schedule'"), "Open schedule navigation")
             print("Installed desktop and Open schedule action passed.", flush=True)
         finally:
-            if session:
-                request("DELETE", f"/session/{session}")
-            driver.terminate()
             try:
-                driver.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                driver.kill()
-                driver.wait()
+                if session:
+                    request("DELETE", f"/session/{session}")
+            finally:
+                driver.terminate()
+                try:
+                    driver.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    driver.kill()
+                    driver.wait()
 
 
 if __name__ == "__main__":
