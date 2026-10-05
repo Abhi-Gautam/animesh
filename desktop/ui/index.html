@@ -20,7 +20,7 @@
   <div class="shell">
     <aside class="sidebar" aria-label="Main navigation">
       <a class="brand" href="#home"><svg><use href="#radar"/></svg><span>Animesh</span></a>
-      <nav>
+      <nav aria-label="Pages">
         <a href="#home"><svg><use href="#home-icon"/></svg>Home<kbd>1</kbd></a>
         <a href="#discover"><svg><use href="#radar"/></svg>Discover<kbd>2</kbd></a>
         <a href="#search"><svg><use href="#search-icon"/></svg>Search<kbd>3</kbd></a>
@@ -37,10 +37,11 @@
       <header class="toolbar">
         <button class="global-search" id="global-search"><svg><use href="#search-icon"/></svg><span>Search titles or commands</span><kbd id="search-shortcut">⌘ K</kbd></button>
         <span class="quiet" id="timezone"></span>
+        <label class="text-control"><span class="sr-only">Text size</span><select id="text-size"><option value="standard">Standard text</option><option value="large">Larger text</option><option value="largest">Largest text</option></select></label>
         <label class="theme-control"><span class="sr-only">Appearance</span><select id="theme"><option value="system">System theme</option><option value="dark">Dark</option><option value="light">Light</option></select></label>
       </header>
       <div class="content-layout">
-        <main id="main" tabindex="-1">
+        <main id="main" tabindex="-1" aria-labelledby="page-title">
           <header class="page-heading"><div><h1 id="page-title">Home</h1><p id="page-subtitle">Your personal release radar</p></div><button id="refresh">Refresh</button></header>
           <div id="notice" role="status" aria-live="polite" hidden><span id="notice-message"></span><button id="restart-service" hidden>Restart background service</button></div>
           <section id="home" class="screen" aria-label="Home"></section>

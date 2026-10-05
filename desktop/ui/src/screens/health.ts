@@ -15,11 +15,14 @@ function block(title: string, values: [string, string][]): HTMLElement { const s
 export function render(target: HTMLElement, snapshot: Snapshot, connected: boolean, copy: () => void): void {
   if (snapshot.view.screen !== "health") return;
   const h = snapshot.health; const grid = node("div", "health-grid");
-  const status = !connected ? "Engine disconnected · showing last retrieved information" : h.degraded.length ? "Some systems need attention" : "All systems healthy";
+  const status = !connected ? "Engine disconnected · showing last retrieved information" : h.degraded.length ? "Some systems need attention" : h.authorization !== "authorized" ? "Check notification permission" : "All systems healthy";
   grid.append(block("Engine", [["Daemon", connected ? humanize(h.bootstrap) : "Disconnected"], ["Version", h.process_version], ["Database", h.database_ready ? "Ready" : "Needs recovery"], ["Started", date(h.started_at)]]));
   const sources = block("Sources", [["Last source success", date(h.last_success_at)], ["Titles due", String(h.refresh.due)], ["Stale titles", String(h.refresh.stale)], ["Backing off", String(h.refresh.backing_off)]]);
   for (const source of snapshot.view.data.sources) sources.append(node("p", "quiet", `${sourceName(source.source)}: ${source.blocked_until ? `retry after ${date(source.blocked_until)}` : "Available"}. Last success: ${date(source.last_success_at)}.`)); grid.append(sources);
-  grid.append(block("Notifications", [["Permission", humanize(h.authorization)], ["Desired", String(h.notifications.desired)], ["Registered", String(h.notifications.registered)], ["Failed", String(h.notifications.failed)], ["Deferred by capacity", String(h.notifications.deferred_capacity)]]));
+  const notifications = block("Notifications", [["Permission", humanize(h.authorization)], ["Desired", String(h.notifications.desired)], ["Registered", String(h.notifications.registered)], ["Failed", String(h.notifications.failed)], ["Deferred by capacity", String(h.notifications.deferred_capacity)]]);
+  notifications.append(node("p", "quiet", navigator.platform.toLowerCase().includes("mac") ? "To allow reminders, open System Settings → Notifications → Animesh and enable Allow Notifications. Focus modes can silence banners even when permission is allowed." : "Check Animesh in your desktop’s notification settings and turn off Do Not Disturb when you want banners. The background service must be running in your desktop session."));
+  notifications.append(node("p", "quiet", "Reminders are scheduled for known release times. A followed title without an upcoming episode has no reminder yet. Closing the window keeps tracking; quitting the background service stops it."));
+  grid.append(notifications);
   const storage = block("Storage", [["Schema", String(h.schema_version)], ["Database checks", h.database_ready ? "Passed at startup" : "Failed at startup"]]);
   const diagnostics = node("details"); diagnostics.append(node("summary", "", "Diagnostic details"), node("pre", "", JSON.stringify({ stamp: snapshot.stamp, health: h }, null, 2))); storage.append(diagnostics); grid.append(storage);
   const content: HTMLElement[] = [grid];

@@ -13,20 +13,31 @@ export function node<K extends keyof HTMLElementTagNameMap>(tag: K, className = 
 export function button(text: string, action: () => void, className = ""): HTMLButtonElement {
   const element = node("button", className, text);
   element.type = "button";
-  element.addEventListener("click", action);
+  element.dataset.focusKey = `button-${text}`;
+  // WebKit does not focus buttons on pointer clicks. Keep the initiating
+  // control available when a detail view or confirmation returns focus.
+  element.addEventListener("click", () => { element.focus({ preventScroll: true }); action(); });
   return element;
 }
 export function get<T extends HTMLElement>(id: string): T { return document.getElementById(id) as T; }
+export function replaceContent(target: HTMLElement, children: HTMLElement[]): void {
+  const active = document.activeElement;
+  const key = active instanceof HTMLElement && target.contains(active) ? active.dataset.focusKey : undefined;
+  target.replaceChildren(...children);
+  if (key) target.querySelector<HTMLElement>(`[data-focus-key="${CSS.escape(key)}"]`)?.focus({ preventScroll: true });
+}
 export function page(target: HTMLElement, content: HTMLElement[], controls: HTMLElement[] = [], footer: HTMLElement[] = []): void {
   const previous = target.querySelector<HTMLElement>(".page-body");
   const active = document.activeElement;
   const focused = active instanceof HTMLInputElement && target.contains(active) ? active : null;
+  const bodyFocused = active === previous;
   const top = previous?.scrollTop ?? 0;
   const header = node("div", "page-controls"); header.append(...controls);
   const body = node("div", "page-body"); body.tabIndex = 0;
   body.setAttribute("role", "region"); body.setAttribute("aria-label", `${target.getAttribute("aria-label")} content`); body.append(...content);
   const bottom = node("footer", "page-footer"); bottom.append(...footer);
-  target.replaceChildren(header, body, bottom); body.scrollTop = top;
+  replaceContent(target, [header, body, bottom]); body.scrollTop = top;
+  if (bodyFocused) body.focus({ preventScroll: true });
   if (focused?.name) {
     const replacement = target.querySelector<HTMLInputElement>(`input[name="${focused.name}"]`);
     replacement?.focus({ preventScroll: true });
@@ -67,7 +78,7 @@ export function compactTime(timestamp: number): string {
   const day = date.toDateString() === now.toDateString() ? "Today" : new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", ...(date.getFullYear() !== now.getFullYear() ? { year: "numeric" } : {}) }).format(date);
   return `${day}, ${time(timestamp)}`;
 }
-export function titleButton(title: string, key: Key, open: (key: Key) => void): HTMLButtonElement { return button(title, () => open(key), "title-button"); }
+export function titleButton(title: string, key: Key, open: (key: Key) => void): HTMLButtonElement { const control = button(title, () => open(key), "title-button"); control.dataset.focusKey = `title-${key.source}-${key.id}`; return control; }
 export function releaseRow(release: Release, open: (key: Key) => void, showDate = false): HTMLElement {
   const row = node("div", "release-row");
   const main = node("div", "row-main");
@@ -92,11 +103,13 @@ export function section(title: string, rows: HTMLElement[], emptyText: string): 
 }
 export function factsRow(candidate: Candidate, followed: boolean, open: () => void, follow: () => void): HTMLElement {
   const row = node("div", "media-row"); const main = node("div", "row-main");
-  main.append(button(candidate.display_title, open, "title-button"));
+  const title = button(candidate.display_title, open, "title-button"); title.dataset.focusKey = `title-${candidate.source}-${candidate.source_id}`; main.append(title);
   const alternate = candidate.titles.native ?? candidate.titles.romaji;
   if (alternate && alternate !== candidate.display_title) main.append(node("p", "quiet", alternate));
   main.append(node("div", "row-meta", [kindName(candidate.source), candidate.format, candidate.season_year, humanize(candidate.status), candidate.episode_count ? `${candidate.episode_count} episodes` : null, sourceName(candidate.source)].filter(v => v !== null).join(" · ")));
-  row.append(avatar(candidate.display_title), main, followed ? node("span", "following", "✓ Following") : button("Follow", follow));
+  const action = followed ? node("span", "following", "✓ Following") : button("Follow", follow);
+  if (!followed) { action.setAttribute("aria-label", `Follow ${candidate.display_title}, ${sourceName(candidate.source)}${candidate.season_year ? `, ${candidate.season_year}` : ""}`); action.dataset.focusKey = `follow-${candidate.source}-${candidate.source_id}`; }
+  row.append(avatar(candidate.display_title), main, action);
   return row;
 }
 export function candidate(detail: Detail): Candidate { const f = detail.facts; return { source: f.source_key.source, source_id: f.source_key.id, display_title: f.display_title, titles: f.titles, status: f.status, format: f.format_raw, episode_count: f.episode_count, season_year: f.season_year }; }
@@ -108,6 +121,6 @@ export function fields(values: [string, string][]): HTMLElement {
   const dl = node("dl"); for (const [label, value] of values) { const row = node("div"); row.append(node("dt", "", label), node("dd", "", value)); dl.append(row); } return dl;
 }
 export function kindControls(current: "anime" | "tv" | null, change: (kind: "anime" | "tv" | null) => void): HTMLElement {
-  const group = node("div", "segmented"); group.setAttribute("aria-label", "Media kind");
-  for (const [value, label] of [[null, "All"], ["anime", "Anime"], ["tv", "TV"]] as const) { const tab = button(label, () => change(value)); tab.setAttribute("aria-pressed", String(current === value)); group.append(tab); } return group;
+  const group = node("div", "segmented"); group.setAttribute("role", "group"); group.setAttribute("aria-label", "Media kind");
+  for (const [value, label] of [[null, "All"], ["anime", "Anime"], ["tv", "TV"]] as const) { const tab = button(label, () => change(value)); tab.dataset.focusKey = `kind-${value ?? "all"}`; tab.setAttribute("aria-pressed", String(current === value)); group.append(tab); } return group;
 }

@@ -374,9 +374,21 @@ fn sign(app: &Path) -> Fallible {
     let helper = helper.to_string_lossy().into_owned();
     let app_path = app.to_string_lossy().into_owned();
 
+    let timestamp = if identity == "-" {
+        "--timestamp=none"
+    } else {
+        "--timestamp"
+    };
     run(
         "codesign",
-        &["--force", "--sign", &identity, "--timestamp=none", &helper],
+        &[
+            "--force",
+            "--sign",
+            &identity,
+            timestamp,
+            "--options=runtime",
+            &helper,
+        ],
     )?;
     let desktop = app
         .join("Contents/Helpers")
@@ -389,7 +401,7 @@ fn sign(app: &Path) -> Fallible {
             "--force",
             "--sign",
             &identity,
-            "--timestamp=none",
+            timestamp,
             "--options=runtime",
             &desktop,
         ],
@@ -400,7 +412,7 @@ fn sign(app: &Path) -> Fallible {
             "--force",
             "--sign",
             &identity,
-            "--timestamp=none",
+            timestamp,
             "--options=runtime",
             &app_path,
         ],

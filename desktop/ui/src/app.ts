@@ -1,5 +1,5 @@
 import type { Connection, Cursor, Detail, Feed, Key, Kind, Operation, RefreshTarget, Screen, SearchHit, SearchResults, Snapshot, ViewQuery } from "./types.js";
-import { button, candidate, empty, factsRow, get, humanize, kindControls, node, page, relative, screens, sourceName } from "./ui.js";
+import { button, candidate, empty, factsRow, get, humanize, kindControls, node, page, relative, replaceContent, screens, sourceName } from "./ui.js";
 import * as home from "./screens/home.js";
 import * as discover from "./screens/discover.js";
 import * as library from "./screens/library.js";
@@ -16,6 +16,7 @@ let boundaryTimer: ReturnType<typeof setTimeout> | undefined;
 let selectedGeneration = 0;
 let appliedStamp: Snapshot["stamp"] | null = null;
 let engineConnected = false;
+let detailOpener: HTMLElement | null = null;
 
 async function invoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   if (!window.__TAURI__) throw { code: "unavailable", message: "Open the Animesh desktop app to connect to your local service." };
@@ -108,11 +109,19 @@ function planBoundary(snapshot: Snapshot): void {
   if (deadlines.length) boundaryTimer = setTimeout(() => void load(), Math.min(2147483647, (Math.min(...deadlines) - now) * 1000 + 100));
 }
 async function openKey(key: Key, focus = true): Promise<void> {
+  if (focus && get("detail-panel").hidden) detailOpener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   const generation = ++selectedGeneration;
   try { const snapshot = await invoke<Snapshot>("view", { query: { screen: "detail", key } }); if (generation !== selectedGeneration || snapshot.view.screen !== "detail") return; state.selected = snapshot.view.data; renderSelected(focus); }
   catch (error) { if (generation === selectedGeneration) toast(errorMessage(error)); }
 }
-function openCandidate(hit: SearchHit): void { selectedGeneration++; state.selected = hit; renderSelected(); }
+function openCandidate(hit: SearchHit): void { detailOpener = document.activeElement instanceof HTMLElement ? document.activeElement : null; selectedGeneration++; state.selected = hit; renderSelected(); }
+function closeDetail(): void {
+  selectedGeneration++; state.selected = null; get("detail-panel").hidden = true;
+  const key = detailOpener?.dataset.focusKey;
+  const replacement = key ? get(state.screen).querySelector<HTMLElement>(`[data-focus-key="${CSS.escape(key)}"]`) : null;
+  (detailOpener?.isConnected ? detailOpener : replacement ?? get("main")).focus({ preventScroll: true });
+  detailOpener = null;
+}
 function renderSelected(focus = true): void {
   const selected = state.selected; if (!selected) return;
   const followed = "facts" in selected ? selected.follow_state === "active" : selected.followed;
@@ -158,9 +167,9 @@ async function refresh(): Promise<void> {
   finally { control.disabled = false; control.textContent = "Refresh"; }
 }
 function renderSearch(): void {
-  get("search-controls").replaceChildren(kindControls(state.kind, kind => { state.kind = kind; renderSearch(); }));
+  replaceContent(get("search-controls"), [kindControls(state.kind, kind => { state.kind = kind; renderSearch(); })]);
   const results = get("search-results"); const data = state.search;
-  if (!data) { results.replaceChildren(empty("Resolve a title", "Search AniList and TVmaze together. Check the year, format, and alternate title before following.")); get("search-status").textContent = "Search AniList and TVmaze"; return; }
+  if (!data) { replaceContent(results, [empty("Resolve a title", "Search AniList and TVmaze together. Check the year, format, and alternate title before following.")]); get("search-status").textContent = "Search AniList and TVmaze"; return; }
   const query = get<HTMLInputElement>("query").value.trim().toLocaleLowerCase();
   const items = data.items.filter(hit => state.kind === null || (state.kind === "anime") === (hit.candidate.source === "anilist"));
   const exact = items.filter(hit => [hit.candidate.display_title, ...Object.values(hit.candidate.titles)].some(title => title?.toLocaleLowerCase() === query));
@@ -171,7 +180,7 @@ function renderSearch(): void {
     for (const hit of matches) content.append(factsRow(hit.candidate, hit.followed, () => openCandidate(hit), () => void confirmMutation(hit)));
   }
   if (!items.length) content.append(empty(data.issues.length ? "A source could not be reached" : "No matching titles", data.issues.length ? "Check source status or retry. Your followed titles and schedules remain available locally." : "Try the original title, an alternate title, or fewer words."));
-  results.replaceChildren(content); get("search-status").textContent = `${items.length} matches${data.issues.length ? `. ${data.issues.map(issue => `${sourceName(issue.source)}: ${issue.message}`).join(" ")}` : " · AniList and TVmaze"}`;
+  replaceContent(results, [content]); get("search-status").textContent = `${items.length} matches${data.issues.length ? `. ${data.issues.map(issue => `${sourceName(issue.source)}: ${issue.message}`).join(" ")}` : " · AniList and TVmaze"}`;
 }
 async function search(event: SubmitEvent): Promise<void> {
   event.preventDefault(); const query = get<HTMLInputElement>("query").value.trim(); if (!query) return;
@@ -200,20 +209,29 @@ get("search-form").addEventListener("submit", event => void search(event as Subm
 get("query").addEventListener("input", () => { searchGeneration++; get("search-status").textContent = "Press Enter to search this title."; });
 get("command-query").addEventListener("input", renderCommands);
 get("command-query").addEventListener("keydown", event => { if (event.key === "Enter") { event.preventDefault(); paletteSearch(); } });
-get("close-detail").addEventListener("click", () => { selectedGeneration++; state.selected = null; get("detail-panel").hidden = true; get("main").focus({ preventScroll: true }); });
+get("close-detail").addEventListener("click", closeDetail);
+const textSize = get<HTMLSelectElement>("text-size");
+try { const saved = localStorage.getItem("text-size"); if (saved && ["standard", "large", "largest"].includes(saved)) textSize.value = saved; } catch { /* Preferences are optional. */ }
+function applyTextSize(): void { document.documentElement.dataset.textSize = textSize.value; }
+applyTextSize(); textSize.addEventListener("change", () => { applyTextSize(); try { localStorage.setItem("text-size", textSize.value); } catch { /* Preferences are optional. */ } });
 const appearance = get<HTMLSelectElement>("theme");
 try { appearance.value = localStorage.getItem("appearance") ?? "system"; } catch { /* Storage is optional; system theme works without it. */ }
 function applyTheme(): void { if (appearance.value === "system") delete document.documentElement.dataset.theme; else document.documentElement.dataset.theme = appearance.value; }
 applyTheme(); appearance.addEventListener("change", () => { applyTheme(); try { localStorage.setItem("appearance", appearance.value); } catch { /* No preference persistence available. */ } });
 get("timezone").textContent = new Intl.DateTimeFormat(undefined, { timeZoneName: "short" }).formatToParts(new Date()).find(part => part.type === "timeZoneName")?.value ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
 const mac = navigator.platform.toLowerCase().includes("mac"); get("search-shortcut").textContent = mac ? "⌘ K" : "Ctrl K";
+for (const [index, screen] of screens.entries()) {
+  const link = document.querySelector<HTMLElement>(`nav a[href="#${screen}"]`);
+  link?.setAttribute("aria-keyshortcuts", `${mac ? "Meta" : "Control"}+${index + 1}`);
+  const hint = link?.querySelector("kbd"); if (hint) { hint.textContent = `${mac ? "⌘" : "Ctrl "}${index + 1}`; hint.setAttribute("aria-hidden", "true"); }
+}
 document.addEventListener("keydown", event => {
   if (get<HTMLDialogElement>("confirmation").open || get<HTMLDialogElement>("palette").open) return;
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") { event.preventDefault(); openPalette(); return; }
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "r") { event.preventDefault(); void refresh(); return; }
   if ((event.metaKey || event.ctrlKey) && /^[1-6]$/.test(event.key)) { event.preventDefault(); const screen = screens[Number(event.key) - 1]; if (screen) navigate(screen); return; }
   if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement) return;
-  if (event.key === "Escape") { selectedGeneration++; state.selected = null; get("detail-panel").hidden = true; get("main").focus({ preventScroll: true }); }
+  if (event.key === "Escape" && !get("detail-panel").hidden) closeDetail();
   if (state.selected) { const followed = "facts" in state.selected ? state.selected.follow_state === "active" : state.selected.followed; if ((event.key.toLowerCase() === "f" && !followed) || (event.key === "Delete" && followed)) { event.preventDefault(); void confirmMutation(state.selected); } }
 });
 window.addEventListener("hashchange", () => navigate(screens.includes(location.hash.slice(1) as Screen) ? location.hash.slice(1) as Screen : "home"));

@@ -6,6 +6,7 @@ export function render(target: HTMLElement, snapshot: Snapshot, kind: Kind | nul
   const data = snapshot.view.data; const controls = node("div", "controls");
   controls.append(kindControls(kind, value => change(value, sort)));
   const ordering = node("select"); ordering.setAttribute("aria-label", "Library sort order");
+  ordering.dataset.focusKey = "library-sort";
   for (const [value, label] of [["next_release", "Next release"], ["alphabetical", "Alphabetical"]] as const) { const option = node("option", "", label); option.value = value; option.selected = value === sort; ordering.append(option); }
   ordering.addEventListener("change", () => change(kind, ordering.value as typeof sort)); controls.append(ordering);
   const filter = titleFilter(target, "Filter library titles"); controls.append(filter);
@@ -16,6 +17,7 @@ export function render(target: HTMLElement, snapshot: Snapshot, kind: Kind | nul
     count.textContent = kind !== null || filter.value || notFirst || data.next ? `${items.length} shown · ${snapshot.health.active_follows} active follows total` : `${snapshot.health.active_follows} active follows`;
     rows.replaceChildren(...items.map(item => {
       const facts = item.facts; const row = button("", () => open(facts.source_key), "media-row library-row");
+      row.dataset.focusKey = `title-${facts.source_key.source}-${facts.source_key.id}`;
       const main = node("span", "row-main");
       main.append(node("span", "row-title", facts.display_title));
       const meta = node("span", "row-meta", `${facts.source_key.source === "anilist" ? "Anime" : "TV"} · ${sourceName(facts.source_key.source)}`);

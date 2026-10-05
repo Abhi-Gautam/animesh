@@ -1,0 +1,29 @@
+name: Report a problem
+description: Something did not work as expected in Animesh.
+body:
+  - type: input
+    id: version
+    attributes:
+      label: Animesh version
+      description: Find it in Health or run animesh --version.
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: Operating system and architecture
+      placeholder: macOS 15 on Apple Silicon, or Ubuntu 24.04 on x86_64
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: What happened?
+      description: Include the steps to reproduce, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Screenshots or diagnostics
+      description: Optional. Health can copy diagnostics. Review the contents before sharing.

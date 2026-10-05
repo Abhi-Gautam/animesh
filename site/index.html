@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="description" content="Anime and TV release reminders for macOS and Linux. Free and open source. No account needed.">
+  <meta property="og:title" content="Animesh — Anime & TV release reminders">
+  <meta property="og:description" content="Follow your shows. Get a reminder when the next episode releases. Free for macOS and Linux.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://animesh.syntropicsystems.dev/">
+  <meta property="og:image" content="https://animesh.syntropicsystems.dev/assets/share.png">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="canonical" href="https://animesh.syntropicsystems.dev/">
+  <link rel="icon" href="assets/icon.png">
+  <link rel="stylesheet" href="styles.css">
+  <script src="app.js" defer></script>
+  <title>Animesh — Anime & TV release reminders</title>
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+  <header class="wrap site-header">
+    <a class="brand" href="#"><img src="assets/icon.png" width="36" height="36" alt="">Animesh</a>
+    <nav aria-label="Main navigation"><a href="#download">Download</a><a href="https://github.com/Abhi-Gautam/animesh">GitHub</a></nav>
+  </header>
+  <main id="main" class="wrap">
+    <section class="intro" aria-labelledby="hero-title">
+      <h1 id="hero-title">Anime &amp; TV release reminders.</h1>
+      <p>Follow your shows. Get a reminder when the next episode releases.</p>
+      <a class="button" href="#download">Download Animesh</a>
+      <p class="small">Free &amp; open source. macOS &amp; Linux. No account.</p>
+    </section>
+    <section class="screenshots" aria-label="App screenshots">
+      <div class="view-options" role="group" aria-label="Choose a screenshot">
+        <button type="button" data-view="home" aria-pressed="true">Home</button>
+        <button type="button" data-view="schedule" aria-pressed="false">Schedule</button>
+        <button type="button" data-view="library" aria-pressed="false">Library</button>
+        <button type="button" data-view="linux" aria-pressed="false">Linux</button>
+        <button type="button" data-view="menubar" aria-pressed="false">Menu bar</button>
+        <button type="button" data-view="terminal" aria-pressed="false">Terminal</button>
+      </div>
+      <figure>
+        <a id="view-full" href="assets/screenshots/mac-home.png" aria-label="Open full-size screenshot"><img id="view-image" src="assets/screenshots/mac-home.png" width="1440" height="900" alt="Animesh Home showing recent and upcoming episodes from a library of 16 followed shows."></a>
+        <figcaption aria-live="polite"><span id="view-caption">What dropped. What’s next.</span> <a id="terminal-search" href="assets/screenshots/cli-search.png" hidden>Search example</a></figcaption>
+      </figure>
+    </section>
+    <section class="download" id="download" aria-labelledby="download-title">
+      <h2 id="download-title">Download</h2>
+      <div class="platforms">
+        <div><h3>macOS</h3><p class="small">macOS 13+</p><div class="download-links"><a data-download="mac-arm" href="https://github.com/Abhi-Gautam/animesh/releases/tag/v0.7.0">Apple Silicon</a><a data-download="mac-intel" href="https://github.com/Abhi-Gautam/animesh/releases/tag/v0.7.0">Intel</a></div></div>
+        <div><h3>Linux</h3><p class="small">Ubuntu 24.04+</p><div class="download-links"><a data-download="linux-amd64" href="https://github.com/Abhi-Gautam/animesh/releases/tag/v0.7.0">x86_64 .deb</a><a data-download="linux-arm64" href="https://github.com/Abhi-Gautam/animesh/releases/tag/v0.7.0">ARM64 .deb</a></div></div>
+      </div>
+      <p class="small install-note">macOS downloads are not yet notarized. <a href="https://github.com/Abhi-Gautam/animesh#install">Installation guide</a></p>
+      <p class="small"><span id="release-version">v0.7.0</span> · <a href="https://github.com/Abhi-Gautam/animesh/releases/latest">Release notes &amp; other downloads</a></p>
+    </section>
+  </main>
+  <footer class="wrap site-footer"><span class="small">By <a href="https://syntropicsystems.dev/">Abhishek Gautam</a></span><nav aria-label="Project links"><a href="https://github.com/Abhi-Gautam/animesh/issues">Feedback</a><a href="https://github.com/Abhi-Gautam/animesh#commands">CLI docs</a></nav></footer>
+</body>
+</html>
