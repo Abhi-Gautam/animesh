@@ -16,9 +16,7 @@ Screenshots are real app captures. macOS captures use the maintainer’s library
 Linux captures come from the native WebKit release smoke test. Terminal images
 render actual read-only command output in a terminal frame. Dates are sample
 views from capture time, not a live airing schedule. The screenshot viewer
-leaves the interface unchanged and clips the native window’s title bar.
-`evening.webp` is a generated decorative illustration, not anime artwork or
-an app screenshot. Share and launch compositions use the actual captures.
+leaves the interface unchanged. Share images use the actual app capture.
 
 No website analytics are enabled. The hosting provider has its own access logs.
 Downloads are hosted by GitHub; searches inside the app contact AniList/TVmaze.
