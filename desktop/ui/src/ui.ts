@@ -13,26 +13,31 @@ export function node<K extends keyof HTMLElementTagNameMap>(tag: K, className = 
 export function button(text: string, action: () => void, className = ""): HTMLButtonElement {
   const element = node("button", className, text);
   element.type = "button";
+  element.dataset.focusKey = `button-${text}`;
   // WebKit does not focus buttons on pointer clicks. Keep the initiating
   // control available when a detail view or confirmation returns focus.
   element.addEventListener("click", () => { element.focus({ preventScroll: true }); action(); });
   return element;
 }
 export function get<T extends HTMLElement>(id: string): T { return document.getElementById(id) as T; }
+export function replaceContent(target: HTMLElement, children: HTMLElement[]): void {
+  const active = document.activeElement;
+  const key = active instanceof HTMLElement && target.contains(active) ? active.dataset.focusKey : undefined;
+  target.replaceChildren(...children);
+  if (key) target.querySelector<HTMLElement>(`[data-focus-key="${CSS.escape(key)}"]`)?.focus({ preventScroll: true });
+}
 export function page(target: HTMLElement, content: HTMLElement[], controls: HTMLElement[] = [], footer: HTMLElement[] = []): void {
   const previous = target.querySelector<HTMLElement>(".page-body");
   const active = document.activeElement;
   const focused = active instanceof HTMLInputElement && target.contains(active) ? active : null;
-  const focusKey = active instanceof HTMLElement && target.contains(active) ? active.dataset.focusKey : undefined;
   const bodyFocused = active === previous;
   const top = previous?.scrollTop ?? 0;
   const header = node("div", "page-controls"); header.append(...controls);
   const body = node("div", "page-body"); body.tabIndex = 0;
   body.setAttribute("role", "region"); body.setAttribute("aria-label", `${target.getAttribute("aria-label")} content`); body.append(...content);
   const bottom = node("footer", "page-footer"); bottom.append(...footer);
-  target.replaceChildren(header, body, bottom); body.scrollTop = top;
+  replaceContent(target, [header, body, bottom]); body.scrollTop = top;
   if (bodyFocused) body.focus({ preventScroll: true });
-  if (focusKey) target.querySelector<HTMLElement>(`[data-focus-key="${CSS.escape(focusKey)}"]`)?.focus({ preventScroll: true });
   if (focused?.name) {
     const replacement = target.querySelector<HTMLInputElement>(`input[name="${focused.name}"]`);
     replacement?.focus({ preventScroll: true });

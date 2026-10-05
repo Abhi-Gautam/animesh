@@ -8,6 +8,7 @@ export function render(target: HTMLElement, snapshot: Snapshot, chooseFeed: (fee
   if (snapshot.view.screen !== "discovery") return;
   const data = snapshot.view.data; const controls = node("div", "controls");
   const collection = node("select"); collection.setAttribute("aria-label", "Discovery collection");
+  collection.dataset.focusKey = "discovery-collection";
   for (const [key, label] of feeds) { const option = node("option", "", label); option.value = key; option.selected = data.key === key; collection.append(option); }
   collection.addEventListener("change", () => chooseFeed(collection.value as Feed)); controls.append(collection);
   const filter = titleFilter(target, "Filter discovery titles"); controls.append(filter);

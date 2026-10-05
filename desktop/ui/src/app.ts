@@ -1,5 +1,5 @@
 import type { Connection, Cursor, Detail, Feed, Key, Kind, Operation, RefreshTarget, Screen, SearchHit, SearchResults, Snapshot, ViewQuery } from "./types.js";
-import { button, candidate, empty, factsRow, get, humanize, kindControls, node, page, relative, screens, sourceName } from "./ui.js";
+import { button, candidate, empty, factsRow, get, humanize, kindControls, node, page, relative, replaceContent, screens, sourceName } from "./ui.js";
 import * as home from "./screens/home.js";
 import * as discover from "./screens/discover.js";
 import * as library from "./screens/library.js";
@@ -167,9 +167,9 @@ async function refresh(): Promise<void> {
   finally { control.disabled = false; control.textContent = "Refresh"; }
 }
 function renderSearch(): void {
-  get("search-controls").replaceChildren(kindControls(state.kind, kind => { state.kind = kind; renderSearch(); }));
+  replaceContent(get("search-controls"), [kindControls(state.kind, kind => { state.kind = kind; renderSearch(); })]);
   const results = get("search-results"); const data = state.search;
-  if (!data) { results.replaceChildren(empty("Resolve a title", "Search AniList and TVmaze together. Check the year, format, and alternate title before following.")); get("search-status").textContent = "Search AniList and TVmaze"; return; }
+  if (!data) { replaceContent(results, [empty("Resolve a title", "Search AniList and TVmaze together. Check the year, format, and alternate title before following.")]); get("search-status").textContent = "Search AniList and TVmaze"; return; }
   const query = get<HTMLInputElement>("query").value.trim().toLocaleLowerCase();
   const items = data.items.filter(hit => state.kind === null || (state.kind === "anime") === (hit.candidate.source === "anilist"));
   const exact = items.filter(hit => [hit.candidate.display_title, ...Object.values(hit.candidate.titles)].some(title => title?.toLocaleLowerCase() === query));
@@ -180,7 +180,7 @@ function renderSearch(): void {
     for (const hit of matches) content.append(factsRow(hit.candidate, hit.followed, () => openCandidate(hit), () => void confirmMutation(hit)));
   }
   if (!items.length) content.append(empty(data.issues.length ? "A source could not be reached" : "No matching titles", data.issues.length ? "Check source status or retry. Your followed titles and schedules remain available locally." : "Try the original title, an alternate title, or fewer words."));
-  results.replaceChildren(content); get("search-status").textContent = `${items.length} matches${data.issues.length ? `. ${data.issues.map(issue => `${sourceName(issue.source)}: ${issue.message}`).join(" ")}` : " · AniList and TVmaze"}`;
+  replaceContent(results, [content]); get("search-status").textContent = `${items.length} matches${data.issues.length ? `. ${data.issues.map(issue => `${sourceName(issue.source)}: ${issue.message}`).join(" ")}` : " · AniList and TVmaze"}`;
 }
 async function search(event: SubmitEvent): Promise<void> {
   event.preventDefault(); const query = get<HTMLInputElement>("query").value.trim(); if (!query) return;

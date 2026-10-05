@@ -77,6 +77,9 @@ def smoke(binary, screenshots):
             if execute("return !!document.querySelector('#home .getting-started')"):
                 click("#home .empty .primary")
                 wait(lambda: execute("return location.hash === '#search' && document.activeElement.id === 'query'"), "first-show search focus")
+                click('#search-controls button[data-focus-key="kind-anime"]')
+                assert execute("return document.activeElement.dataset.focusKey === 'kind-anime' && document.activeElement.getAttribute('aria-pressed') === 'true'"), "Search filter lost focus after rendering"
+                click('#search-controls button[data-focus-key="kind-all"]')
                 print("First-use guidance opens Search with the title input focused.", flush=True)
             for theme in ["dark", "light"]:
                 click(f'#theme option[value="{theme}"]')
