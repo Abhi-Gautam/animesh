@@ -19,6 +19,7 @@ exclude = [
     ".github/",
     "HomebrewFormula/",
     "docs/",
+    "site/",
     "scripts/",
     "CLAUDE.md",
     "clippy.toml",

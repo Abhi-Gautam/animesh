@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="description" content="Follow anime and TV shows. See the next episode and get release reminders on your Mac or Linux desktop. No account required.">
+  <meta property="og:title" content="Animesh — Your next episode, without the checking">
+  <meta property="og:description" content="A local-first anime and TV release radar for macOS and Linux. Follow your shows. Get on with your day.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://animesh.syntropicsystems.dev/">
+  <meta property="og:image" content="https://animesh.syntropicsystems.dev/assets/share.png">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="canonical" href="https://animesh.syntropicsystems.dev/">
+  <link rel="icon" href="assets/icon.png">
+  <link rel="stylesheet" href="styles.css">
+  <script src="app.js" defer></script>
+  <title>Animesh — Your next episode, without the checking</title>
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+  <header class="site-header wrap">
+    <a class="brand" href="#"><img src="assets/icon.png" width="40" height="40" alt="">Animesh</a>
+    <nav aria-label="Main navigation"><a href="#how">How it works</a><a href="#download">Download</a><a href="https://github.com/Abhi-Gautam/animesh">GitHub</a></nav>
+  </header>
+  <main id="main">
+    <section class="hero wrap" aria-labelledby="hero-title">
+      <div class="hero-copy"><p class="availability">For macOS &amp; Linux · Free &amp; open source</p>
+        <h1 id="hero-title">Your next episode,<br> <em>without the checking.</em></h1>
+        <p class="intro">Follow the anime and TV shows you care about. See what’s next, get a reminder when an episode releases, and get on with your day.</p>
+        <div class="actions"><a class="button primary" href="#download">Get Animesh</a><a class="button secondary" href="#inside">Take a look inside</a></div>
+        <p class="hero-note">No account. Your library stays on your device.</p>
+      </div>
+      <figure class="hero-shot"><div class="window-caption"><span class="window-dots" aria-hidden="true">● ● ●</span><span>Animesh on macOS</span></div><div class="mac-shot"><img src="assets/screenshots/mac-home.png" width="1440" height="900" alt="Animesh Home showing recently released episodes, upcoming anime and TV, and a fixed summary of 16 followed titles."></div><figcaption>Know what dropped. See what’s next.</figcaption></figure>
+    </section>
+    <section class="how wrap" id="how" aria-labelledby="how-title">
+      <div class="section-intro"><h2 id="how-title">A small app.<br>A little less keeping up.</h2><p>One place for your anime and TV release schedule, with times shown in your local timezone.</p></div>
+      <ol class="steps"><li><h3>Find your show</h3><p>Search AniList and TVmaze by name. Check the title, year, and format before you follow.</p></li><li><h3>Follow what matters</h3><p>Your next known episodes appear on Home and Schedule. Your library is saved locally.</p></li><li><h3>Let the reminder come to you</h3><p>Allow desktop notifications, then close the window. The background service keeps tracking release times.</p></li></ol>
+    </section>
+    <section class="inside wrap" id="inside" aria-labelledby="inside-title">
+      <div class="section-intro"><h2 id="inside-title">Your shows.<br>One clear view.</h2><p>Explore airing titles, look ahead, and keep the shows you deliberately follow together.</p></div>
+      <div class="viewer">
+        <div class="view-options" role="group" aria-label="Choose an app screenshot"><button type="button" data-view="schedule" aria-pressed="true">Schedule</button><button type="button" data-view="library" aria-pressed="false">Library</button><button type="button" data-view="discover" aria-pressed="false">Discover</button><button type="button" data-view="search" aria-pressed="false">Search</button><button type="button" data-view="health" aria-pressed="false">Health</button><button type="button" data-view="linux" aria-pressed="false">On Linux</button></div>
+        <figure><div id="view-frame" class="mac-shot"><img id="view-image" src="assets/screenshots/mac-schedule.png" width="1440" height="900" loading="lazy" alt="Animesh Schedule groups upcoming anime and TV episodes by local date, with filters above and a summary below."></div><figcaption id="view-caption" aria-live="polite">Look ahead by date. Filters and the summary stay visible while the list scrolls.</figcaption><a id="view-full" class="full-size" href="assets/screenshots/mac-schedule.png">Open full-size screenshot</a></figure>
+      </div>
+      <div class="principles"><div><h3>A library that’s yours</h3><p>No Animesh account or cloud sync. Your followed titles and schedules live in a local SQLite database.</p></div><div><h3>Quiet in the background</h3><p>Keep tracking after closing the window. On macOS, your next releases are a click away in the menu bar.</p></div><div><h3>Clear about what it knows</h3><p>See source freshness and notification health. Schedules depend on source data; a release time can change.</p></div></div>
+    </section>
+    <section class="other-ways wrap" aria-labelledby="other-title"><div class="section-intro"><h2 id="other-title">A quick glance.<br>Or a command away.</h2><p>The same local library in the desktop window, your Mac menu bar, and the terminal.</p></div><div class="tools-grid"><figure><img src="assets/screenshots/mac-menubar.png" width="698" height="336" loading="lazy" alt="The Mac menu bar shows six upcoming releases, 16 followed titles, and Open Animesh, Refresh Now, and Quit Animesh actions."><figcaption><h3>Right in the menu bar</h3><p>Check the next releases without opening the window. Open Animesh when you want the full view.</p></figcaption></figure><figure><img src="assets/screenshots/cli-next.png" loading="lazy" width="1172" height="800" alt="Actual output from animesh next, listing upcoming followed episodes, release times, and countdowns."><figcaption><h3>For the terminal, too</h3><p><code>animesh next</code> reads your saved schedule. Search, follow, refresh, and inspect health from the CLI. Every command supports JSON output.</p><a href="assets/screenshots/cli-search.png">See a real title search</a></figcaption></figure></div></section>
+    <section class="download wrap" id="download" aria-labelledby="download-title">
+      <div class="section-intro"><h2 id="download-title">Make room<br>for the next episode.</h2><p>Choose your system below. Animesh is an early release: expect rough edges and check release notes before updating.</p></div>
+      <div class="installers"><article><h3>macOS</h3><p>macOS 13 or newer</p><div class="download-links"><a class="button primary" data-download="mac-arm" href="https://github.com/Abhi-Gautam/animesh/releases/tag/v0.7.0">Apple Silicon .dmg</a><a class="button secondary" data-download="mac-intel" href="https://github.com/Abhi-Gautam/animesh/releases/tag/v0.7.0">Intel .dmg</a></div><p>Move Animesh into Applications and open it. Choose <strong>Open Animesh</strong> from the menu bar to open the window.</p><p class="install-note" id="mac-signing">The current download is not notarized. macOS may require approval in Privacy &amp; Security. Homebrew builds from source and is another install option.</p><details><summary>Install with Homebrew</summary><pre><code>brew tap abhi-gautam/animesh https://github.com/Abhi-Gautam/animesh
+brew install abhi-gautam/animesh/animesh
+animesh service start</code></pre><p>Homebrew builds the full app locally, so the first install takes longer.</p></details></article>
+      <article><h3>Linux</h3><p>Ubuntu 24.04 or a compatible newer system</p><div class="download-links"><a class="button primary" data-download="linux-amd64" href="https://github.com/Abhi-Gautam/animesh/releases/tag/v0.7.0">x86_64 .deb</a><a class="button secondary" data-download="linux-arm64" href="https://github.com/Abhi-Gautam/animesh/releases/tag/v0.7.0">ARM64 .deb</a></div><p>Install the package, then open <strong>Animesh</strong> from your applications menu. Your package manager installs its desktop dependencies.</p><pre><code>sudo apt install ./animesh_*.deb</code></pre><p class="install-note">Other distributions: tarballs and manual installation instructions are available in the release. The desktop requires WebKitGTK 4.1.</p></article></div>
+      <p class="release-note"><span id="release-version">v0.7.0</span> · <a href="https://github.com/Abhi-Gautam/animesh/releases/latest">Release notes, tarballs &amp; checksums</a> · <a href="https://github.com/Abhi-Gautam/animesh#commands">CLI documentation</a></p>
+    </section>
+    <section class="faq wrap" aria-labelledby="faq-title"><h2 id="faq-title">Before you install</h2><div>
+      <details><summary>Does Animesh play or download episodes?</summary><p>It tracks release schedules and sends reminders. Watch episodes through your streaming service. Source release times do not guarantee availability on a particular service or in your region.</p></details>
+      <details><summary>Does it work offline?</summary><p>Your saved library and known schedules remain available offline. Searching, discovering titles, and updating release times need an internet connection to AniList and TVmaze.</p></details>
+      <details><summary>What leaves my device?</summary><p>Searches and schedule refreshes contact AniList and TVmaze. Your library is stored locally; Animesh has no account, cloud sync, or app analytics. Those sources have their own privacy policies.</p></details>
+      <details><summary>Why didn’t I get a reminder?</summary><p>Check Health in the app for notification permission, source freshness, and the background service. Your system’s Focus or Do Not Disturb settings can silence banners. A show without a known upcoming episode has no reminder scheduled.</p></details>
+      <details><summary>How do I report a problem?</summary><p>Open a <a href="https://github.com/Abhi-Gautam/animesh/issues/new/choose">GitHub issue</a> with your system, app version, and steps to reproduce it. Health can copy diagnostics; review them before sharing.</p></details>
+    </div></section>
+  </main>
+  <footer class="site-footer wrap"><a class="brand" href="#"><img src="assets/icon.png" width="32" height="32" alt="">Animesh</a><p>Built by <a href="https://syntropicsystems.dev/">Abhishek Gautam</a></p><nav aria-label="Project links"><a href="https://github.com/Abhi-Gautam/animesh">Source</a><a href="https://github.com/Abhi-Gautam/animesh/issues">Feedback</a><a href="https://syntropicsystems.dev/writing/animesh/">The story</a></nav></footer>
+</body>
+</html>

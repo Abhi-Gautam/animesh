@@ -29,3 +29,6 @@
 # Scratch harnesses from review agents; not part of the test contract.
 /tests/ux_scratch.rs
 CLAUDE.md
+
+# Local Python build caches
+__pycache__/

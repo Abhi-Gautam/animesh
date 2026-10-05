@@ -1,27 +1,44 @@
 # animesh
 
 A local-first release radar for macOS and Linux. Follow the shows you care
-about, see what is next, and get notified when an episode drops. Everything
-lives in a SQLite database on your machine — no account, no login, nothing
-uploaded. Anime and TV now; the core is built to carry film and music later.
+about, see what is next, and get notified when an episode drops. Your library
+lives in a SQLite database on your machine — no account or cloud sync. Searches
+and schedule updates contact AniList and TVmaze. Anime and TV are supported.
 
-The desktop Command Center has Home, Discover, Search, Schedule, Library,
-and Health. Search and follow titles without IDs, inspect their next release,
-and keep tracking them after closing the window. Each page keeps its controls
-and summary visible while the middle list scrolls.
+![Animesh desktop release radar](site/assets/share.png)
+
+The desktop app has Home, Discover, Search, Schedule, Library, and Health.
+Search and follow titles by name, see their next release, and keep tracking
+when the window is closed. On macOS, a menu-bar view keeps upcoming episodes
+one click away. The CLI uses the same local library.
+
+## Download
+
+Get the [latest release](https://github.com/Abhi-Gautam/animesh/releases/latest)
+for **macOS 13+** or **Ubuntu 24.04 / compatible Linux**. Both platforms support
+Apple Silicon / ARM64 and Intel / x86_64 as appropriate. Downloads include
+checksums, disk images or Debian packages, and tarballs with install instructions.
+
+| System | Recommended package |
+| --- | --- |
+| Mac with Apple Silicon | `aarch64-apple-darwin.dmg` |
+| Mac with Intel | `x86_64-apple-darwin.dmg` |
+| Linux x86_64 | `amd64.deb` |
+| Linux ARM64 | `arm64.deb` |
+
+The current macOS downloads are **not notarized** and may need approval in
+Privacy & Security. Homebrew builds from source and is another install option.
+
+Animesh is an early release. Commands and protocols can change, so read release
+notes before updating and back up your library before experimenting. Known
+schedules remain available offline; searches and refreshes contact AniList and
+TVmaze. It tracks release dates and sends reminders; watch episodes through
+your streaming service. Source times do not guarantee regional availability.
 
 I built it because keeping up meant opening Crunchyroll and a countdown site
 and doing it again an hour later:
 [I just wanted to know when an episode dropped](https://syntropicsystems.dev/writing/animesh/)
-is the long version — why one process owns the data, and how a small utility
-turned into a notification pipeline.
-
-## Expect it to break
-
-animesh is under heavy development and changes often. Commands, output,
-the JSON shape, the stored schema and the daemon protocol are all still moving,
-and releases will break them without ceremony. Install it to use it, and expect
-to reinstall. Do not build anything on top of it yet.
+is the long version.
 
 ## Install
 
@@ -34,7 +51,7 @@ animesh service start
 The tap is this repository, so the formula always matches the code.
 
 On macOS, open Animesh and choose **Open Animesh** from its menu bar.
-Homebrew builds the app locally and is the recommended macOS install.
+Homebrew builds the full app locally; the first install takes longer.
 
 On Ubuntu 24.04 or newer, download the `.deb` matching your architecture from
 the [latest release](https://github.com/Abhi-Gautam/animesh/releases/latest):
@@ -84,7 +101,6 @@ animesh follow tvmaze:82     # follow a TVmaze show (or: follow --tv 82)
 animesh drop media:1         # stop following, by the token list/next print
 animesh next                 # upcoming episodes; local only, never hits the network
 animesh list                 # everything you follow
-animesh drop 1               # stop following, by media id
 animesh refresh              # pull schedules now
 animesh status               # health, and what to do about it
 animesh skill install        # let any AI agent read and edit your library
@@ -94,6 +110,14 @@ animesh skill install        # let any AI agent read and edit your library
 daemon is registered at install and is not otherwise your concern.
 
 Exit codes: `0` success, `1` bad input, `2` needs intervention, `3` temporary—retry.
+
+## A quick glance, or a command away
+
+![Animesh in the Mac menu bar](site/assets/screenshots/mac-menubar.png)
+
+![Actual animesh next output](site/assets/screenshots/cli-next.png)
+
+These are real captures, with release information from capture time.
 
 ## Agents
 
@@ -115,6 +139,13 @@ what is airing tonight, follow something for you, or read what you actually
 watch before recommending anything, against your library, on your machine.
 
 `animesh skill status` says where it landed; `animesh skill uninstall` removes it.
+
+## Website and release signing
+
+The [website source](site/README.md) is a small static site with real Mac/Linux
+screenshots and release-specific download links. Hosting is configured separately.
+Future signed Mac releases use the [Developer ID setup](docs/macos-signing.md).
+The current release remains ad-hoc signed.
 
 ## Development
 
