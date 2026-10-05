@@ -97,7 +97,7 @@ jobs:
           else
             cargo xtask verify --path target/bundle/animesh
           fi
-          cargo test --manifest-path desktop/Cargo.toml --locked
+          cargo test --manifest-path desktop/Cargo.toml --release --locked
 
       - name: Package native installers and tarballs
         run: python3 scripts/package-release.py "$TARGET"

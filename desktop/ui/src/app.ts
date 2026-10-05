@@ -15,6 +15,7 @@ let toastTimer: ReturnType<typeof setTimeout> | undefined;
 let boundaryTimer: ReturnType<typeof setTimeout> | undefined;
 let selectedGeneration = 0;
 let appliedStamp: Snapshot["stamp"] | null = null;
+let engineConnected = false;
 
 async function invoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   if (!window.__TAURI__) throw { code: "unavailable", message: "Open the Animesh desktop app to connect to your local service." };
@@ -24,10 +25,14 @@ function errorMessage(error: unknown): string { return typeof error === "object"
 function toast(message: string): void { const element = get("toast"); element.textContent = message; element.hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => element.hidden = true, 6000); }
 function notice(message: string | null): void { get("notice-message").textContent = message ?? ""; get("notice").hidden = message === null; }
 function showConnection(connected: boolean, message?: string): void {
+  engineConnected = connected;
   const element = get("engine-state"); element.querySelector(".dot")?.classList.toggle("healthy", connected);
   const label = element.lastElementChild; if (label) label.textContent = connected ? "Local engine connected" : "Local engine disconnected";
   get("restart-service").hidden = connected;
-  if (!connected) notice(message ?? "The local Animesh service is not reachable. Your saved library has not been changed.");
+  if (!connected) {
+    if (state.screen === "health" && state.snapshot?.view.screen === "health") render(state.snapshot);
+    notice(message ?? "The local Animesh service is not reachable. Your saved library has not been changed.");
+  }
 }
 function query(): ViewQuery {
   switch (state.screen) {
@@ -88,7 +93,7 @@ function render(snapshot: Snapshot): void {
     case "library": library.render(get("library"), snapshot, state.kind, state.sort, (kind, sort) => { state.kind = kind; state.sort = sort; firstPage(); }, key => void openKey(key), nextPage, firstPage, state.cursor !== null); break;
     case "schedule": schedule.render(get("schedule"), snapshot, state.kind, chooseKind, key => void openKey(key), nextPage, firstPage, state.cursor !== null); break;
     case "health": {
-      health.render(get("health"), snapshot, () => { void navigator.clipboard.writeText(JSON.stringify({ stamp: snapshot.stamp, health: snapshot.health }, null, 2)).then(() => toast("Diagnostics copied.")).catch(() => toast("Expand Diagnostic details to select and copy the text.")); });
+      health.render(get("health"), snapshot, engineConnected, () => { void navigator.clipboard.writeText(JSON.stringify({ stamp: snapshot.stamp, health: snapshot.health }, null, 2)).then(() => toast("Diagnostics copied.")).catch(() => toast("Expand Diagnostic details to select and copy the text.")); });
       break;
     }
   }

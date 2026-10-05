@@ -617,6 +617,9 @@ fn verify_deployment_target(binary: &Path) -> Fallible {
 // ---------------------------------------------------------------------------
 
 fn uninstall(purge: bool) -> Fallible {
+    if !cfg!(target_os = "macos") {
+        return Err("use your package manager to uninstall the Linux app; user-installed files can be removed from their installation prefix".to_owned());
+    }
     let app = installed_app();
     stop_installed_app(&app);
 

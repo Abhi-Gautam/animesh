@@ -16,8 +16,18 @@ ELEMENT = "element-6066-11e4-a52e-4f735466cecf"
 def request(method, path, data=None):
     payload = json.dumps(data).encode() if data is not None else None
     req = urllib.request.Request(URL + path, payload, {"Content-Type": "application/json"}, method=method)
-    with urllib.request.urlopen(req, timeout=40) as response:
-        result = json.load(response)["value"]
+    # WebKit's HTTP connection can close between read-only commands. Retry
+    # only observations, never clicks or session creation.
+    observation = method == "GET" or path.endswith(("/execute/sync", "/execute/async"))
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(req, timeout=40) as response:
+                result = json.load(response)["value"]
+            break
+        except ConnectionResetError:
+            if not observation or attempt == 2:
+                raise
+            time.sleep(0.05)
     if isinstance(result, dict) and "error" in result:
         raise RuntimeError(result)
     return result
