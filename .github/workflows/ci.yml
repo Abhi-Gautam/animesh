@@ -28,6 +28,11 @@ jobs:
           components: rustfmt, clippy
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          workspaces: |
+            . -> target
+            desktop -> target
 
       - uses: actions/setup-node@v4
         with:
@@ -81,6 +86,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          workspaces: |
+            . -> target
+            desktop -> target
 
       - name: Build
         run: cargo build --bins --locked
@@ -125,6 +135,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          workspaces: |
+            . -> target
+            desktop -> target
 
       - uses: actions/setup-node@v4
         with:

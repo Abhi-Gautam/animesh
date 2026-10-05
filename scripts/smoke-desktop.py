@@ -54,24 +54,29 @@ def smoke(binary, screenshots):
 
             wait(lambda: execute("return document.querySelector('#engine-state .healthy') !== null && document.querySelector('#home .page-footer') !== null"), "real daemon connection and Home render")
             assert execute("return location.origin") != "null", "webview loaded with a null origin"
-            for width, height in [(1440, 900), (900, 650)]:
-                request("POST", base + "/window/rect", {"width": width, "height": height})
-                for screen in ["home", "discover", "search", "schedule", "library", "health"]:
-                    click(f'nav a[href="#{screen}"]')
-                    wait(lambda: execute("return location.hash === '#' + arguments[0] && !document.getElementById(arguments[0]).hidden && document.querySelector('#' + arguments[0] + ' .page-footer') !== null && !document.querySelector('#' + arguments[0] + ' .loading')", [screen]), f"{screen} render")
-                    geometry = execute("""
-                        const page = document.getElementById(arguments[0]);
-                        const footer = page.querySelector('.page-footer').getBoundingClientRect();
-                        const body = page.querySelector('.page-body').getBoundingClientRect();
-                        return {footerTop: footer.top, footerBottom: footer.bottom, bodyBottom: body.bottom,
-                            height: innerHeight, pageHeight: document.documentElement.scrollHeight};
-                    """, [screen])
-                    assert geometry["footerBottom"] <= geometry["height"] + 1, (screen, geometry)
-                    assert geometry["bodyBottom"] <= geometry["footerTop"] + 1, (screen, geometry)
-                    assert geometry["pageHeight"] <= geometry["height"] + 1, (screen, geometry)
-                    png = request("GET", base + "/screenshot")
-                    (screenshots / f"{screen}-{width}.png").write_bytes(base64.b64decode(png))
-                    print(f"{screen} {width}x{height}: connected, footer visible, no page overflow", flush=True)
+            for theme in ["dark", "light"]:
+                click(f'#theme option[value="{theme}"]')
+                wait(lambda: execute("return document.documentElement.dataset.theme === arguments[0]", [theme]), f"{theme} theme")
+                for width, height in [(1440, 900), (900, 650)]:
+                    request("POST", base + "/window/rect", {"width": width, "height": height})
+                    for screen in ["home", "discover", "search", "schedule", "library", "health"]:
+                        click(f'nav a[href="#{screen}"]')
+                        wait(lambda: execute("return location.hash === '#' + arguments[0] && !document.getElementById(arguments[0]).hidden && document.querySelector('#' + arguments[0] + ' .page-footer') !== null && !document.querySelector('#' + arguments[0] + ' .loading')", [screen]), f"{screen} render")
+                        request("POST", base + "/execute/async", {
+                            "script": "const done = arguments[arguments.length - 1]; requestAnimationFrame(() => requestAnimationFrame(() => done()));", "args": []})
+                        geometry = execute("""
+                            const page = document.getElementById(arguments[0]);
+                            const footer = page.querySelector('.page-footer').getBoundingClientRect();
+                            const body = page.querySelector('.page-body').getBoundingClientRect();
+                            return {footerTop: footer.top, footerBottom: footer.bottom, bodyBottom: body.bottom,
+                                height: innerHeight, pageHeight: document.documentElement.scrollHeight};
+                        """, [screen])
+                        png = request("GET", base + "/screenshot")
+                        (screenshots / f"{screen}-{width}-{theme}.png").write_bytes(base64.b64decode(png))
+                        assert geometry["footerBottom"] <= geometry["height"] + 1, (screen, geometry)
+                        assert geometry["bodyBottom"] <= geometry["footerTop"] + 1, (screen, geometry)
+                        assert geometry["pageHeight"] <= geometry["height"] + 1, (screen, geometry)
+                        print(f"{screen} {width}x{height} {theme}: connected, footer visible, no page overflow", flush=True)
             click('nav a[href="#home"]')
             wait(lambda: execute("return document.querySelector('#home .page-footer button') !== null"), "Home action")
             click("#home .page-footer button")
