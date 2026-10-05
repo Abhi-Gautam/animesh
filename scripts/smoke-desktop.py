@@ -74,6 +74,10 @@ def smoke(binary, screenshots):
 
             wait(lambda: execute("return document.querySelector('#engine-state .healthy') !== null && document.querySelector('#home .page-footer') !== null"), "real daemon connection and Home render")
             assert execute("return location.origin") != "null", "webview loaded with a null origin"
+            if execute("return !!document.querySelector('#home .getting-started')"):
+                click("#home .empty .primary")
+                wait(lambda: execute("return location.hash === '#search' && document.activeElement.id === 'query'"), "first-show search focus")
+                print("First-use guidance opens Search with the title input focused.", flush=True)
             for theme in ["dark", "light"]:
                 click(f'#theme option[value="{theme}"]')
                 wait(lambda: execute("return document.documentElement.dataset.theme === arguments[0]", [theme]), f"{theme} theme")
@@ -97,6 +101,26 @@ def smoke(binary, screenshots):
                         assert geometry["bodyBottom"] <= geometry["footerTop"] + 1, (screen, geometry)
                         assert geometry["pageHeight"] <= geometry["height"] + 1, (screen, geometry)
                         print(f"{screen} {width}x{height} {theme}: connected, footer visible, no page overflow", flush=True)
+            click('#text-size option[value="largest"]')
+            request("POST", base + "/window/rect", {"width": 900, "height": 650})
+            for screen in ["home", "discover", "search", "schedule", "library", "health"]:
+                click(f'nav a[href="#{screen}"]')
+                wait(lambda: execute("return !document.getElementById(arguments[0]).hidden && document.querySelector('#' + arguments[0] + ' .page-footer') !== null && !document.querySelector('#' + arguments[0] + ' .loading')", [screen]), f"large-text {screen}")
+                geometry = execute("""
+                    const page = document.getElementById(arguments[0]);
+                    const footer = page.querySelector('.page-footer').getBoundingClientRect();
+                    const body = page.querySelector('.page-body');
+                    return {footerBottom:footer.bottom,bodyBottom:body.getBoundingClientRect().bottom,
+                        footerTop:footer.top,height:innerHeight,scrollWidth:body.scrollWidth,width:body.clientWidth,
+                        pageWidth:document.documentElement.scrollWidth,windowWidth:innerWidth};
+                """, [screen])
+                assert geometry["footerBottom"] <= geometry["height"] + 1, (screen, geometry)
+                assert geometry["bodyBottom"] <= geometry["footerTop"] + 1, (screen, geometry)
+                assert geometry["scrollWidth"] <= geometry["width"] + 1, (screen, geometry)
+                assert geometry["pageWidth"] <= geometry["windowWidth"] + 1, (screen, geometry)
+                (screenshots / f"{screen}-900-largest-text.png").write_bytes(base64.b64decode(request("GET", base + "/screenshot")))
+                print(f"{screen} 900x650 largest text: footer visible, content fits", flush=True)
+            click('#text-size option[value="standard"]')
             click('nav a[href="#home"]')
             wait(lambda: execute("return document.querySelector('#home .page-footer button') !== null"), "Home action")
             click("#home .page-footer button")
