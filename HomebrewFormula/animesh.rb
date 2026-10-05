@@ -13,8 +13,7 @@
 # for two reasons. Casks download an artifact and Gatekeeper quarantines it, so
 # an unnotarised app would refuse to launch on every machine but the author's —
 # a formula's files are not quarantined, so v1 ships without notarisation.
-# Second, the product on Linux is a CLI and a daemon, which is what a formula is
-# for; the cask can come later on macOS once there is a Developer ID.
+# The cask can come later on macOS once there is a Developer ID.
 #
 # Builds from the tagged source archive rather than shipping a prebuilt binary.
 # On macOS the daemon has to live in an app bundle that is signed on the machine
@@ -24,35 +23,44 @@
 class Animesh < Formula
   desc "Personal release radar for anime and other scheduled media"
   homepage "https://github.com/Abhi-Gautam/animesh"
-  url "https://github.com/Abhi-Gautam/animesh/archive/refs/tags/v0.6.1.tar.gz"
-  sha256 "24dc4a6493cfa9773e60a96dd24981fc01171df22b8fe1d2d9be5fa3a6bbaea9"
+  url "https://github.com/Abhi-Gautam/animesh/archive/refs/tags/v0.7.0.tar.gz"
+  sha256 "f9bbe4b6a772e253c1187c5384dfcaeaa3f2b79e486eaac8837270ad0bc3e871"
   license "MIT"
   head "https://github.com/Abhi-Gautam/animesh.git", branch: "master"
 
   depends_on "rust" => :build
+  depends_on "node" => :build
+
+  on_linux do
+    depends_on "pkgconf" => :build
+    depends_on "desktop-file-utils" => :build
+    depends_on "webkitgtk"
+    depends_on "gtk+3"
+  end
+
+  resource "typescript" do
+    url "https://registry.npmjs.org/typescript/-/typescript-5.9.3.tgz"
+    sha256 "10e108c9cf7d5f2879053dff18515fb405abf2ccef63eaaf017d9c571687a1d3"
+  end
 
   def install
+    # A pinned Homebrew resource keeps the frontend build offline. TypeScript
+    # is the only npm dependency; its compiler runs through Node directly.
+    (buildpath/"desktop/ui/node_modules/typescript").install resource("typescript")
+    (buildpath/"desktop/ui/node_modules/.bin").mkpath
+    ln_s "../typescript/bin/tsc", buildpath/"desktop/ui/node_modules/.bin/tsc"
+    system "cargo", "xtask", "bundle", "--release"
+    system "cargo", "xtask", "verify", "--path", OS.mac? ? "target/bundle/Animesh.app" : "target/bundle/animesh"
     if OS.mac?
       # The daemon has to run from a bundle. UNUserNotificationCenter traps
       # without a bundle identifier, so a bare binary in bin/ could never post
       # a notification — xtask assembles and ad-hoc signs the app, and the CLI
       # is linked out of it.
-      system "cargo", "xtask", "bundle", "--release"
       prefix.install "target/bundle/Animesh.app"
       bin.install_symlink prefix/"Animesh.app/Contents/Helpers/animesh"
     else
-      # Both binaries: `animesh` is the CLI and `animesh-app` is the daemon the
-      # systemd unit launches. Installing only the CLI would leave
-      # `animesh service start` with nothing to register.
-      system "cargo", "install", *std_cargo_args(path: ".")
-
-      # What makes a notification server show Animesh by name in its per-app
-      # settings, instead of an unnamed sender. The hicolor PNGs are the icon
-      # that `Icon=animesh` and the Notify app_icon both name.
-      (share/"applications").install "assets/animesh.desktop"
-      %w[16x16 24x24 32x32 48x48 256x256 512x512].each do |size|
-        (share/"icons/hicolor/#{size}/apps").install "assets/icons/hicolor/#{size}/apps/animesh.png"
-      end
+      bin.install Dir["target/bundle/animesh/bin/*"]
+      share.install Dir["target/bundle/animesh/share/*"]
     end
   end
 
@@ -63,6 +71,10 @@ class Animesh < Formula
         animesh service start
 
       Then find something to follow:
+
+        Open Animesh from the menu bar (macOS) or applications menu (Linux).
+
+      Or use the CLI:
 
         animesh search "one piece"
         animesh follow 21
@@ -121,8 +133,11 @@ class Animesh < Formula
 
     if OS.mac?
       assert_predicate prefix/"Animesh.app/Contents/Resources/AppIcon.icns", :exist?
+      assert_predicate prefix/"Animesh.app/Contents/Helpers/Animesh Desktop.app/Contents/MacOS/animesh-desktop", :exist?
     else
       assert_predicate share/"icons/hicolor/256x256/apps/animesh.png", :exist?
+      assert_match "animesh-desktop #{version}", shell_output("#{bin}/animesh-desktop --version")
+      assert_match "Terminal=false", (share/"applications/animesh.desktop").read
     end
   end
 end
