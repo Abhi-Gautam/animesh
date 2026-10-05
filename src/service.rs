@@ -357,6 +357,19 @@ fn unregister() -> Result<(), AppError> {
 
 /// Registers the daemon and starts it. Idempotent.
 pub fn start() -> Outcome {
+    start_inner(true)
+}
+
+/// Desktop startup needs the user's login service, without asking for the
+/// administrative policy that keeps a CLI user's jobs alive after logout.
+pub fn start_from_desktop(restart: bool) -> Outcome {
+    if restart {
+        let _ = unregister();
+    }
+    start_inner(false)
+}
+
+fn start_inner(linger: bool) -> Outcome {
     let daemon = daemon_path()?;
     let path = unit_path()?;
     write_file(&path, &unit_contents(&daemon))?;
@@ -366,7 +379,7 @@ pub fn start() -> Outcome {
         vec!["Animesh is running in the background and will start at login.".to_owned()];
 
     #[cfg(not(target_os = "macos"))]
-    if !enable_linger() {
+    if linger && !enable_linger() {
         // Not fatal, and not something to fail the install over — but the owner
         // has to know, because the symptom is silent: no banners after a reboot
         // until they happen to log in graphically.
@@ -379,6 +392,9 @@ pub fn start() -> Outcome {
                 .to_owned(),
         );
     }
+
+    #[cfg(target_os = "macos")]
+    let _ = linger;
 
     lines.push(String::new());
     lines.push(format!("Service file: {}", path.display()));

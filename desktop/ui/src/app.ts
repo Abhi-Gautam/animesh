@@ -22,10 +22,11 @@ async function invoke<T>(command: string, args?: Record<string, unknown>): Promi
 }
 function errorMessage(error: unknown): string { return typeof error === "object" && error !== null && "message" in error ? String(error.message) : String(error); }
 function toast(message: string): void { const element = get("toast"); element.textContent = message; element.hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => element.hidden = true, 6000); }
-function notice(message: string | null): void { const element = get("notice"); element.textContent = message ?? ""; element.hidden = message === null; }
+function notice(message: string | null): void { get("notice-message").textContent = message ?? ""; get("notice").hidden = message === null; }
 function showConnection(connected: boolean, message?: string): void {
   const element = get("engine-state"); element.querySelector(".dot")?.classList.toggle("healthy", connected);
   const label = element.lastElementChild; if (label) label.textContent = connected ? "Local engine connected" : "Local engine disconnected";
+  get("restart-service").hidden = connected;
   if (!connected) notice(message ?? "The local Animesh service is not reachable. Your saved library has not been changed.");
 }
 function query(): ViewQuery {
@@ -71,15 +72,12 @@ async function load(): Promise<void> {
   } catch (error) {
     if (generation !== viewGeneration) return;
     const message = errorMessage(error); notice(message);
+    if (typeof error === "object" && error !== null && "code" in error && ["unavailable", "protocol_mismatch"].includes(String(error.code))) showConnection(false, message);
     if (state.cursor) { state.cursor = null; void load(); return; }
     if (!state.snapshot || target.querySelector(".loading")) {
       const retry = button("Retry connection", () => void load(), "primary");
-      const start = button("Restart background service", () => {
-        start.disabled = true;
-        void invoke<string>("start_service", { restart: true }).then(() => load()).catch(error => toast(errorMessage(error))).finally(() => start.disabled = false);
-      });
       const recovery = node("details"); recovery.append(node("summary", "", "Show recovery steps"), node("p", "", "Start the local service, then retry. If the service is already running, make sure the desktop app and daemon come from the same build."), node("pre", "", "animesh service start"));
-      const panel = empty("Animesh service unavailable", message, [retry, start]); panel.append(recovery); page(target, [panel], [], [node("span", "quiet", "Local engine disconnected")]);
+      const panel = empty("Animesh service unavailable", message, [retry]); panel.append(recovery); page(target, [panel], [], [node("span", "quiet", "Local engine disconnected")]);
     }
   }
 }
@@ -189,6 +187,10 @@ function paletteSearch(): void { const query = get<HTMLInputElement>("command-qu
 
 get("global-search").addEventListener("click", openPalette);
 get("refresh").addEventListener("click", () => void refresh());
+get("restart-service").addEventListener("click", () => {
+  const control = get<HTMLButtonElement>("restart-service"); control.disabled = true;
+  void invoke<string>("start_service", { restart: true }).then(() => load()).catch(error => toast(errorMessage(error))).finally(() => control.disabled = false);
+});
 get("search-form").addEventListener("submit", event => void search(event as SubmitEvent));
 get("query").addEventListener("input", () => { searchGeneration++; get("search-status").textContent = "Press Enter to search this title."; });
 get("command-query").addEventListener("input", renderCommands);

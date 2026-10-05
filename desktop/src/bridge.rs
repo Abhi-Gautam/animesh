@@ -168,16 +168,33 @@ struct Connection {
 }
 
 #[tauri::command]
-pub async fn start_service(restart: bool) -> Result<String, AppError> {
-    tauri::async_runtime::spawn_blocking(move || {
-        if restart {
-            animesh::service::restart()
-        } else {
-            animesh::service::start()
+pub async fn start_service(paths: State<'_, AppPaths>, restart: bool) -> Result<String, AppError> {
+    start_background_service(&paths, restart).await
+}
+
+async fn start_background_service(paths: &AppPaths, restart: bool) -> Result<String, AppError> {
+    let message =
+        tauri::async_runtime::spawn_blocking(move || animesh::service::start_from_desktop(restart))
+            .await
+            .map_err(|_| AppError::internal("Could not start the background service"))??;
+    // Registration returns before launchd/systemd starts the process. Only
+    // report success once IPC answers; this is a bounded startup wait.
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if request(paths, Request::Status).await.is_ok() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
         }
     })
     .await
-    .map_err(|_| AppError::internal("Could not start the background service"))?
+    .map_err(|_| {
+        AppError::new(
+            animesh::error::ErrorCode::Unavailable,
+            "The background service was registered but has not answered yet. Retry the connection.",
+        )
+    })?;
+    Ok(message)
 }
 
 pub async fn watch_connection(app: tauri::AppHandle, paths: AppPaths) {
@@ -186,7 +203,7 @@ pub async fn watch_connection(app: tauri::AppHandle, paths: AppPaths) {
     #[cfg(target_os = "linux")]
     if matches!(read_view(&paths, ViewQuery::Health).await, Err(error) if error.code == animesh::error::ErrorCode::Unavailable)
     {
-        let _ = start_service(false).await;
+        let _ = start_background_service(&paths, false).await;
     }
     let mut stamp: Option<RevisionStamp> = None;
     let mut connected = false;
