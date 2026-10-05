@@ -34,6 +34,7 @@ fn failed(message: impl Into<String>) -> AppError {
     AppError::new(ErrorCode::Internal, message)
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn home() -> Result<PathBuf, AppError> {
     std::env::var_os("HOME")
         .map(PathBuf::from)
@@ -75,6 +76,16 @@ fn resolve_daemon(launched: &Path) -> Option<PathBuf> {
             .map(|contents| contents.join("MacOS").join(APP_EXECUTABLE));
         if let Some(path) = bundled.filter(|p| p.exists()) {
             return Some(path);
+        }
+    }
+
+    // The desktop is nested in the daemon's macOS bundle. Service recovery
+    // from that window must register the parent engine, never the webview.
+    if dir.ends_with("Animesh Desktop.app/Contents/MacOS") {
+        let helpers = dir.ancestors().nth(3)?;
+        let bundled = helpers.parent()?.join("MacOS").join(APP_EXECUTABLE);
+        if bundled.exists() {
+            return Some(bundled);
         }
     }
 
@@ -196,11 +207,18 @@ fn unregister() -> Result<(), AppError> {
 
 #[cfg(not(target_os = "macos"))]
 fn unit_path() -> Result<PathBuf, AppError> {
-    Ok(home()?.join(".config/systemd/user").join(UNIT))
+    let base = directories::BaseDirs::new()
+        .ok_or_else(|| failed("cannot locate the user service directory"))?;
+    Ok(base.config_dir().join("systemd/user").join(UNIT))
 }
 
 #[cfg(not(target_os = "macos"))]
 fn unit_contents(daemon: &Path) -> String {
+    let executable = daemon
+        .to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('%', "%%");
     format!(
         "[Unit]\n\
          Description=Animesh release radar\n\
@@ -208,30 +226,61 @@ fn unit_contents(daemon: &Path) -> String {
          \n\
          [Service]\n\
          Type=simple\n\
-         ExecStart={}\n\
+         ExecStart=\"{}\"\n\
          Restart=on-failure\n\
          RestartSec=5\n\
          \n\
          [Install]\n\
          WantedBy=default.target\n",
-        daemon.display()
+        executable
     )
 }
 
 /// Installs the desktop entry alongside the unit.
 ///
-/// It carries no launcher value — it exists so GNOME and KDE can match a
-/// notification to an application and list animesh in their per-app
-/// notification settings. Without it the owner cannot mute animesh short of
-/// stopping the daemon, so it is installed by the same action that starts it.
+/// It opens the desktop when installed, and the CLI otherwise. Its basename
+/// also lets GNOME and KDE match notifications to their per-app settings.
 #[cfg(not(target_os = "macos"))]
-fn install_desktop_entry() -> Result<(), AppError> {
-    let share = home()?.join(".local/share");
+fn install_desktop_entry(daemon: &Path) -> Result<(), AppError> {
+    let base = directories::BaseDirs::new()
+        .ok_or_else(|| failed("cannot locate the user application directory"))?;
+    let share = base.data_dir();
     write_file(
         &share.join("applications/animesh.desktop"),
-        include_str!("../assets/animesh.desktop"),
+        &desktop_entry(daemon),
     )?;
-    install_hicolor(&share)
+    install_hicolor(share)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn desktop_entry(daemon: &Path) -> String {
+    let desktop = daemon.with_file_name("animesh-desktop");
+    let (template, executable, command) = if desktop.is_file() {
+        (
+            include_str!("../assets/animesh.desktop"),
+            desktop,
+            "animesh-desktop",
+        )
+    } else {
+        (
+            include_str!("../assets/animesh-cli.desktop"),
+            daemon.with_file_name("animesh"),
+            "animesh",
+        )
+    };
+    // Exec is not a shell command. Escape reserved characters inside the
+    // quoted executable, including literal percent signs (field codes).
+    let executable = executable
+        .to_string_lossy()
+        .replace('\\', "\\\\\\\\")
+        .replace('"', "\\\\\"")
+        .replace('$', "\\\\$")
+        .replace('`', "\\\\`")
+        .replace('%', "%%");
+    template.replace(
+        &format!("Exec={command}"),
+        &format!("Exec=\"{executable}\""),
+    )
 }
 
 /// hicolor PNGs that `Icon=animesh` and the Notify `app_icon` both name.
@@ -291,7 +340,7 @@ fn enable_linger() -> bool {
 
 #[cfg(not(target_os = "macos"))]
 fn register(_path: &Path) -> Result<(), AppError> {
-    install_desktop_entry()?;
+    install_desktop_entry(&daemon_path()?)?;
     run("systemctl", &["--user", "daemon-reload"])?;
     run("systemctl", &["--user", "enable", "--now", UNIT])?;
     Ok(())
@@ -484,6 +533,56 @@ mod tests {
         let cli = temp.path().join("animesh");
         touch(&cli);
         assert_eq!(resolve_daemon(&cli), None);
+    }
+
+    #[test]
+    fn desktop_recovery_finds_the_parent_mac_engine() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let contents = temp.path().join("Animesh.app/Contents");
+        let desktop = contents.join("Helpers/Animesh Desktop.app/Contents/MacOS/animesh-desktop");
+        let daemon = contents.join("MacOS/Animesh");
+        touch(&desktop);
+        touch(&daemon);
+        assert_eq!(
+            resolve_daemon(&desktop),
+            Some(std::fs::canonicalize(daemon).expect("canonicalize"))
+        );
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn desktop_launcher_uses_the_installed_gui_even_outside_path() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let daemon = temp.path().join("My apps/100%/animesh-app");
+        let desktop = daemon.with_file_name("animesh-desktop");
+        touch(&desktop);
+        let entry = desktop_entry(&daemon);
+        assert!(entry.contains("Terminal=false"));
+        assert!(entry.contains(&format!(
+            "Exec=\"{}\"",
+            desktop.to_string_lossy().replace('%', "%%")
+        )));
+        assert!(!entry.contains("animesh next"));
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn cli_only_installs_keep_a_working_terminal_launcher() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let daemon = temp.path().join("animesh-app");
+        let entry = desktop_entry(&daemon);
+        assert!(entry.contains("Terminal=true"));
+        assert!(entry.contains(&format!(
+            "Exec=\"{}\" next",
+            temp.path().join("animesh").display()
+        )));
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn systemd_exec_handles_spaces_and_literal_specifiers() {
+        let unit = unit_contents(Path::new("/home/person/My apps/100%/animesh-app"));
+        assert!(unit.contains("ExecStart=\"/home/person/My apps/100%%/animesh-app\""));
     }
 
     #[test]

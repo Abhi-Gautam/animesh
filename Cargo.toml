@@ -4,7 +4,7 @@ exclude = ["desktop"]
 
 [package]
 name = "animesh"
-version = "0.6.1"
+version = "0.7.0"
 edition = "2021"
 rust-version = "1.96"
 authors = ["Abhishek Gautam"]
@@ -15,6 +15,7 @@ homepage = "https://github.com/Abhi-Gautam/animesh"
 keywords = ["anime", "tv", "anilist", "cli", "schedule"]
 categories = ["command-line-utilities"]
 exclude = [
+    "desktop/",
     ".github/",
     "HomebrewFormula/",
     "docs/",

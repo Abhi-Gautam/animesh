@@ -1,4 +1,4 @@
-//! A daemon client. Commands expose only the desktop's seven use cases.
+//! A daemon client. Source and library operations always travel over IPC.
 
 use std::time::Duration;
 
@@ -167,7 +167,27 @@ struct Connection {
     stamp: Option<RevisionStamp>,
 }
 
+#[tauri::command]
+pub async fn start_service(restart: bool) -> Result<String, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if restart {
+            animesh::service::restart()
+        } else {
+            animesh::service::start()
+        }
+    })
+    .await
+    .map_err(|_| AppError::internal("Could not start the background service"))?
+}
+
 pub async fn watch_connection(app: tauri::AppHandle, paths: AppPaths) {
+    // A Linux launcher starts the same managed daemon as the CLI. macOS's
+    // parent bundle already owns the menu bar and background engine.
+    #[cfg(target_os = "linux")]
+    if matches!(read_view(&paths, ViewQuery::Health).await, Err(error) if error.code == animesh::error::ErrorCode::Unavailable)
+    {
+        let _ = start_service(false).await;
+    }
     let mut stamp: Option<RevisionStamp> = None;
     let mut connected = false;
     let mut last_error = String::new();

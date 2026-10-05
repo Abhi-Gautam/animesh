@@ -74,8 +74,12 @@ async function load(): Promise<void> {
     if (state.cursor) { state.cursor = null; void load(); return; }
     if (!state.snapshot || target.querySelector(".loading")) {
       const retry = button("Retry connection", () => void load(), "primary");
+      const start = button("Restart background service", () => {
+        start.disabled = true;
+        void invoke<string>("start_service", { restart: true }).then(() => load()).catch(error => toast(errorMessage(error))).finally(() => start.disabled = false);
+      });
       const recovery = node("details"); recovery.append(node("summary", "", "Show recovery steps"), node("p", "", "Start the local service, then retry. If the service is already running, make sure the desktop app and daemon come from the same build."), node("pre", "", "animesh service start"));
-      const panel = empty("Animesh service unavailable", message, [retry]); panel.append(recovery); page(target, [panel], [], [node("span", "quiet", "Local engine disconnected")]);
+      const panel = empty("Animesh service unavailable", message, [retry, start]); panel.append(recovery); page(target, [panel], [], [node("span", "quiet", "Local engine disconnected")]);
     }
   }
 }

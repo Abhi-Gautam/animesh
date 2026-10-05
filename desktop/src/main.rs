@@ -3,6 +3,10 @@ mod bridge;
 use tauri::Manager;
 
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some("--version") {
+        println!("animesh-desktop {}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
     let paths = match animesh::paths::AppPaths::production() {
         Ok(paths) => paths,
         Err(error) => {
@@ -20,6 +24,7 @@ fn main() {
             bridge::drop_title,
             bridge::refresh,
             bridge::open_source,
+            bridge::start_service,
         ])
         .setup(|app| {
             let handle = app.handle().clone();
