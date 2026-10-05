@@ -7,6 +7,8 @@ repository: https://github.com/Abhi-Gautam/animesh
 sourceCommit: aaa616424d286409a9aa7035e3464ca53292efff
 ---
 
+**Update, October 5, 2026:** Animesh now has a desktop app for macOS and Linux, with anime and TV support. [The follow-up covers the desktop release](/writing/animesh-desktop/), and [the product site has screenshots and downloads](https://animesh.syntropicsystems.dev/). The article below describes the earlier anime-only version.
+
 I watch a small set of anime at a time. Keeping up with them used to mean opening Crunchyroll and checking whether a new episode had appeared. If I wanted the exact time, I opened a countdown site as well.
 
 Then I did it again later.
@@ -66,4 +68,4 @@ Television support and the desktop command center are on separate branches. They
 
 ---
 
-Checked against Animesh commit [`aaa6164`](https://github.com/Abhi-Gautam/animesh/tree/aaa616424d286409a9aa7035e3464ca53292efff), the current `master` commit. The relevant code is the [command-line client](https://github.com/Abhi-Gautam/animesh/blob/aaa616424d286409a9aa7035e3464ca53292efff/src/bin/animesh.rs), [daemon composition](https://github.com/Abhi-Gautam/animesh/blob/aaa616424d286409a9aa7035e3464ca53292efff/src/service.rs), [notification reconciler](https://github.com/Abhi-Gautam/animesh/blob/aaa616424d286409a9aa7035e3464ca53292efff/src/engine/reconciler.rs), and [library service](https://github.com/Abhi-Gautam/animesh/blob/aaa616424d286409a9aa7035e3464ca53292efff/src/library/service.rs).
+Checked against Animesh commit [`aaa6164`](https://github.com/Abhi-Gautam/animesh/tree/aaa616424d286409a9aa7035e3464ca53292efff), the code version covered by this article. The relevant code is the [command-line client](https://github.com/Abhi-Gautam/animesh/blob/aaa616424d286409a9aa7035e3464ca53292efff/src/bin/animesh.rs), [daemon composition](https://github.com/Abhi-Gautam/animesh/blob/aaa616424d286409a9aa7035e3464ca53292efff/src/service.rs), [notification reconciler](https://github.com/Abhi-Gautam/animesh/blob/aaa616424d286409a9aa7035e3464ca53292efff/src/engine/reconciler.rs), and [library service](https://github.com/Abhi-Gautam/animesh/blob/aaa616424d286409a9aa7035e3464ca53292efff/src/library/service.rs).
