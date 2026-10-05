@@ -12,9 +12,8 @@ env:
   RUSTFLAGS: -D warnings
 
 jobs:
-  # macOS carries the bundle, the status item and the notification centre; Linux
-  # carries the daemon and the CLI, which is the whole product there. Both must
-  # stay green or the platform boundary has stopped being real.
+  # Both desktop surfaces share the same daemon contracts. Compile and test
+  # both native adapters so the platform boundary stays real.
   check:
     strategy:
       fail-fast: false
@@ -53,6 +52,7 @@ jobs:
         run: |
           cargo fmt --manifest-path desktop/Cargo.toml --check
           cargo clippy --manifest-path desktop/Cargo.toml --all-targets --locked -- -D warnings
+          cargo test --manifest-path desktop/Cargo.toml --locked
 
       - name: Test
         run: cargo test --workspace --locked
@@ -73,9 +73,8 @@ jobs:
       - name: Release build
         run: cargo build --workspace --release --locked
 
-  # The daemon and the CLI are the entire Linux surface, so the thing worth
-  # proving is that they come up, talk over the socket, and stop on SIGTERM
-  # without a desktop session anywhere in sight.
+  # The Linux engine must also work without a desktop session: CLI users and
+  # background tracking do not depend on the webview being open.
   linux-daemon:
     runs-on: ubuntu-24.04
     steps:
