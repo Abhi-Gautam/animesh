@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 
-use animesh::domain::ids::{AniListId, UnixTimestamp};
+use animesh::domain::ids::{AniListId, TvMazeId, UnixTimestamp};
 use animesh::domain::read_models::FollowOutcome;
 use animesh::domain::time::{ManualClock, NoJitter, WallClock};
 use animesh::error::ErrorCode;
@@ -18,6 +18,77 @@ use animesh::store::connection::Store;
 use animesh::store::migrations;
 
 const NOW: i64 = 1_700_000_000;
+
+#[tokio::test]
+async fn revision_wait_observes_a_commit_that_precedes_subscription() {
+    let mut server = mockito::Server::new_async().await;
+    server
+        .mock("POST", "/")
+        .with_status(200)
+        .with_body(detail_body(21, 2, NOW + 5000))
+        .create_async()
+        .await;
+    let world = world(server.url()).await;
+    let before = world.library.revision_stamp();
+    world.library.follow(id(21)).await.expect("follow");
+    let after = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        world
+            .library
+            .wait_for_revision(&before.instance_id, before.revision),
+    )
+    .await
+    .expect("must not lose the earlier commit");
+    assert!(after.revision > before.revision);
+}
+
+#[tokio::test]
+async fn concurrent_clients_observe_the_same_follow_and_drop() {
+    let mut server = mockito::Server::new_async().await;
+    server
+        .mock("POST", "/")
+        .with_status(200)
+        .with_body(detail_body(21, 2, NOW + 5000))
+        .create_async()
+        .await;
+    let world = world(server.url()).await;
+    let before = world.library.revision_stamp();
+    let (a, b, follow) = tokio::join!(
+        world
+            .library
+            .wait_for_revision(&before.instance_id, before.revision),
+        world
+            .library
+            .wait_for_revision(&before.instance_id, before.revision),
+        world.library.follow(id(21)),
+    );
+    assert!(a.revision > before.revision);
+    assert_eq!(a, b);
+    let follow = follow.expect("follow");
+    let mut changes = world.library.subscribe_changes();
+    world
+        .library
+        .drop_follow(follow.media_id)
+        .await
+        .expect("drop");
+    tokio::time::timeout(std::time::Duration::from_secs(1), changes.changed())
+        .await
+        .expect("drop wakes subscribers")
+        .expect("channel open");
+    assert!(world.library.list_follows().await.expect("list").is_empty());
+}
+
+#[tokio::test]
+async fn restart_identity_returns_immediately_even_if_revision_is_lower() {
+    let world = world("http://127.0.0.1:1".into()).await;
+    let stamp = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        world.library.wait_for_revision("previous-daemon", 1000),
+    )
+    .await
+    .expect("restart resets the revision");
+    assert_eq!(stamp, world.library.revision_stamp());
+}
 
 fn at(seconds: i64) -> UnixTimestamp {
     UnixTimestamp::new(seconds).expect("valid timestamp")
@@ -35,11 +106,28 @@ fn detail_body(anilist_id: i64, episode: i64, airing_at: i64) -> String {
 
 struct World {
     _dir: tempfile::TempDir,
+    db_path: std::path::PathBuf,
     library: Library,
     clock: Arc<ManualClock>,
 }
 
+impl World {
+    fn tvmaze_fetches(&self) -> i64 {
+        let conn = rusqlite::Connection::open(&self.db_path).expect("open");
+        conn.query_row(
+            "SELECT COUNT(*) FROM source_fetches WHERE source = 'tvmaze'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("count")
+    }
+}
+
 async fn world(base_url: String) -> World {
+    world_with(base_url, "http://127.0.0.1:1".into()).await
+}
+
+async fn world_with(anilist_url: String, tvmaze_url: String) -> World {
     let dir = tempfile::tempdir().expect("tempdir");
     let db_path = dir.path().join("library.db");
 
@@ -55,13 +143,16 @@ async fn world(base_url: String) -> World {
         .expect("installation");
 
     let clock = Arc::new(ManualClock::new(at(NOW)));
-    let source = AniListClient::new(base_url).expect("client");
+    let source = AniListClient::new(anilist_url).expect("client");
+    let tvmaze = animesh::sources::tvmaze::TvMazeClient::new(tvmaze_url).expect("tvmaze");
 
     World {
         _dir: dir,
+        db_path,
         library: Library::new(
             store,
             source,
+            tvmaze,
             Arc::clone(&clock) as Arc<dyn WallClock>,
             Arc::new(NoJitter),
             installation,
@@ -69,6 +160,16 @@ async fn world(base_url: String) -> World {
         ),
         clock,
     }
+}
+
+fn tv_id(value: i64) -> TvMazeId {
+    TvMazeId::new(value).expect("valid id")
+}
+
+fn tv_show_body(id: i64, name: &str, season: i32, episode: i64, airstamp: &str) -> String {
+    format!(
+        r#"{{"id":{id},"name":"{name}","type":"Scripted","language":"English","status":"Running","premiered":"2011-04-17","_embedded":{{"nextepisode":{{"season":{season},"number":{episode},"airstamp":"{airstamp}"}}}}}}"#
+    )
 }
 
 #[tokio::test]
@@ -387,4 +488,337 @@ async fn health_on_an_empty_library_does_not_fail() {
     assert_eq!(health.active_follows, 0);
     assert!(health.earliest_upcoming.is_none());
     assert_eq!(health.last_success_at, None);
+}
+
+#[tokio::test]
+async fn following_a_tv_show_makes_exactly_one_detail_request() {
+    let mut anilist = mockito::Server::new_async().await;
+    let never = anilist.mock("POST", "/").expect(0).create_async().await;
+    let mut tv = mockito::Server::new_async().await;
+    let mock = tv
+        .mock("GET", "/shows/82?embed=nextepisode")
+        .with_status(200)
+        .with_body(tv_show_body(
+            82,
+            "Game of Thrones",
+            8,
+            6,
+            "2026-09-01T01:00:00+00:00",
+        ))
+        .expect(1)
+        .create_async()
+        .await;
+
+    let world = world_with(anilist.url(), tv.url()).await;
+    let result = world.library.follow_tv(tv_id(82)).await.expect("follow");
+
+    assert_eq!(result.outcome, FollowOutcome::NewlyFollowed);
+    assert_eq!(result.source.as_str(), "tvmaze");
+    assert_eq!(result.source_id.get(), 82);
+    assert_eq!(result.display_title.as_str(), "Game of Thrones");
+    let upcoming = result.upcoming.expect("upcoming");
+    assert_eq!(upcoming.episode.map(|e| e.get()), Some(6));
+    assert_eq!(upcoming.source.as_str(), "tvmaze");
+
+    mock.assert_async().await;
+    never.assert_async().await;
+}
+
+#[tokio::test]
+async fn anilist_21_and_tvmaze_21_are_different_follows() {
+    let mut anilist = mockito::Server::new_async().await;
+    anilist
+        .mock("POST", "/")
+        .with_status(200)
+        .with_body(detail_body(21, 1169, NOW + 5_000))
+        .create_async()
+        .await;
+    let mut tv = mockito::Server::new_async().await;
+    tv.mock("GET", "/shows/21?embed=nextepisode")
+        .with_status(200)
+        .with_body(tv_show_body(
+            21,
+            "The Walking Dead",
+            1,
+            2,
+            "2026-09-01T01:00:00+00:00",
+        ))
+        .create_async()
+        .await;
+
+    let world = world_with(anilist.url(), tv.url()).await;
+    world.library.follow(id(21)).await.expect("anilist");
+    world.library.follow_tv(tv_id(21)).await.expect("tvmaze");
+
+    let follows = world.library.list_follows().await.expect("list");
+    assert_eq!(follows.len(), 2);
+    let sources: Vec<_> = follows.iter().map(|f| f.source.as_str()).collect();
+    assert!(sources.contains(&"anilist"));
+    assert!(sources.contains(&"tvmaze"));
+    assert_ne!(follows[0].media_id, follows[1].media_id);
+}
+
+#[tokio::test]
+async fn an_unknown_tvmaze_id_records_evidence_and_creates_no_follow() {
+    let mut tv = mockito::Server::new_async().await;
+    tv.mock("GET", "/shows/999?embed=nextepisode")
+        .with_status(404)
+        .create_async()
+        .await;
+
+    let world = world_with("http://127.0.0.1:1".into(), tv.url()).await;
+    let error = world
+        .library
+        .follow_tv(tv_id(999))
+        .await
+        .expect_err("must not succeed");
+
+    assert_eq!(error.code, ErrorCode::NotFound);
+    assert!(world.library.list_follows().await.expect("list").is_empty());
+    assert_eq!(world.tvmaze_fetches(), 1);
+}
+
+#[tokio::test]
+async fn tv_search_percent_encodes_the_query() {
+    let mut tv = mockito::Server::new_async().await;
+    let mock = tv
+        .mock("GET", "/search/shows?q=foo%26bar")
+        .with_status(200)
+        .with_body(r#"[{"show":{"id":1,"name":"Foo","language":"English","status":"Running"}}]"#)
+        .expect(1)
+        .create_async()
+        .await;
+
+    let world = world_with("http://127.0.0.1:1".into(), tv.url()).await;
+    let hits = world
+        .library
+        .search_tv(Some("foo&bar"))
+        .await
+        .expect("search");
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].source.as_str(), "tvmaze");
+    mock.assert_async().await;
+}
+
+#[tokio::test]
+async fn empty_tv_search_hits_us_broadcast_and_web_schedules() {
+    let mut tv = mockito::Server::new_async().await;
+    let broadcast = tv
+        .mock("GET", "/schedule?country=US")
+        .with_status(200)
+        .with_body(r#"[{"show":{"id":1,"name":"Network","type":"Scripted","language":"English","status":"Running"}}]"#)
+        .expect(1)
+        .create_async()
+        .await;
+    let web = tv
+        .mock("GET", "/schedule/web?country=US")
+        .with_status(200)
+        .with_body(r#"[{"_embedded":{"show":{"id":2,"name":"Stream","type":"Animation","language":"English","status":"Running"}}}]"#)
+        .expect(1)
+        .create_async()
+        .await;
+
+    let world = world_with("http://127.0.0.1:1".into(), tv.url()).await;
+    let hits = world.library.search_tv(None).await.expect("search");
+    assert_eq!(hits.len(), 2);
+    broadcast.assert_async().await;
+    web.assert_async().await;
+}
+
+#[tokio::test]
+async fn following_the_same_tv_show_twice_makes_no_second_request() {
+    let mut tv = mockito::Server::new_async().await;
+    let mock = tv
+        .mock("GET", "/shows/82?embed=nextepisode")
+        .with_status(200)
+        .with_body(tv_show_body(
+            82,
+            "Game of Thrones",
+            8,
+            6,
+            "2026-09-01T01:00:00+00:00",
+        ))
+        .expect(1)
+        .create_async()
+        .await;
+
+    let world = world_with("http://127.0.0.1:1".into(), tv.url()).await;
+    world.library.follow_tv(tv_id(82)).await.expect("first");
+    let second = world.library.follow_tv(tv_id(82)).await.expect("second");
+    assert_eq!(second.outcome, FollowOutcome::AlreadyActive);
+    mock.assert_async().await;
+}
+
+fn catalog_body(items: Vec<serde_json::Value>) -> String {
+    serde_json::json!({"data": {"Page": {"media": items}}}).to_string()
+}
+
+fn catalog_item(id: i64, title: &str) -> serde_json::Value {
+    let body: serde_json::Value =
+        serde_json::from_str(&detail_body(id, 5, NOW + 1000)).expect("fixture");
+    let mut item = body["data"]["Media"].clone();
+    item["title"]["english"] = title.into();
+    item
+}
+
+#[tokio::test]
+async fn discovery_is_durable_without_following_or_notification_intent() {
+    use animesh::domain::command_center::{FeedKey, ViewData, ViewQuery};
+    let mut server = mockito::Server::new_async().await;
+    let mock = server
+        .mock("POST", "/")
+        .with_status(200)
+        .with_body(catalog_body(vec![catalog_item(21, "One Piece")]))
+        .expect(1)
+        .create_async()
+        .await;
+    let world = world(server.url()).await;
+    world
+        .library
+        .refresh_discovery(FeedKey::AnimeAiringThisWeek)
+        .await
+        .expect("ingest");
+    let snapshot = world
+        .library
+        .view(ViewQuery::Discovery {
+            feed: FeedKey::AnimeAiringThisWeek,
+        })
+        .await
+        .expect("offline projection");
+    let ViewData::Discovery(feed) = snapshot.view else {
+        panic!("feed")
+    };
+    assert_eq!(feed.items.len(), 1);
+    assert_eq!(feed.items[0].follow_state, None);
+    assert_eq!(snapshot.health.active_follows, 0);
+    assert_eq!(snapshot.health.notifications.desired, 0);
+    assert!(world
+        .library
+        .upcoming(None)
+        .await
+        .expect("no followed events")
+        .is_empty());
+    assert!(world
+        .library
+        .list_follows()
+        .await
+        .expect("no follows")
+        .is_empty());
+    mock.assert_async().await;
+    let reopened = rusqlite::Connection::open(&world.db_path).expect("reopen");
+    assert_eq!(
+        animesh::store::command_center::discovery(&reopened, FeedKey::AnimeAiringThisWeek, at(NOW))
+            .expect("saved feed")
+            .items,
+        feed.items
+    );
+}
+
+#[tokio::test]
+async fn failed_and_partial_discovery_preserve_the_last_complete_contents() {
+    use animesh::domain::command_center::{FeedKey, SnapshotCompleteness};
+    let mut server = mockito::Server::new_async().await;
+    let initial = server
+        .mock("POST", "/")
+        .with_status(200)
+        .with_body(catalog_body(vec![catalog_item(21, "Original title")]))
+        .create_async()
+        .await;
+    let world = world(server.url()).await;
+    let key = FeedKey::AnimeThisSeason;
+    world
+        .library
+        .refresh_discovery(key)
+        .await
+        .expect("complete");
+    initial.remove_async().await;
+    let partial = server
+        .mock("POST", "/")
+        .with_status(200)
+        .with_body(catalog_body(vec![
+            catalog_item(21, "Partial title"),
+            serde_json::Value::Null,
+        ]))
+        .create_async()
+        .await;
+    world
+        .library
+        .refresh_discovery(key)
+        .await
+        .expect_err("partial");
+    partial.remove_async().await;
+    let conn = rusqlite::Connection::open(&world.db_path).expect("open");
+    let partial_feed =
+        animesh::store::command_center::discovery(&conn, key, at(NOW)).expect("feed");
+    assert_eq!(
+        partial_feed.last_attempt,
+        Some(SnapshotCompleteness::Partial)
+    );
+    assert_eq!(
+        partial_feed.items[0].facts.display_title.as_str(),
+        "Original title"
+    );
+    let failed = server
+        .mock("POST", "/")
+        .with_status(503)
+        .with_body("offline")
+        .expect(5)
+        .create_async()
+        .await;
+    for _ in 0..5 {
+        world
+            .library
+            .refresh_discovery(key)
+            .await
+            .expect_err("offline");
+    }
+    let saved = animesh::store::command_center::discovery(&conn, key, at(NOW)).expect("saved");
+    assert_eq!(saved.last_attempt, Some(SnapshotCompleteness::Failed));
+    assert_eq!(saved.items, partial_feed.items);
+    assert!(saved.last_error.is_some());
+    assert_eq!(
+        conn.query_row(
+            "SELECT COUNT(*) FROM discovery_snapshots WHERE feed_key = ?1",
+            [key.as_str()],
+            |row| row.get::<_, i64>(0)
+        )
+        .expect("bounded history"),
+        4
+    );
+    failed.assert_async().await;
+}
+
+#[tokio::test]
+async fn every_local_desktop_view_works_without_source_requests() {
+    use animesh::domain::command_center::{FeedKey, FollowSort, ViewQuery};
+    use animesh::domain::release::FollowState;
+    let world = world("http://127.0.0.1:1".into()).await;
+    let before = world.library.revision_stamp();
+    for query in [
+        ViewQuery::Home,
+        ViewQuery::Health,
+        ViewQuery::Discovery {
+            feed: FeedKey::TvOnNow,
+        },
+        ViewQuery::Schedule {
+            kind: None,
+            cursor: None,
+        },
+        ViewQuery::Library {
+            kind: None,
+            state: FollowState::Active,
+            sort: FollowSort::Alphabetical,
+            cursor: None,
+        },
+    ] {
+        let snapshot = world.library.view(query).await.expect("local view");
+        assert_eq!(snapshot.stamp, before);
+    }
+    let conn = rusqlite::Connection::open(&world.db_path).expect("open");
+    assert_eq!(
+        conn.query_row("SELECT COUNT(*) FROM source_fetches", [], |row| row
+            .get::<_, i64>(0))
+            .expect("no source traffic"),
+        0
+    );
 }

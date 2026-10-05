@@ -1,0 +1,10 @@
+{
+  "name": "animesh-command-center",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc && cp index.html styles.css dist/",
+    "check": "tsc --noEmit"
+  },
+  "devDependencies": { "typescript": "~5.9.3" }
+}

@@ -1,14 +1,76 @@
 //! The `animesh` command surface.
 
+use std::str::FromStr;
+
 use clap::{Parser, Subcommand};
 
-use crate::domain::ids::{AniListId, MediaId};
+use crate::domain::ids::{AniListId, IdError, MediaId, SourceKey, SourceNumericId, TvMazeId};
+
+pub(crate) const BARE_FOLLOW: &str = "a bare number is not an identity; use anilist:N or tvmaze:N";
+const BARE_DROP: &str =
+    "drop wants media:N (from list) or the same anilist:N / tvmaze:N search printed";
+
+/// What `follow` accepts: `anilist:N`, `tvmaze:N`, or a bare number with `--tv`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FollowTarget {
+    Bare(SourceNumericId),
+    AniList(AniListId),
+    TvMaze(TvMazeId),
+}
+
+impl FromStr for FollowTarget {
+    type Err = IdError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let s = s.trim();
+        if s.starts_with("media:") {
+            return Err(IdError::Identity(
+                "follow takes anilist:N or tvmaze:N; media:N is for drop",
+            ));
+        }
+        if let Some(rest) = s.strip_prefix("tvmaze:") {
+            return Ok(Self::TvMaze(rest.parse()?));
+        }
+        if let Some(rest) = s.strip_prefix("anilist:") {
+            return Ok(Self::AniList(rest.parse()?));
+        }
+        if s.contains(':') {
+            return Err(IdError::UnknownSource(s.to_owned()));
+        }
+        Ok(Self::Bare(s.parse()?))
+    }
+}
+
+/// What `drop` accepts: `media:N`, `anilist:N`, or `tvmaze:N`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DropTarget {
+    Media(MediaId),
+    Source(SourceKey),
+}
+
+impl FromStr for DropTarget {
+    type Err = IdError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let s = s.trim();
+        if let Some(rest) = s.strip_prefix("media:") {
+            return Ok(Self::Media(rest.parse()?));
+        }
+        if let Some(rest) = s.strip_prefix("anilist:") {
+            return Ok(Self::Source(SourceKey::anilist(rest.parse()?)));
+        }
+        if let Some(rest) = s.strip_prefix("tvmaze:") {
+            return Ok(Self::Source(SourceKey::tvmaze(rest.parse()?)));
+        }
+        Err(IdError::Identity(BARE_DROP))
+    }
+}
 
 #[derive(Debug, Parser)]
 #[command(
     name = "animesh",
     version,
-    about = "Personal release radar for anime",
+    about = "Personal release radar for anime and TV",
     disable_help_subcommand = true
 )]
 pub struct Cli {
@@ -26,31 +88,50 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Search AniList for a title.
+    /// Search for a title. AniList by default; `--tv` uses TVmaze.
     Search {
         /// Free-text query. Quote it if it contains spaces.
+        ///
+        /// With `--tv` and no query, lists currently airing English-language
+        /// US broadcasts and streams.
         query: Vec<String>,
+        /// Search TVmaze instead of AniList.
+        #[arg(long)]
+        tv: bool,
     },
 
-    /// Follow a title by its AniList id.
+    /// Follow a title by source key (`anilist:21` or `tvmaze:82`).
+    ///
+    /// A bare number is not an identity. `--tv 82` is the same as `tvmaze:82`.
     Follow {
-        #[arg(value_name = "ANILIST_ID")]
-        id: AniListId,
+        #[arg(value_name = "ID")]
+        id: FollowTarget,
+        /// Follow a bare number as a TVmaze show id.
+        #[arg(long)]
+        tv: bool,
     },
 
     /// Show upcoming episodes. Local-only; never touches the network.
+    ///
+    /// Future only. Just-aired titles are a short dropped band (human) or
+    /// `--dropped` (JSON).
     Next {
         #[arg(long, short = 'n')]
         limit: Option<u32>,
+        /// Just-aired episodes from the last 24h, newest first.
+        #[arg(long)]
+        dropped: bool,
     },
 
     /// List everything you follow.
     List,
 
     /// Stop following a title.
+    ///
+    /// Takes `media:N` from list, or `anilist:N` / `tvmaze:N`.
     Drop {
-        #[arg(value_name = "MEDIA_ID")]
-        media_id: MediaId,
+        #[arg(value_name = "ID")]
+        id: DropTarget,
     },
 
     /// Ask the app to refresh schedules now.
@@ -126,13 +207,54 @@ mod tests {
         assert!(Cli::try_parse_from(["animesh", "follow", "0"]).is_err());
         assert!(Cli::try_parse_from(["animesh", "follow", "banana"]).is_err());
         assert!(Cli::try_parse_from(["animesh", "follow", "21"]).is_ok());
+        assert!(Cli::try_parse_from(["animesh", "follow", "anilist:21"]).is_ok());
+        assert!(Cli::try_parse_from(["animesh", "drop", "1"]).is_err());
+        assert!(Cli::try_parse_from(["animesh", "drop", "media:1"]).is_ok());
+        assert!(Cli::try_parse_from(["animesh", "drop", "anilist:21"]).is_ok());
+        assert!(Cli::try_parse_from(["animesh", "follow", "--tv", "0"]).is_err());
+        assert!(Cli::try_parse_from(["animesh", "follow", "tvmaze:0"]).is_err());
+        assert!(Cli::try_parse_from(["animesh", "follow", "anilist:21"]).is_ok());
+    }
+
+    #[test]
+    fn tv_flags_select_tvmaze() {
+        let search = Cli::try_parse_from(["animesh", "search", "--tv"]).expect("parse");
+        match search.command {
+            Command::Search { query, tv } => {
+                assert!(query.is_empty());
+                assert!(tv);
+            }
+            other => panic!("expected search, got {other:?}"),
+        }
+        let follow = Cli::try_parse_from(["animesh", "follow", "--tv", "82"]).expect("parse");
+        match follow.command {
+            Command::Follow { id, tv } => {
+                assert_eq!(
+                    id,
+                    FollowTarget::Bare(SourceNumericId::new(82).expect("id"))
+                );
+                assert!(tv);
+            }
+            other => panic!("expected follow, got {other:?}"),
+        }
+        let prefixed = Cli::try_parse_from(["animesh", "follow", "tvmaze:82"]).expect("parse");
+        match prefixed.command {
+            Command::Follow { id, tv } => {
+                assert_eq!(id, FollowTarget::TvMaze(TvMazeId::new(82).expect("id")));
+                assert!(!tv);
+            }
+            other => panic!("expected follow, got {other:?}"),
+        }
     }
 
     #[test]
     fn search_accepts_unquoted_multiword_queries() {
         let cli = Cli::try_parse_from(["animesh", "search", "one", "piece"]).expect("parse");
         match cli.command {
-            Command::Search { query } => assert_eq!(query, vec!["one", "piece"]),
+            Command::Search { query, tv } => {
+                assert_eq!(query, vec!["one", "piece"]);
+                assert!(!tv);
+            }
             other => panic!("expected search, got {other:?}"),
         }
     }
@@ -161,7 +283,10 @@ mod tests {
     fn next_accepts_a_limit() {
         let cli = Cli::try_parse_from(["animesh", "next", "-n", "5"]).expect("parse");
         match cli.command {
-            Command::Next { limit } => assert_eq!(limit, Some(5)),
+            Command::Next { limit, dropped } => {
+                assert_eq!(limit, Some(5));
+                assert!(!dropped);
+            }
             other => panic!("expected next, got {other:?}"),
         }
     }

@@ -53,16 +53,18 @@ impl ReleaseEventState {
 
 /// Identity of an event within its source media.
 ///
-/// AniList exposes only the next episode, so episode number is the only stable
-/// handle available. Deriving the key rather than using the episode number
-/// directly leaves room for sources that key events differently, without
-/// changing the schema.
-pub fn source_event_key(episode: EpisodeNumber) -> Result<BoundedText, IdError> {
-    BoundedText::new(
-        "source_event_key",
-        MAX_EVENT_KEY_LEN,
-        format!("ep:{episode}"),
-    )
+/// AniList only exposes the next episode number, so `ep:{n}` is enough there.
+/// TVmaze episodes restart each season, so a season is required or S1E1 and
+/// S2E1 would collide.
+pub fn source_event_key(
+    episode: EpisodeNumber,
+    season: Option<i32>,
+) -> Result<BoundedText, IdError> {
+    let text = match season {
+        Some(season) => format!("s{season}e{episode}"),
+        None => format!("ep:{episode}"),
+    };
+    BoundedText::new("source_event_key", MAX_EVENT_KEY_LEN, text)
 }
 
 /// A projected release event.
@@ -74,6 +76,8 @@ pub struct ReleaseEvent {
     pub source_media_id: SourceMediaId,
     pub source_event_key: BoundedText,
     pub sequence_number: Option<EpisodeNumber>,
+    /// TVmaze season. `None` for AniList, where episode numbers do not restart.
+    pub season: Option<i32>,
     pub scheduled_at: UnixTimestamp,
     pub state: ReleaseEventState,
     /// Incremented whenever the scheduled instant changes, never on a no-op
@@ -105,6 +109,7 @@ pub enum ReleaseTransition {
     },
     Insert {
         episode: EpisodeNumber,
+        season: Option<i32>,
         scheduled_at: UnixTimestamp,
     },
     /// Same episode at a new instant; schedule revision increments.
@@ -122,6 +127,7 @@ pub enum ReleaseTransition {
         retire: ReleaseEventId,
         retire_state: ReleaseEventState,
         episode: EpisodeNumber,
+        season: Option<i32>,
         scheduled_at: UnixTimestamp,
     },
     /// The source stopped reporting a still-future event.
@@ -194,17 +200,30 @@ mod tests {
 
     #[test]
     fn source_event_key_is_derived_from_episode() {
-        let key =
-            source_event_key(EpisodeNumber::new(1169).expect("valid episode")).expect("valid key");
+        let key = source_event_key(EpisodeNumber::new(1169).expect("valid episode"), None)
+            .expect("valid key");
         assert_eq!(key.as_str(), "ep:1169");
+    }
+
+    #[test]
+    fn a_seasonal_key_does_not_collide_across_seasons() {
+        let ep = EpisodeNumber::new(1).expect("valid episode");
+        let s1 = source_event_key(ep, Some(1)).expect("key");
+        let s2 = source_event_key(ep, Some(2)).expect("key");
+        assert_eq!(s1.as_str(), "s1e1");
+        assert_eq!(s2.as_str(), "s2e1");
+        assert_ne!(s1, s2);
     }
 
     #[test]
     fn source_event_key_fits_the_schema_bound_at_the_extreme() {
         // The largest episode number a source can report must still produce a
         // key inside the column bound.
-        let key = source_event_key(EpisodeNumber::new(EpisodeNumber::MAX).expect("valid episode"))
-            .expect("valid key");
+        let key = source_event_key(
+            EpisodeNumber::new(EpisodeNumber::MAX).expect("valid episode"),
+            None,
+        )
+        .expect("valid key");
         assert!(key.as_str().len() <= MAX_EVENT_KEY_LEN);
     }
 
@@ -219,6 +238,7 @@ mod tests {
             source_media_id: SourceMediaId::new(1).expect("valid id"),
             source_event_key: BoundedText::new("k", 128, "ep:1").expect("valid key"),
             sequence_number: Some(EpisodeNumber::new(1).expect("valid episode")),
+            season: None,
             scheduled_at: at(1_000),
             state: ReleaseEventState::Scheduled,
             schedule_revision: 1,

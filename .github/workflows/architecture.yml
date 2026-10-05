@@ -15,7 +15,7 @@ name: Architecture
 
 on:
   push:
-    branches: [master]
+    branches: [master, 'codex/**']
   pull_request:
 
 jobs:
@@ -31,8 +31,8 @@ jobs:
           set -euo pipefail
           if grep -rn --include='*.rs' 'rusqlite::' src \
               | grep -v '^src/store/' \
-              | grep -v '^src/library/service.rs:' ; then
-            echo "::error::rusqlite:: outside src/store/ and src/library/service.rs"
+              | grep -v '^src/library/' ; then
+            echo "::error::rusqlite:: outside src/store/ and src/library/"
             echo "::error::Repositories take a transaction handle; only the Library opens one."
             exit 1
           fi
@@ -89,6 +89,14 @@ jobs:
           set -euo pipefail
           if grep -rnE --include='*.rs' 'crate::store|rusqlite' src/cli src/bin/animesh.rs ; then
             echo "::error::The CLI is an IPC client; it must not reach the database."
+            exit 1
+          fi
+
+      - name: the desktop stays a daemon client
+        run: |
+          set -euo pipefail
+          if grep -rnE --include='*.rs' 'animesh::(store|sources|engine|library)\b|rusqlite::|reqwest::' desktop/src ; then
+            echo "::error::The desktop must use application contracts over IPC."
             exit 1
           fi
 

@@ -25,6 +25,19 @@ pub async fn send(paths: &AppPaths, request: Request) -> Result<Response, AppErr
 }
 
 pub async fn send_to(socket: &Path, request: Request) -> Result<Response, AppError> {
+    Ok(send_envelope(socket, request).await?.response)
+}
+
+/// A checked response with the daemon identity retained for long-lived clients.
+#[derive(Debug)]
+pub struct ClientReply {
+    pub instance_id: String,
+    pub response: Response,
+}
+
+pub async fn send_envelope(socket: &Path, request: Request) -> Result<ClientReply, AppError> {
+    request.validate()?;
+    let expected_kind = request.name();
     let mut stream = connect(socket).await?;
 
     let envelope = RequestEnvelope::new(request_id(), request);
@@ -45,9 +58,22 @@ pub async fn send_to(socket: &Path, request: Request) -> Result<Response, AppErr
         .map_err(|e| AppError::internal(format!("decoding reply: {e}")))?;
 
     check_version(reply.protocol_version)?;
+    if reply.request_id != envelope.request_id || reply.app_instance_id.is_empty() {
+        return Err(AppError::new(
+            ErrorCode::ProtocolMismatch,
+            "Animesh returned an unrelated reply",
+        ));
+    }
 
     match reply.result {
-        ReplyResult::Ok(response) => Ok(response),
+        ReplyResult::Ok(response) if response.name() == expected_kind => Ok(ClientReply {
+            instance_id: reply.app_instance_id,
+            response,
+        }),
+        ReplyResult::Ok(_) => Err(AppError::new(
+            ErrorCode::ProtocolMismatch,
+            "Animesh returned the wrong response kind",
+        )),
         ReplyResult::Err(error) => Err(error),
     }
 }

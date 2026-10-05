@@ -5,7 +5,8 @@ use std::cmp::Ordering;
 use serde::{Deserialize, Serialize};
 
 use super::ids::{
-    AniListId, BoundedText, EpisodeNumber, EventUuid, MediaId, ReleaseEventId, UnixTimestamp,
+    BoundedText, EpisodeNumber, EventUuid, MediaId, ReleaseEventId, Source, SourceNumericId,
+    UnixTimestamp,
 };
 use super::release::FollowState;
 
@@ -20,6 +21,22 @@ pub const MAX_UPCOMING_LIMIT: u32 = 500;
 /// "did it drop yet?" — and never once reported that an episode had aired.
 /// Rows inside this band are returned with [`UpcomingRelease::aired`] set.
 pub const AIRED_VISIBILITY_SECS: i64 = 24 * 60 * 60;
+
+/// How many just-aired rows the human `next` band shows. Does not count
+/// against `-n`, which is the future list.
+pub const DROPPED_BAND: u32 = 5;
+
+/// Phrase an episode the way a person reads it.
+///
+/// Seasonal sources (TVmaze) restart numbering; AniList does not. The same
+/// string is used on `next`, `list`, and the notification body so the three
+/// cannot drift.
+pub fn episode_label(episode: EpisodeNumber, season: Option<i32>) -> String {
+    match season {
+        Some(season) => format!("S{season}E{episode}"),
+        None => format!("Episode {episode}"),
+    }
+}
 
 /// How current the source data behind a row is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -38,9 +55,12 @@ pub struct UpcomingRelease {
     pub release_event_id: ReleaseEventId,
     pub event_uuid: EventUuid,
     pub media_id: MediaId,
-    pub anilist_id: AniListId,
+    pub source: Source,
+    pub source_id: SourceNumericId,
     pub display_title: BoundedText,
     pub episode: Option<EpisodeNumber>,
+    /// TVmaze season. `None` for AniList, where episode numbers do not restart.
+    pub season: Option<i32>,
     pub scheduled_at: UnixTimestamp,
     pub schedule_revision: i64,
     pub last_success_at: Option<UnixTimestamp>,
@@ -84,7 +104,8 @@ impl PartialOrd for UpcomingRelease {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FollowSummary {
     pub media_id: MediaId,
-    pub anilist_id: AniListId,
+    pub source: Source,
+    pub source_id: SourceNumericId,
     pub display_title: BoundedText,
     pub state: FollowState,
     pub upcoming: Option<UpcomingRelease>,
@@ -105,7 +126,8 @@ pub enum FollowOutcome {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FollowResult {
     pub media_id: MediaId,
-    pub anilist_id: AniListId,
+    pub source: Source,
+    pub source_id: SourceNumericId,
     pub display_title: BoundedText,
     pub outcome: FollowOutcome,
     pub upcoming: Option<UpcomingRelease>,
@@ -177,7 +199,9 @@ impl DegradedReason {
             Self::NotificationCapacityExceeded => {
                 "More releases are scheduled than the system will hold. The nearest ones are registered."
             }
-            Self::SourceRateLimited => "AniList is rate limiting requests. Refreshes resume automatically.",
+            Self::SourceRateLimited => {
+                "A source is rate limiting requests. Refreshes resume automatically."
+            }
         }
     }
 }
@@ -270,6 +294,25 @@ pub struct HealthSnapshot {
     pub degraded: Vec<DegradedReason>,
 }
 
+/// Human-actionable degradation shared by every serving surface.
+pub fn degraded_reasons(
+    authorization: AuthorizationState,
+    counts: &NotificationCounts,
+    blocked_until: Option<UnixTimestamp>,
+) -> Vec<DegradedReason> {
+    let mut reasons = Vec::new();
+    if authorization == AuthorizationState::Denied {
+        reasons.push(DegradedReason::NotificationsDenied);
+    }
+    if counts.deferred_capacity > 0 {
+        reasons.push(DegradedReason::NotificationCapacityExceeded);
+    }
+    if blocked_until.is_some() {
+        reasons.push(DegradedReason::SourceRateLimited);
+    }
+    reasons
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -288,9 +331,11 @@ mod tests {
             release_event_id: ReleaseEventId::new(event_id).expect("valid id"),
             event_uuid: EventUuid::generate(),
             media_id: MediaId::new(media_id).expect("valid id"),
-            anilist_id: AniListId::new(21).expect("valid id"),
+            source: Source::AniList,
+            source_id: SourceNumericId::new(21).expect("valid id"),
             display_title: BoundedText::new("t", 512, "Title").expect("valid title"),
             episode: episode.map(|e| EpisodeNumber::new(e).expect("valid episode")),
+            season: None,
             scheduled_at: at(scheduled_at),
             schedule_revision: 1,
             last_success_at: None,
@@ -354,6 +399,18 @@ mod tests {
         assert_eq!(
             forward.iter().map(|r| r.sort_key()).collect::<Vec<_>>(),
             reversed.iter().map(|r| r.sort_key()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn episode_label_is_seasonal_only_when_a_season_exists() {
+        assert_eq!(
+            episode_label(EpisodeNumber::new(1176).expect("ep"), None),
+            "Episode 1176"
+        );
+        assert_eq!(
+            episode_label(EpisodeNumber::new(4).expect("ep"), Some(18)),
+            "S18E4"
         );
     }
 

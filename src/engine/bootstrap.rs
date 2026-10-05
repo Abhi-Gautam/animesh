@@ -13,6 +13,7 @@ use std::sync::Arc;
 
 use tokio::sync::watch;
 
+use crate::application::Dispatcher;
 use crate::domain::read_models::{
     AuthorizationState, BootstrapState, DegradedReason, HealthSnapshot, NotificationCounts,
     RefreshCounts,
@@ -20,12 +21,12 @@ use crate::domain::read_models::{
 use crate::domain::time::{KeyedJitter, SystemClock, WallClock};
 use crate::error::ErrorCode;
 use crate::ipc::endpoint::{Endpoint, IpcError};
-use crate::ipc::handlers::Dispatcher;
 use crate::ipc::protocol::PROTOCOL_VERSION;
 use crate::ipc::server;
 use crate::library::service::Library;
 use crate::paths::AppPaths;
 use crate::sources::anilist::client::AniListClient;
+use crate::sources::tvmaze::TvMazeClient;
 use crate::store::connection::{Store, StoreError};
 use crate::store::{graph, migrations};
 
@@ -63,6 +64,10 @@ pub async fn run(
                 wake_rx,
                 shutdown.clone(),
             ));
+            let discovery = tokio::spawn(super::discovery::run(
+                Arc::clone(&library),
+                shutdown.clone(),
+            ));
 
             if let Some(hook) = on_ready {
                 hook(Arc::clone(&library), wake.clone());
@@ -73,6 +78,7 @@ pub async fn run(
             serve(&endpoint, instance_id, dispatcher, shutdown).await;
 
             scheduler.abort();
+            discovery.abort();
             Ok(())
         }
 
@@ -126,15 +132,21 @@ async fn open_library(paths: &AppPaths) -> Result<Library, StoreError> {
     }
 
     let installation = store
-        .write(move |tx| graph::ensure_installation(tx, now))
+        .write(move |tx| {
+            crate::store::command_center::interrupt_operations(tx, now)?;
+            graph::ensure_installation(tx, now)
+        })
         .await?;
 
     let source = AniListClient::production()
         .map_err(|e| StoreError::Integrity(format!("building the AniList client: {e}")))?;
+    let tvmaze = TvMazeClient::production()
+        .map_err(|e| StoreError::Integrity(format!("building the TVmaze client: {e}")))?;
 
     Ok(Library::new(
         store,
         source,
+        tvmaze,
         Arc::new(SystemClock),
         Arc::new(KeyedJitter::default()),
         installation,

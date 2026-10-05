@@ -2,8 +2,10 @@ name: Release
 
 on:
   push:
+    branches: ['codex/**']
     tags:
       - 'v*'
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
@@ -24,10 +26,17 @@ jobs:
           set -euo pipefail
           tag="${GITHUB_REF_NAME#v}"
           crate=$(grep -m1 '^version = ' Cargo.toml | sed 's/^version = "\(.*\)"/\1/')
-          if [ "$tag" != "$crate" ]; then
+          if [[ "$GITHUB_REF" == refs/tags/* ]] && [ "$tag" != "$crate" ]; then
             echo "tag ${GITHUB_REF_NAME} does not match Cargo.toml version ${crate}" >&2
             exit 1
           fi
+          python3 - "$crate" <<'PYTHON'
+          import json, sys, tomllib
+          from pathlib import Path
+          expected = sys.argv[1]
+          assert tomllib.loads(Path("desktop/Cargo.toml").read_text())["package"]["version"] == expected
+          assert json.loads(Path("desktop/tauri.conf.json").read_text())["version"] == expected
+          PYTHON
           echo "version=${crate}" >> "$GITHUB_OUTPUT"
 
   build:
@@ -48,6 +57,8 @@ jobs:
             target: x86_64-apple-darwin
           - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
     runs-on: ${{ matrix.os }}
     env:
       VERSION: ${{ needs.version.outputs.version }}
@@ -56,65 +67,74 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          workspaces: |
+            . -> target
+            desktop -> target
 
-      # macOS ships the bundle, because the daemon cannot post a notification
-      # without a bundle identifier. Linux ships the two binaries, which is the
-      # whole product there.
-      - name: Build the bundle
-        if: runner.os == 'macOS'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/ui/package-lock.json
+
+      - name: Linux dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev desktop-file-utils dpkg-dev webkit2gtk-driver xvfb dbus-x11
+
+      - name: Frontend dependencies
+        run: npm ci --prefix desktop/ui
+
+      - name: Test
+        run: cargo test --workspace --locked
+
+      - name: Build and verify the complete distribution
         run: |
           cargo xtask bundle --release
-          cargo xtask verify --path target/bundle/Animesh.app
-
-      - name: Build the binaries
-        if: runner.os == 'Linux'
-        run: cargo build --release --locked --bins
-
-      - name: Package
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p "stage/${NAME}"
-          cp LICENSE README.md "stage/${NAME}/"
-
-          if [ "${RUNNER_OS}" = "macOS" ]; then
-            cp -R target/bundle/Animesh.app "stage/${NAME}/"
-            cat > "stage/${NAME}/INSTALL.txt" <<'TXT'
-          Move Animesh.app into /Applications, then put the CLI on your PATH:
-
-            mkdir -p ~/.local/bin
-            ln -sf /Applications/Animesh.app/Contents/Helpers/animesh ~/.local/bin/animesh
-            animesh service start
-
-          The daemon has to run from the bundle, so do not move the CLI out of it.
-          TXT
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            cargo xtask verify --path target/bundle/Animesh.app
           else
-            cp target/release/animesh target/release/animesh-app "stage/${NAME}/"
-            cp assets/animesh.desktop "stage/${NAME}/"
-            cat > "stage/${NAME}/INSTALL.txt" <<'TXT'
-          Put both binaries on your PATH — the CLI needs the daemon beside it:
-
-            install -Dm755 animesh animesh-app -t ~/.local/bin/
-            install -Dm644 animesh.desktop -t ~/.local/share/applications/
-            animesh service start
-
-          The desktop entry is what makes your notification server show Animesh
-          by name in its per-app settings.
-          TXT
+            cargo xtask verify --path target/bundle/animesh
           fi
+          cargo test --manifest-path desktop/Cargo.toml --release --locked
 
-          tar -C stage -czf "${NAME}.tar.gz" "${NAME}"
-          shasum -a 256 "${NAME}.tar.gz" > "${NAME}.tar.gz.sha256"
+      - name: Package native installers and tarballs
+        run: python3 scripts/package-release.py "$TARGET"
+        env:
+          TARGET: ${{ matrix.target }}
+
+      - name: Install and exercise the Linux desktop
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get install -y ./target/packages/animesh_*.deb
+          animesh-app &
+          APP=$!
+          trap 'kill -TERM "$APP" 2>/dev/null || true' EXIT
+          for _ in $(seq 1 40); do
+            if animesh status >/dev/null 2>&1; then break; fi
+            sleep 0.25
+          done
+          animesh status
+          animesh next
+          dbus-run-session -- xvfb-run -a python3 scripts/smoke-desktop.py /usr/bin/animesh-desktop
+
+      - name: Desktop smoke screenshots
+        if: always() && runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-smoke-${{ matrix.target }}
+          path: target/desktop-smoke/
 
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ env.NAME }}
           path: |
-            ${{ env.NAME }}.tar.gz
-            ${{ env.NAME }}.tar.gz.sha256
+            target/packages/*
 
   crates-io:
     name: crates.io
+    if: startsWith(github.ref, 'refs/tags/v')
     needs: [version, build]
     runs-on: ubuntu-24.04
     permissions:
@@ -129,6 +149,7 @@ jobs:
 
   release:
     name: GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
     needs: [version, build]
     runs-on: ubuntu-24.04
     permissions:
@@ -153,7 +174,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p release
-          find artifacts -type f \( -name '*.tar.gz' -o -name '*.sha256' \) -exec cp {} release/ \;
+          find artifacts -type f \( -name '*.tar.gz' -o -name '*.dmg' -o -name '*.deb' -o -name '*.sha256' \) -exec cp {} release/ \;
           cp SOURCE_SHA256.txt release/
           ls -l release
 

@@ -116,7 +116,7 @@ fn join(engine: std::thread::JoinHandle<ExitCode>) -> ExitCode {
 
 /// No status item, so nothing needs the main thread.
 ///
-/// The CLI is the whole visible surface. Notifications attach through the same
+/// Notifications attach through the same
 /// [`bootstrap::ReadyHook`] the menu bar uses, but the desktop here holds no
 /// schedule, so the daemon runs the notifier loop and fires them itself.
 #[cfg(target_os = "linux")]

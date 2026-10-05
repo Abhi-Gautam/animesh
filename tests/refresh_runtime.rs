@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 
-use animesh::domain::ids::{AniListId, UnixTimestamp};
+use animesh::domain::ids::{AniListId, TvMazeId, UnixTimestamp};
 use animesh::domain::read_models::Freshness;
 use animesh::domain::time::{ManualClock, NoJitter, WallClock};
 use animesh::library::service::Library;
@@ -68,6 +68,10 @@ impl World {
 }
 
 async fn world(base_url: String) -> World {
+    world_with(base_url, "http://127.0.0.1:1".into()).await
+}
+
+async fn world_with(anilist_url: String, tvmaze_url: String) -> World {
     let dir = tempfile::tempdir().expect("tempdir");
     let db_path = dir.path().join("library.db");
 
@@ -88,7 +92,8 @@ async fn world(base_url: String) -> World {
         db_path,
         library: Arc::new(Library::new(
             store,
-            animesh::sources::anilist::client::AniListClient::new(base_url).expect("client"),
+            animesh::sources::anilist::client::AniListClient::new(anilist_url).expect("client"),
+            animesh::sources::tvmaze::TvMazeClient::new(tvmaze_url).expect("tvmaze"),
             Arc::clone(&clock) as Arc<dyn WallClock>,
             Arc::new(NoJitter),
             installation,
@@ -96,6 +101,17 @@ async fn world(base_url: String) -> World {
         )),
         clock,
     }
+}
+
+fn tv_id(value: i64) -> TvMazeId {
+    TvMazeId::new(value).expect("valid id")
+}
+
+fn tv_show_body(id: i64, name: &str, season: i32, episode: i64, airing_at: i64) -> String {
+    let airstamp = at(airing_at).to_utc().to_rfc3339();
+    format!(
+        r#"{{"id":{id},"name":"{name}","type":"Scripted","language":"English","status":"Running","premiered":"2011-04-17","_embedded":{{"nextepisode":{{"season":{season},"number":{episode},"airstamp":"{airstamp}"}}}}}}"#
+    )
 }
 
 #[tokio::test]
@@ -165,16 +181,16 @@ async fn a_due_title_refreshes_and_advances_its_episode() {
     // Both rows serve: episode 5 aired two hours ago and stays visible inside
     // the 24h window, episode 6 is the newly scheduled one.
     let upcoming = world.library.upcoming(None).await.expect("upcoming");
-    assert_eq!(upcoming.len(), 2, "{upcoming:#?}");
-
-    let aired = &upcoming[0];
-    assert_eq!(aired.episode.map(|e| e.get()), Some(5));
-    assert!(aired.aired, "the elapsed episode should be marked as aired");
-
-    let next = &upcoming[1];
+    assert_eq!(upcoming.len(), 1, "{upcoming:#?}");
+    let next = &upcoming[0];
     assert_eq!(next.episode.map(|e| e.get()), Some(6));
     assert!(!next.aired);
     assert_eq!(next.freshness, Freshness::Fresh);
+
+    let dropped = world.library.recently_aired(None).await.expect("dropped");
+    assert_eq!(dropped.len(), 1, "{dropped:#?}");
+    assert_eq!(dropped[0].episode.map(|e| e.get()), Some(5));
+    assert!(dropped[0].aired);
 }
 
 #[tokio::test]
@@ -471,10 +487,19 @@ async fn an_aired_episode_stays_visible_and_creates_no_new_notification_intent()
     // Past the airtime, before any refresh has retired the event.
     world.clock.advance(5_400);
 
-    let upcoming = world.library.upcoming(None).await.expect("upcoming");
-    assert_eq!(upcoming.len(), 1, "the aired episode vanished");
-    assert!(upcoming[0].aired, "it should be marked as aired");
-    assert_eq!(upcoming[0].episode.map(|e| e.get()), Some(5));
+    assert!(
+        world
+            .library
+            .upcoming(None)
+            .await
+            .expect("upcoming")
+            .is_empty(),
+        "future next must not include an aired episode"
+    );
+    let dropped = world.library.recently_aired(None).await.expect("dropped");
+    assert_eq!(dropped.len(), 1, "the aired episode vanished");
+    assert!(dropped[0].aired, "it should be marked as aired");
+    assert_eq!(dropped[0].episode.map(|e| e.get()), Some(5));
 
     // Reading must not change desired notification state.
     assert_eq!(world.library.plan_generation(), plan_before);
@@ -496,7 +521,12 @@ async fn an_episode_older_than_the_window_falls_off() {
     // Just inside the window.
     world.clock.advance(3_600 + 23 * 3_600);
     assert_eq!(
-        world.library.upcoming(None).await.expect("upcoming").len(),
+        world
+            .library
+            .recently_aired(None)
+            .await
+            .expect("dropped")
+            .len(),
         1
     );
 
@@ -504,9 +534,9 @@ async fn an_episode_older_than_the_window_falls_off() {
     world.clock.advance(2 * 3_600);
     assert!(world
         .library
-        .upcoming(None)
+        .recently_aired(None)
         .await
-        .expect("upcoming")
+        .expect("dropped")
         .is_empty());
 }
 
@@ -537,9 +567,19 @@ async fn health_reports_only_genuinely_future_episodes() {
         health.earliest_upcoming.is_none(),
         "health surfaced an already-aired episode"
     );
-    // But the serving view still has it.
+    assert!(world
+        .library
+        .upcoming(None)
+        .await
+        .expect("upcoming")
+        .is_empty());
     assert_eq!(
-        world.library.upcoming(None).await.expect("upcoming").len(),
+        world
+            .library
+            .recently_aired(None)
+            .await
+            .expect("dropped")
+            .len(),
         1
     );
 }
@@ -647,4 +687,90 @@ async fn one_batch_response_is_one_row_however_many_titles_it_covers() {
     // Two detail follows, then one batch covering both titles.
     let outcomes: Vec<String> = world.fetches().into_iter().map(|(o, _)| o).collect();
     assert_eq!(outcomes, vec!["success", "success", "success"]);
+}
+
+#[tokio::test]
+async fn a_due_tv_title_refreshes_by_source_key_not_numeric_id() {
+    let mut anilist = mockito::Server::new_async().await;
+    anilist
+        .mock("POST", "/")
+        .with_status(200)
+        .with_body(detail_body(21, "One Piece", Some((5, NOW + 3_600))))
+        .create_async()
+        .await;
+    let mut tv = mockito::Server::new_async().await;
+    tv.mock("GET", "/shows/21?embed=nextepisode")
+        .with_status(200)
+        .with_body(tv_show_body(21, "The Walking Dead", 1, 2, NOW + 3_600))
+        .create_async()
+        .await;
+
+    let world = world_with(anilist.url(), tv.url()).await;
+    world.library.follow(id(21)).await.expect("anilist");
+    world.library.follow_tv(tv_id(21)).await.expect("tvmaze");
+
+    world.clock.advance(7_200);
+    let later = NOW + 7_200;
+    anilist
+        .mock("POST", "/")
+        .with_status(200)
+        .with_body(batch_body(&[media_json(
+            21,
+            "One Piece",
+            Some((6, later + 604_800)),
+        )]))
+        .create_async()
+        .await;
+    tv.mock("GET", "/shows/21?embed=nextepisode")
+        .with_status(200)
+        .with_body(tv_show_body(21, "The Walking Dead", 1, 3, later + 604_800))
+        .create_async()
+        .await;
+
+    let pass = world.library.refresh_due(10).await.expect("refresh");
+    assert_eq!(pass.applied, 2, "{pass:?}");
+
+    let upcoming = world.library.upcoming(None).await.expect("upcoming");
+    let tv_rows: Vec<_> = upcoming
+        .iter()
+        .filter(|row| row.source.as_str() == "tvmaze")
+        .collect();
+    assert!(
+        tv_rows
+            .iter()
+            .any(|row| row.episode.map(|e| e.get()) == Some(3)),
+        "{upcoming:#?}"
+    );
+}
+
+#[tokio::test]
+async fn a_new_tv_season_advances_instead_of_rewinding() {
+    let mut tv = mockito::Server::new_async().await;
+    tv.mock("GET", "/shows/82?embed=nextepisode")
+        .with_status(200)
+        .with_body(tv_show_body(82, "Game of Thrones", 1, 10, NOW + 3_600))
+        .create_async()
+        .await;
+
+    let world = world_with("http://127.0.0.1:1".into(), tv.url()).await;
+    world.library.follow_tv(tv_id(82)).await.expect("follow");
+
+    world.clock.advance(7_200);
+    let later = NOW + 7_200;
+    tv.mock("GET", "/shows/82?embed=nextepisode")
+        .with_status(200)
+        .with_body(tv_show_body(82, "Game of Thrones", 2, 1, later + 604_800))
+        .create_async()
+        .await;
+
+    let pass = world.library.refresh_due(10).await.expect("refresh");
+    assert_eq!(pass.applied, 1, "{pass:?}");
+
+    let upcoming = world.library.upcoming(None).await.expect("upcoming");
+    assert!(
+        upcoming
+            .iter()
+            .any(|row| row.episode.map(|e| e.get()) == Some(1) && !row.aired),
+        "{upcoming:#?}"
+    );
 }

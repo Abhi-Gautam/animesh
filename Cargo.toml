@@ -1,19 +1,21 @@
 [workspace]
 members = ["xtask"]
+exclude = ["desktop"]
 
 [package]
 name = "animesh"
-version = "0.6.1"
+version = "0.7.0"
 edition = "2021"
 rust-version = "1.96"
 authors = ["Abhishek Gautam"]
-description = "Personal release radar for anime — menu-bar app and CLI"
+description = "Personal release radar for anime and TV — menu-bar app and CLI"
 license = "MIT"
 repository = "https://github.com/Abhi-Gautam/animesh"
 homepage = "https://github.com/Abhi-Gautam/animesh"
-keywords = ["anime", "anilist", "cli", "schedule"]
+keywords = ["anime", "tv", "anilist", "cli", "schedule"]
 categories = ["command-line-utilities"]
 exclude = [
+    "desktop/",
     ".github/",
     "HomebrewFormula/",
     "docs/",
@@ -94,7 +96,7 @@ objc2 = { version = "0.6", default-features = false, features = ["std"] }
 # NSResponder/NSView/NSControl/NSButton are the NSStatusBarButton hierarchy, and
 # NSRunningApplication carries NSApplicationActivationPolicy — neither is named
 # directly in our code, and dropping either stops the status item compiling.
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "objc2-core-foundation", "NSApplication", "NSStatusBar", "NSStatusItem", "NSStatusBarButton", "NSMenu", "NSMenuItem", "NSResponder", "NSButton", "NSControl", "NSView", "NSCell", "NSImage", "NSRunningApplication"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "objc2-core-foundation", "NSApplication", "NSStatusBar", "NSStatusItem", "NSStatusBarButton", "NSMenu", "NSMenuItem", "NSResponder", "NSButton", "NSControl", "NSView", "NSCell", "NSImage", "NSRunningApplication", "NSWorkspace"] }
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSData", "NSArray", "NSDictionary", "NSDate", "NSError", "NSCalendar", "NSTimeZone", "NSURL", "NSValue", "NSThread", "NSRunLoop", "NSBundle", "NSSet", "NSNotification"] }
 objc2-user-notifications = { version = "0.3", default-features = false, features = ["std", "block2", "UNUserNotificationCenter", "UNNotificationRequest", "UNNotificationContent", "UNNotificationTrigger", "UNNotificationSettings", "UNNotification", "UNNotificationSound", "UNError"] }
 

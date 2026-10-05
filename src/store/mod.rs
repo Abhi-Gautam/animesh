@@ -4,6 +4,7 @@
 //! transaction handle and never open a nested one, so the Library alone decides
 //! what is atomic with what.
 
+pub mod command_center;
 pub mod connection;
 pub mod graph;
 pub mod migrations;

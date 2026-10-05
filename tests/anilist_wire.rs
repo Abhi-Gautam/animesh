@@ -220,7 +220,7 @@ async fn detail_decodes_a_complete_item() {
 
     match decoded {
         DetailDecode::Observed(observation) => {
-            assert_eq!(observation.source_key.id, id(21));
+            assert_eq!(observation.source_key.id.get(), 21);
             assert_eq!(observation.display_title.as_str(), "One Piece");
             assert_eq!(observation.status, MediaStatus::Releasing);
             let next = observation.next_airing.expect("next airing");
@@ -396,7 +396,7 @@ async fn search_decodes_candidates() {
     match decode_search(&response.body.expect("body")) {
         SearchDecode::Candidates(candidates) => {
             assert_eq!(candidates.len(), 2);
-            assert_eq!(candidates[0].anilist_id, id(21));
+            assert_eq!(candidates[0].source_id.get(), 21);
             assert_eq!(candidates[0].display_title.as_str(), "One Piece");
             assert_eq!(candidates[1].episode_count.map(|e| e.get()), Some(148));
         }

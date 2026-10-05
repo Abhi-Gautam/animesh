@@ -4,6 +4,7 @@
 //! requirement: with nothing due there must be no wake, no request, no write.
 
 pub mod bootstrap;
+pub mod discovery;
 pub mod notifier;
 pub mod reconciler;
 
@@ -15,11 +16,11 @@ use tokio::sync::watch;
 use crate::library::service::{Library, RefreshPass};
 
 /// How many titles one pass claims. Bounded so a large library refreshes in
-/// several batches rather than one request AniList would reject.
+/// several batches rather than one request a source would reject.
 pub const REFRESH_BATCH: u32 = 25;
 
-/// AniList serves at most 50 media per page, and `perPage` is bound to the
-/// claimed id count — so the claim itself is what has to stay under the ceiling.
+/// AniList's page ceiling is 50; TVmaze is fetched per title. The claim size
+/// must stay under the AniList page so a mixed batch never overruns it.
 const _: () = assert!(REFRESH_BATCH <= 50);
 
 /// Longest the loop will sleep in one step.
@@ -58,7 +59,9 @@ pub async fn run_scheduler(
     mut wake: watch::Receiver<u64>,
     mut shutdown: watch::Receiver<bool>,
 ) {
+    let mut changes = library.subscribe_changes();
     loop {
+        changes.borrow_and_update();
         if *shutdown.borrow() {
             break;
         }
@@ -83,6 +86,7 @@ pub async fn run_scheduler(
             Ok(None) => {
                 tokio::select! {
                     _ = wake.changed() => {}
+                    _ = changes.changed() => {}
                     _ = shutdown.changed() => {}
                 }
                 continue;
@@ -93,6 +97,7 @@ pub async fn run_scheduler(
         tokio::select! {
             _ = tokio::time::sleep(sleep_for) => {}
             _ = wake.changed() => {}
+            _ = changes.changed() => {}
             _ = shutdown.changed() => {}
         }
     }

@@ -3,6 +3,7 @@
 #
 # Requires rsvg-convert and, on macOS, iconutil. Regenerates:
 #   assets/AppIcon.icns
+#   desktop/icon.png
 #   assets/icons/menubar-template.pdf
 #   assets/icons/hicolor/<size>/apps/animesh.png
 set -euo pipefail
@@ -23,7 +24,7 @@ need rsvg-convert
 
 rsvg-convert -f pdf -o "$dir/menubar-template.pdf" "$mark"
 
-# 36px PNG is the @2x menu-bar asset the app embeds; 18px is for eyeballing.
+# Companion raster preview at menu-bar @2x resolution; the app embeds the PDF.
 rsvg-convert -w 36 -h 36 -o "$dir/menubar-template.png" "$mark"
 
 hicolor="$dir/hicolor"
@@ -32,6 +33,9 @@ for size in 16 24 32 48 256 512; do
   mkdir -p "$dest"
   rsvg-convert -w "$size" -h "$size" -o "$dest/animesh.png" "$app"
 done
+
+# Tauri requires RGBA. The shared SVG's transparent margin supplies the alpha.
+cp "$hicolor/256x256/apps/animesh.png" "$root/desktop/icon.png"
 
 # macOS iconset → icns. Linux CI never runs this branch; the icns is committed.
 if command -v iconutil >/dev/null; then

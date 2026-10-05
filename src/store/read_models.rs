@@ -4,7 +4,7 @@ use rusqlite::Connection;
 
 use super::connection::StoreError;
 use crate::domain::ids::{
-    AniListId, BoundedText, EpisodeNumber, EventUuid, MediaId, ReleaseEventId, UnixTimestamp,
+    BoundedText, EpisodeNumber, EventUuid, MediaId, ReleaseEventId, UnixTimestamp,
 };
 use crate::domain::media::MAX_TITLE_LEN;
 use crate::domain::read_models::{Freshness, RefreshCounts, UpcomingRelease};
@@ -15,8 +15,8 @@ use crate::domain::read_models::{Freshness, RefreshCounts, UpcomingRelease};
 /// compares it against the Rust implementation, because a read model whose
 /// order depends on which layer produced it is not a read model.
 const UPCOMING_SQL: &str = "
-    SELECT re.release_event_id, re.event_uuid, re.media_id, sm.source_id,
-           m.display_title, re.sequence_number, re.scheduled_at, re.schedule_revision,
+    SELECT re.release_event_id, re.event_uuid, re.media_id, sm.source, sm.source_id,
+           m.display_title, re.sequence_number, re.season, re.scheduled_at, re.schedule_revision,
            rs.last_success_at, rs.refresh_after, rs.retry_after
     FROM release_events re
     JOIN follows f       ON f.media_id = re.media_id AND f.state = 'active'
@@ -26,12 +26,14 @@ const UPCOMING_SQL: &str = "
     WHERE re.state IN ('scheduled', 'elapsed')
       AND re.scheduled_at >= ?1 - ?3
       AND (re.state = 'scheduled' OR re.scheduled_at < ?1)
+      AND (?4 IS NULL OR m.kind = ?4)
+      AND (?6 = 0 OR re.scheduled_at < ?1)
     ORDER BY re.scheduled_at ASC,
              re.media_id ASC,
              (re.sequence_number IS NULL) ASC,
              re.sequence_number ASC,
              re.release_event_id ASC
-    LIMIT ?2
+    LIMIT ?2 OFFSET ?5
 ";
 
 fn ts(value: i64) -> Result<UnixTimestamp, StoreError> {
@@ -39,7 +41,7 @@ fn ts(value: i64) -> Result<UnixTimestamp, StoreError> {
 }
 
 /// Classifies how current the source data behind a row is.
-fn freshness(
+pub(crate) fn freshness(
     now: UnixTimestamp,
     refresh_after: Option<i64>,
     retry_after: Option<i64>,
@@ -71,23 +73,47 @@ pub fn upcoming(
     limit: u32,
     lookback_secs: i64,
 ) -> Result<Vec<UpcomingRelease>, StoreError> {
+    upcoming_page(conn, now, limit, lookback_secs, None, 0, false)
+}
+
+pub fn upcoming_page(
+    conn: &Connection,
+    now: UnixTimestamp,
+    limit: u32,
+    lookback_secs: i64,
+    kind: Option<crate::domain::media::MediaKind>,
+    offset: u32,
+    dropped: bool,
+) -> Result<Vec<UpcomingRelease>, StoreError> {
     let mut stmt = conn.prepare(UPCOMING_SQL)?;
     let rows = stmt
-        .query_map(rusqlite::params![now.get(), limit, lookback_secs], |row| {
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, i64>(2)?,
-                row.get::<_, i64>(3)?,
-                row.get::<_, String>(4)?,
-                row.get::<_, Option<i64>>(5)?,
-                row.get::<_, i64>(6)?,
-                row.get::<_, i64>(7)?,
-                row.get::<_, Option<i64>>(8)?,
-                row.get::<_, Option<i64>>(9)?,
-                row.get::<_, Option<i64>>(10)?,
-            ))
-        })?
+        .query_map(
+            rusqlite::params![
+                now.get(),
+                limit,
+                lookback_secs,
+                kind.map(crate::domain::media::MediaKind::as_str),
+                offset,
+                dropped
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, Option<i64>>(6)?,
+                    row.get::<_, Option<i64>>(7)?,
+                    row.get::<_, i64>(8)?,
+                    row.get::<_, i64>(9)?,
+                    row.get::<_, Option<i64>>(10)?,
+                    row.get::<_, Option<i64>>(11)?,
+                    row.get::<_, Option<i64>>(12)?,
+                ))
+            },
+        )?
         .collect::<Result<Vec<_>, _>>()?;
 
     rows.into_iter()
@@ -96,9 +122,11 @@ pub fn upcoming(
                 event_id,
                 uuid,
                 media_id,
-                anilist_id,
+                source,
+                source_id,
                 title,
                 sequence,
+                season,
                 scheduled_at,
                 revision,
                 last_success,
@@ -106,6 +134,10 @@ pub fn upcoming(
                 retry_after,
             ) = row;
             let bad = |e: String| StoreError::Integrity(e);
+            let source =
+                crate::domain::ids::Source::parse(&source).map_err(|e| bad(e.to_string()))?;
+            let source_id = crate::domain::ids::SourceNumericId::new(source_id)
+                .map_err(|e| bad(e.to_string()))?;
 
             Ok(UpcomingRelease {
                 release_event_id: ReleaseEventId::new(event_id).map_err(|e| bad(e.to_string()))?,
@@ -113,13 +145,17 @@ pub fn upcoming(
                     uuid.parse().map_err(|e| bad(format!("event uuid: {e}")))?,
                 ),
                 media_id: MediaId::new(media_id).map_err(|e| bad(e.to_string()))?,
-                anilist_id: AniListId::new(anilist_id).map_err(|e| bad(e.to_string()))?,
+                source,
+                source_id,
                 display_title: BoundedText::truncating(MAX_TITLE_LEN, &title)
                     .ok_or_else(|| bad("empty title".into()))?,
                 episode: sequence
                     .map(EpisodeNumber::new)
                     .transpose()
                     .map_err(|e| bad(e.to_string()))?,
+                season: season
+                    .and_then(|s| i32::try_from(s).ok())
+                    .filter(|s| *s >= 1),
                 scheduled_at: ts(scheduled_at)?,
                 schedule_revision: revision,
                 last_success_at: last_success.map(ts).transpose()?,
@@ -176,10 +212,51 @@ pub fn last_success(conn: &Connection) -> Result<Option<UnixTimestamp>, StoreErr
     .transpose()
 }
 
+/// One local health projection; callers may compose it inside a read transaction.
+pub fn health(
+    conn: &Connection,
+    now: UnixTimestamp,
+    instance_id: String,
+    started_at: UnixTimestamp,
+    schema_version: i64,
+    protocol_version: u32,
+) -> Result<crate::domain::read_models::HealthSnapshot, StoreError> {
+    use super::{graph, releases};
+    use crate::domain::notification::NATIVE_CAPACITY;
+    use crate::domain::read_models::{BootstrapState, HealthSnapshot};
+    let earliest = upcoming(conn, now, 1, 0)?.into_iter().next();
+    let surface = releases::surface_state(conn)?;
+    let counts = releases::counts(conn, NATIVE_CAPACITY)?;
+    let blocked_until = graph::any_source_blocked_until(conn)?.filter(|until| *until > now);
+    Ok(HealthSnapshot {
+        process_version: crate::PROCESS_VERSION.to_owned(),
+        schema_version,
+        protocol_version,
+        app_instance_id: instance_id,
+        started_at,
+        bootstrap: BootstrapState::Ready,
+        database_ready: true,
+        active_follows: graph::active_follow_count(conn)?,
+        earliest_upcoming: earliest,
+        last_success_at: last_success(conn)?,
+        refresh: refresh_counts(conn, now)?,
+        source_blocked_until: blocked_until,
+        notifications: counts,
+        last_reconciled_at: surface.last_reconciled_at,
+        authorization: surface.authorization,
+        authorization_observed_at: surface.authorization_observed_at,
+        degraded: crate::domain::read_models::degraded_reasons(
+            surface.authorization,
+            &counts,
+            blocked_until,
+        ),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::ids::{ObservationId, SourceKey, SourceMediaId};
+    use crate::domain::ids::{AniListId, ObservationId, SourceKey, SourceMediaId};
     use crate::domain::media::{
         MediaObservation, MediaStatus, NextAiring, TitleSet, PARSER_VERSION,
     };
@@ -224,7 +301,7 @@ mod tests {
             let tx = self.conn.transaction().expect("begin");
             let row = graph::create_media(
                 &tx,
-                AniListId::new(anilist_id).expect("id"),
+                SourceKey::anilist(AniListId::new(anilist_id).expect("id")),
                 &title(name),
                 at(100),
             )
@@ -233,6 +310,7 @@ mod tests {
                 &tx,
                 &FetchRecord {
                     attempt_uuid: &format!("attempt-{anilist_id}"),
+                    source: crate::domain::ids::Source::AniList,
                     request_kind: "detail",
                     request_fingerprint: "x",
                     requested_at: at(100),
@@ -259,6 +337,7 @@ mod tests {
                 next_airing: Some(NextAiring {
                     episode: ep(episode),
                     airing_at: at(scheduled_at),
+                    season: None,
                 }),
                 parser_version: PARSER_VERSION,
             };
@@ -274,6 +353,7 @@ mod tests {
                 obs,
                 ReleaseTransition::Insert {
                     episode: ep(episode),
+                    season: None,
                     scheduled_at: at(scheduled_at),
                 },
                 at(101),
@@ -293,7 +373,7 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].display_title.as_str(), "One Piece");
         assert_eq!(rows[0].episode, Some(ep(5)));
-        assert_eq!(rows[0].anilist_id.get(), 21);
+        assert_eq!(rows[0].source_id.get(), 21);
     }
 
     #[test]

@@ -18,7 +18,7 @@ use crate::domain::release::{
 
 const EVENT_COLUMNS: &str = "release_event_id, event_uuid, media_id, source_media_id,
      source_event_key, sequence_number, scheduled_at, state, schedule_revision,
-     first_observed_at, last_observed_at, last_observation_id";
+     first_observed_at, last_observed_at, last_observation_id, season";
 
 fn ts(value: i64) -> Result<UnixTimestamp, StoreError> {
     UnixTimestamp::new(value).map_err(|e| StoreError::Integrity(e.to_string()))
@@ -38,6 +38,7 @@ type EventRow = (
     i64,
     i64,
     i64,
+    Option<i64>,
 );
 
 fn row_to_event(row: &Row<'_>) -> rusqlite::Result<EventRow> {
@@ -54,6 +55,7 @@ fn row_to_event(row: &Row<'_>) -> rusqlite::Result<EventRow> {
         row.get(9)?,
         row.get(10)?,
         row.get(11)?,
+        row.get(12)?,
     ))
 }
 
@@ -71,6 +73,7 @@ fn build_event(raw: EventRow) -> Result<ReleaseEvent, StoreError> {
         first_seen,
         last_seen,
         observation,
+        season,
     ) = raw;
 
     let bad = |e: String| StoreError::Integrity(e);
@@ -85,6 +88,9 @@ fn build_event(raw: EventRow) -> Result<ReleaseEvent, StoreError> {
             .map(EpisodeNumber::new)
             .transpose()
             .map_err(|e| bad(e.to_string()))?,
+        season: season
+            .and_then(|s| i32::try_from(s).ok())
+            .filter(|s| *s >= 1),
         scheduled_at: ts(scheduled_at)?,
         state: ReleaseEventState::parse(&state).map_err(|e| bad(e.to_string()))?,
         schedule_revision: revision,
@@ -143,21 +149,32 @@ pub fn event_by_id(
     .transpose()
 }
 
-/// The highest episode number ever recorded, in any state.
+/// The highest (season, episode) ever recorded, in any state.
+///
+/// AniList rows have `season` NULL, so this is episode-only there. TVmaze
+/// episodes restart each season; max(episode) alone would call S2E1 a rewind.
 pub fn latest_sequence(
     conn: &Connection,
     source_media_id: SourceMediaId,
-) -> Result<Option<EpisodeNumber>, StoreError> {
+) -> Result<Option<(Option<i32>, EpisodeNumber)>, StoreError> {
     conn.query_row(
-        "SELECT max(sequence_number) FROM release_events WHERE source_media_id = ?1",
+        "SELECT season, sequence_number FROM release_events
+         WHERE source_media_id = ?1 AND sequence_number IS NOT NULL
+         ORDER BY COALESCE(season, 0) DESC, sequence_number DESC
+         LIMIT 1",
         [source_media_id.get()],
-        |row| row.get::<_, Option<i64>>(0),
+        |row| Ok((row.get::<_, Option<i64>>(0)?, row.get::<_, i64>(1)?)),
     )
     .optional()?
-    .flatten()
-    .map(EpisodeNumber::new)
+    .map(|(season, episode)| {
+        let episode =
+            EpisodeNumber::new(episode).map_err(|e| StoreError::Integrity(e.to_string()))?;
+        let season = season
+            .and_then(|s| i32::try_from(s).ok())
+            .filter(|s| *s >= 1);
+        Ok((season, episode))
+    })
     .transpose()
-    .map_err(|e| StoreError::Integrity(e.to_string()))
 }
 
 fn set_state(
@@ -186,22 +203,25 @@ fn set_state(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn insert_event(
     tx: &Transaction<'_>,
     source_media_id: SourceMediaId,
     media_id: MediaId,
     episode: EpisodeNumber,
+    season: Option<i32>,
     scheduled_at: UnixTimestamp,
     observation_id: ObservationId,
     now: UnixTimestamp,
 ) -> Result<ReleaseEventId, StoreError> {
-    let key = source_event_key(episode).map_err(|e| StoreError::Integrity(e.to_string()))?;
+    let key =
+        source_event_key(episode, season).map_err(|e| StoreError::Integrity(e.to_string()))?;
     tx.execute(
         "INSERT INTO release_events
             (event_uuid, media_id, source_media_id, source_event_key, sequence_number,
              scheduled_at, state, schedule_revision, first_observed_at, last_observed_at,
-             last_observation_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'scheduled', 1, ?7, ?7, ?8)",
+             last_observation_id, season)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'scheduled', 1, ?7, ?7, ?8, ?9)",
         rusqlite::params![
             EventUuid::generate().to_string(),
             media_id.get(),
@@ -211,6 +231,7 @@ fn insert_event(
             scheduled_at.get(),
             now.get(),
             observation_id.get(),
+            season,
         ],
     )?;
     ReleaseEventId::new(tx.last_insert_rowid()).map_err(|e| StoreError::Integrity(e.to_string()))
@@ -243,12 +264,14 @@ pub fn apply_transition(
 
         ReleaseTransition::Insert {
             episode,
+            season,
             scheduled_at,
         } => Ok(Some(insert_event(
             tx,
             source_media_id,
             media_id,
             episode,
+            season,
             scheduled_at,
             observation_id,
             now,
@@ -282,6 +305,7 @@ pub fn apply_transition(
             retire,
             retire_state,
             episode,
+            season,
             scheduled_at,
         } => {
             // Retire first: the partial unique index permits only one scheduled
@@ -292,6 +316,7 @@ pub fn apply_transition(
                 source_media_id,
                 media_id,
                 episode,
+                season,
                 scheduled_at,
                 observation_id,
                 now,
@@ -442,21 +467,23 @@ fn set_job_state(
     Ok(())
 }
 
-/// Marks a job as present in the OS at a given revision.
+/// Marks a job as present in the OS at a given revision, returning whether it changed.
 pub fn mark_registered(
     tx: &Transaction<'_>,
     key: &NotificationKey,
     revision: i64,
     now: UnixTimestamp,
-) -> Result<(), StoreError> {
-    tx.execute(
+) -> Result<bool, StoreError> {
+    let changed = tx.execute(
         "UPDATE notification_jobs
          SET state = 'registered', registered_revision = ?1, registered_at = ?2,
              retry_after = NULL, last_error_code = NULL, updated_at = ?2
-         WHERE notification_key = ?3 AND desired_revision = ?1",
+         WHERE notification_key = ?3 AND desired_revision = ?1
+           AND (state <> 'registered' OR registered_revision IS NOT ?1
+                OR retry_after IS NOT NULL OR last_error_code IS NOT NULL)",
         rusqlite::params![revision, now.get(), key.as_str()],
     )?;
-    Ok(())
+    Ok(changed != 0)
 }
 
 pub fn mark_delivered(
@@ -745,12 +772,18 @@ mod tests {
 
         let tx = conn.transaction().expect("begin");
         let title = BoundedText::new("t", MAX_TITLE_LEN, "One Piece").expect("title");
-        let row = graph::create_media(&tx, AniListId::new(21).expect("id"), &title, at(100))
-            .expect("create media");
+        let row = graph::create_media(
+            &tx,
+            SourceKey::anilist(AniListId::new(21).expect("id")),
+            &title,
+            at(100),
+        )
+        .expect("create media");
         let fetch = graph::insert_fetch(
             &tx,
             &FetchRecord {
                 attempt_uuid: "a",
+                source: crate::domain::ids::Source::AniList,
                 request_kind: "detail",
                 request_fingerprint: "id=21",
                 requested_at: at(100),
@@ -777,6 +810,7 @@ mod tests {
             next_airing: Some(NextAiring {
                 episode: ep(5),
                 airing_at: at(5_000),
+                season: None,
             }),
             parser_version: PARSER_VERSION,
         };
@@ -817,6 +851,7 @@ mod tests {
             &mut f,
             ReleaseTransition::Insert {
                 episode: ep(5),
+                season: None,
                 scheduled_at: at(5_000),
             },
             101,
@@ -828,6 +863,30 @@ mod tests {
         assert_eq!(event.schedule_revision, 1);
         assert_eq!(event.sequence_number, Some(ep(5)));
         assert_eq!(event.source_event_key.as_str(), "ep:5");
+        assert_eq!(event.season, None);
+    }
+
+    #[test]
+    fn a_seasonal_insert_stores_the_season_in_the_event_key() {
+        let mut f = fixture();
+        let id = apply(
+            &mut f,
+            ReleaseTransition::Insert {
+                episode: ep(1),
+                season: Some(2),
+                scheduled_at: at(5_000),
+            },
+            101,
+        )
+        .expect("event id");
+
+        let event = event_by_id(&f.conn, id).expect("read").expect("present");
+        assert_eq!(event.source_event_key.as_str(), "s2e1");
+        assert_eq!(event.season, Some(2));
+        assert_eq!(
+            latest_sequence(&f.conn, f.source_media_id).expect("read"),
+            Some((Some(2), ep(1)))
+        );
     }
 
     #[test]
@@ -838,6 +897,7 @@ mod tests {
             &mut f,
             ReleaseTransition::Insert {
                 episode: ep(5),
+                season: None,
                 scheduled_at: at(5_000),
             },
             101,
@@ -858,6 +918,7 @@ mod tests {
             &mut f,
             ReleaseTransition::Insert {
                 episode: ep(5),
+                season: None,
                 scheduled_at: at(5_000),
             },
             101,
@@ -887,6 +948,7 @@ mod tests {
             &mut f,
             ReleaseTransition::Insert {
                 episode: ep(5),
+                season: None,
                 scheduled_at: at(5_000),
             },
             101,
@@ -899,6 +961,7 @@ mod tests {
                 retire: first,
                 retire_state: ReleaseEventState::Elapsed,
                 episode: ep(6),
+                season: None,
                 scheduled_at: at(12_000),
             },
             6_000,
@@ -928,6 +991,7 @@ mod tests {
             &mut f,
             ReleaseTransition::Insert {
                 episode: ep(5),
+                season: None,
                 scheduled_at: at(5_000),
             },
             101,
@@ -952,6 +1016,7 @@ mod tests {
             &mut f,
             ReleaseTransition::Insert {
                 episode: ep(5),
+                season: None,
                 scheduled_at: at(5_000),
             },
             101,
@@ -999,6 +1064,7 @@ mod tests {
             &mut f,
             ReleaseTransition::Insert {
                 episode: ep(5),
+                season: None,
                 scheduled_at: at(5_000),
             },
             101,
@@ -1010,6 +1076,7 @@ mod tests {
                 retire: first,
                 retire_state: ReleaseEventState::Elapsed,
                 episode: ep(9),
+                season: None,
                 scheduled_at: at(12_000),
             },
             6_000,
@@ -1017,7 +1084,7 @@ mod tests {
 
         assert_eq!(
             latest_sequence(&f.conn, f.source_media_id).expect("read"),
-            Some(ep(9))
+            Some((None, ep(9)))
         );
     }
 
@@ -1028,6 +1095,7 @@ mod tests {
             &mut f,
             ReleaseTransition::Insert {
                 episode: ep(5),
+                season: None,
                 scheduled_at: at(5_000),
             },
             101,
@@ -1055,10 +1123,12 @@ mod tests {
                 retire: current.id,
                 retire_state: ReleaseEventState::Elapsed,
                 episode: ep(episode),
+                season: None,
                 scheduled_at: at(scheduled_at),
             },
             None => ReleaseTransition::Insert {
                 episode: ep(episode),
+                season: None,
                 scheduled_at: at(scheduled_at),
             },
         };
@@ -1073,7 +1143,8 @@ mod tests {
             at(scheduled_at),
             "One Piece",
             ep(episode),
-            AniListId::new(21).expect("id"),
+            None,
+            crate::domain::ids::SourceKey::anilist(AniListId::new(21).expect("id")),
         );
 
         let tx = f.conn.transaction().expect("begin");

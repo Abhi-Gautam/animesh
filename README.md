@@ -3,7 +3,12 @@
 A local-first release radar for macOS and Linux. Follow the shows you care
 about, see what is next, and get notified when an episode drops. Everything
 lives in a SQLite database on your machine — no account, no login, nothing
-uploaded. Anime first, with a core that can later carry TV, film and music.
+uploaded. Anime and TV now; the core is built to carry film and music later.
+
+The desktop Command Center has Home, Discover, Search, Schedule, Library,
+and Health. Search and follow titles without IDs, inspect their next release,
+and keep tracking them after closing the window. Each page keeps its controls
+and summary visible while the middle list scrolls.
 
 I built it because keeping up meant opening Crunchyroll and a countdown site
 and doing it again an hour later:
@@ -28,19 +33,42 @@ animesh service start
 
 The tap is this repository, so the formula always matches the code.
 
-From crates.io:
+On macOS, open Animesh and choose **Open Animesh** from its menu bar.
+Homebrew builds the app locally and is the recommended macOS install.
+
+On Ubuntu 24.04 or newer, download the `.deb` matching your architecture from
+the [latest release](https://github.com/Abhi-Gautam/animesh/releases/latest):
+
+```bash
+sudo apt install ./animesh_0.7.0_amd64.deb  # x86_64; use arm64 on ARM
+```
+
+Open **Animesh** from your applications menu. It starts the background service
+on first launch. The package includes the desktop app, CLI, daemon, and icons;
+your package manager installs the required WebKitGTK libraries. Linux Homebrew
+also builds the full desktop app.
+
+For a CLI-only installation from crates.io:
 
 ```bash
 cargo install animesh --locked
 animesh service start
 ```
 
-On Linux that is the full product. On macOS notifications need an app bundle,
+This installs the CLI and daemon. The desktop app is distributed through
+Homebrew and the release downloads. macOS notifications need an app bundle,
 so prefer Homebrew there.
 
-Prebuilt tarballs for macOS (Apple Silicon and Intel) and Linux x86_64 are
-attached to each [release](https://github.com/Abhi-Gautam/animesh/releases),
-each with an `INSTALL.txt`.
+Prebuilt macOS disk images and tarballs (Apple Silicon and Intel), plus Linux
+packages and tarballs (x86_64 and ARM64), are attached to each
+[release](https://github.com/Abhi-Gautam/animesh/releases). Downloads include
+SHA-256 checksums, and tarballs contain an `INSTALL.txt`. Linux tarballs include
+`install.sh` for a user installation. They require WebKitGTK 4.1 and Ubuntu
+24.04 or a compatible newer system.
+
+The macOS downloads are ad-hoc signed and are not notarized. macOS may require
+allowing the app in Privacy & Security after download. Homebrew avoids this
+download approval by building from source.
 
 `service start` registers the background process with launchd or systemd and
 keeps it running across restarts. On macOS it asks for notification permission
@@ -50,7 +78,10 @@ the first time; declining is fine, since nothing in the CLI depends on it.
 
 ```bash
 animesh search "one piece"   # find a title on AniList
-animesh follow 21            # follow it, by AniList id
+animesh follow anilist:21    # follow it
+animesh search --tv          # currently airing English-language US TV
+animesh follow tvmaze:82     # follow a TVmaze show (or: follow --tv 82)
+animesh drop media:1         # stop following, by the token list/next print
 animesh next                 # upcoming episodes; local only, never hits the network
 animesh list                 # everything you follow
 animesh drop 1               # stop following, by media id
@@ -87,6 +118,25 @@ watch before recommending anything, against your library, on your machine.
 
 ## Development
 
+The desktop Command Center uses Tauri 2 with plain HTML, CSS, and TypeScript.
+It connects to the existing daemon; the daemon owns the library, source calls,
+refresh policy, and notifications. Home, Discover, Search, Schedule, Library,
+and Health share a fixed header and footer with scrolling content between them.
+On macOS, **Open Animesh** in the menu bar opens the bundled desktop app.
+
+Desktop builds need Node.js and the TypeScript dependency:
+
+```bash
+npm ci --prefix desktop/ui
+npm run build --prefix desktop/ui
+cargo build --manifest-path desktop/Cargo.toml --locked
+```
+
+Linux desktop builds also need the [Tauri system dependencies](https://v2.tauri.app/start/prerequisites/#linux)
+and `desktop-file-utils` to validate the launcher.
+The macOS installer below builds and signs the desktop app inside the main
+bundle, so the menu bar, CLI, and desktop are installed together.
+
 ```bash
 cargo build
 cargo test
@@ -102,17 +152,30 @@ cargo xtask install
 animesh service start
 ```
 
-On Linux the two binaries are all there is:
+On Linux, build and verify all three executables and the desktop assets:
 
 ```bash
-cargo build --release
-./target/release/animesh service start
+npm ci --prefix desktop/ui
+cargo xtask bundle --release
+cargo xtask verify --path target/bundle/animesh
+python3 scripts/package-release.py x86_64-unknown-linux-gnu
 ```
+
+Packaging uses Python 3.11 or newer and Debian's `dpkg-dev`. Use
+`aarch64-unknown-linux-gnu` on ARM64. The release workflow builds natively on
+each supported architecture and exercises the installed Linux desktop through
+WebKit WebDriver at both supported window sizes before publishing.
 
 The database lives at `~/Library/Application Support/Animesh/library.db` on
 macOS and `~/.local/share/animesh/library.db` on Linux. Build with
 `--features test-harness` to relocate it; set both `ANIMESH_DATA_ROOT` and
 `ANIMESH_LOG_ROOT`, or neither takes effect.
+
+## Data sources
+
+Anime schedules come from [AniList](https://anilist.co). TV schedules come from
+[TVmaze](https://www.tvmaze.com), used under
+[CC BY-SA](https://creativecommons.org/licenses/by-sa/4.0/).
 
 ## License
 

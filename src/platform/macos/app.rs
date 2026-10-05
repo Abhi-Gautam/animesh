@@ -36,6 +36,7 @@ pub async fn run_surface(
     mut commands: UnboundedReceiver<MenuCommand>,
     shutdown: watch::Sender<bool>,
 ) {
+    let mut changes = library.subscribe_changes();
     let centre = match NotificationCenter::new() {
         Ok(centre) => Some(centre),
         Err(reason) => {
@@ -71,6 +72,7 @@ pub async fn run_surface(
         let command = tokio::select! {
             command = commands.recv() => command,
             _ = tokio::time::sleep(SAFETY_TICK) => Some(MenuCommand::Opened),
+            _ = changes.changed() => Some(MenuCommand::Opened),
         };
 
         match command {
@@ -179,9 +181,10 @@ fn summary(health: &HealthSnapshot) -> String {
 fn row(release: &UpcomingRelease, now: UnixTimestamp) -> MenuRow {
     use crate::cli::render::{when, Whenish};
 
-    let episode = release
-        .episode
-        .map_or_else(|| "next ep".to_owned(), |e| format!("Ep {e}"));
+    let episode = release.episode.map_or_else(
+        || "next ep".to_owned(),
+        |e| crate::domain::read_models::episode_label(e, release.season),
+    );
 
     let timing = match when(now, release.scheduled_at) {
         Whenish::Aired(ago) => format!("dropped {ago} ago"),

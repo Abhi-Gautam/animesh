@@ -11,3 +11,5 @@ pub mod notification;
 pub mod read_models;
 pub mod release;
 pub mod time;
+
+pub mod command_center;

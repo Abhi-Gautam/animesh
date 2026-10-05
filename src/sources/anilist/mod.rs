@@ -7,7 +7,7 @@ pub mod queries;
 
 use std::collections::BTreeMap;
 
-use client::FetchOutcome;
+use crate::sources::fetch::FetchOutcome;
 use parser::{BatchIntegrityError, DetailResult, ItemError, ItemResult};
 
 use crate::domain::ids::AniListId;

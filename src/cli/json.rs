@@ -16,6 +16,7 @@
 use serde_json::{Map, Value};
 
 use crate::error::AppError;
+use crate::ipc::protocol::Response;
 
 use super::Outcome;
 
@@ -30,6 +31,12 @@ pub fn success(outcome: &Outcome) -> String {
             // mode whose whole purpose is being parseable.
             _ => tagged("unknown", Value::Null),
         },
+        Outcome::Schedule { upcoming, .. } => {
+            match serde_json::to_value(Response::Upcoming(upcoming.clone())) {
+                Ok(Value::Object(map)) => map,
+                _ => tagged("upcoming", Value::Null),
+            }
+        }
         Outcome::Local { kind, message } => tagged(
             kind,
             Value::Object(Map::from_iter([(
@@ -95,6 +102,7 @@ mod tests {
         for response in [
             Response::ListFollows(Vec::new()),
             Response::SearchAnime(Vec::new()),
+            Response::SearchTv(Vec::new()),
             Response::Upcoming(Vec::new()),
         ] {
             let expected = response.name().to_owned();

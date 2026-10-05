@@ -3,7 +3,8 @@
 use serde::{Deserialize, Serialize};
 
 use super::ids::{
-    AniListId, EpisodeNumber, EventUuid, IdError, InstallationUuid, ReleaseEventId, UnixTimestamp,
+    AniListId, EpisodeNumber, EventUuid, IdError, InstallationUuid, ReleaseEventId, Source,
+    SourceKey, UnixTimestamp,
 };
 
 /// How late a notification may still be submitted after its airtime.
@@ -169,13 +170,19 @@ impl OsIdentifier {
     }
 }
 
+/// A page on the source for this title. Built from a validated [`SourceKey`],
+/// never from a source-provided URL, so a hostile payload cannot become a
+/// clickable link.
+pub fn source_url(key: SourceKey) -> String {
+    match key.source {
+        Source::AniList => format!("https://anilist.co/anime/{}", key.id),
+        Source::TvMaze => format!("https://www.tvmaze.com/shows/{}", key.id),
+    }
+}
+
 /// Builds the canonical AniList URL for a media item.
-///
-/// The only URL the app will ever open. Constructing it from a validated ID
-/// rather than storing a source-provided string means there is no path by which
-/// a hostile payload becomes a clickable link.
 pub fn anilist_url(id: AniListId) -> String {
-    format!("https://anilist.co/anime/{id}")
+    source_url(SourceKey::anilist(id))
 }
 
 /// Every field that affects what macOS would actually present.
@@ -202,7 +209,8 @@ impl NativeRequest {
         airtime: UnixTimestamp,
         title: &str,
         episode: EpisodeNumber,
-        anilist_id: AniListId,
+        season: Option<i32>,
+        source_key: SourceKey,
     ) -> Self {
         Self {
             os_identifier,
@@ -210,9 +218,12 @@ impl NativeRequest {
             fire_at: airtime,
             original_airtime: airtime,
             title: title.to_owned(),
-            body: format!("Episode {episode} is now airing."),
+            body: format!(
+                "{} is now airing.",
+                crate::domain::read_models::episode_label(episode, season)
+            ),
             sound: true,
-            url: anilist_url(anilist_id),
+            url: source_url(source_key),
         }
     }
 
@@ -312,6 +323,7 @@ impl JobOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::ids::TvMazeId;
 
     fn at(seconds: i64) -> UnixTimestamp {
         UnixTimestamp::new(seconds).expect("valid timestamp")
@@ -423,6 +435,12 @@ mod tests {
         assert_eq!(anilist_url(id), "https://anilist.co/anime/21");
     }
 
+    #[test]
+    fn tvmaze_url_is_built_from_the_source_key_not_a_payload_string() {
+        let url = source_url(SourceKey::tvmaze(TvMazeId::new(82).expect("id")));
+        assert_eq!(url, "https://www.tvmaze.com/shows/82");
+    }
+
     fn request(title: &str, airtime: i64) -> NativeRequest {
         NativeRequest::build(
             OsIdentifier::from_stored("dev.animesh.release.a.b"),
@@ -430,7 +448,8 @@ mod tests {
             at(airtime),
             title,
             EpisodeNumber::new(12).expect("valid episode"),
-            AniListId::new(21).expect("valid id"),
+            None,
+            SourceKey::anilist(AniListId::new(21).expect("valid id")),
         )
     }
 
@@ -485,6 +504,16 @@ mod tests {
     #[test]
     fn body_names_the_episode() {
         assert_eq!(request("One Piece", 1).body, "Episode 12 is now airing.");
+        let seasonal = NativeRequest::build(
+            OsIdentifier::from_stored("dev.animesh.release.a.b"),
+            DeliveryMode::Scheduled,
+            at(1_000),
+            "It's Always Sunny in Philadelphia",
+            EpisodeNumber::new(4).expect("valid episode"),
+            Some(18),
+            SourceKey::tvmaze(TvMazeId::new(347).expect("id")),
+        );
+        assert_eq!(seasonal.body, "S18E4 is now airing.");
     }
 
     #[test]

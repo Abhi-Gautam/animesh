@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Animesh CLI
+GenericName=Release radar
+Comment=Upcoming anime and TV releases in the terminal
+Icon=animesh
+Exec=animesh next
+Terminal=true
+Categories=Utility;AudioVideo;
+Keywords=anime;release;schedule;airing;
+StartupNotify=false

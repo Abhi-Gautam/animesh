@@ -1,7 +1,17 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
-  <!-- App icon: graphite field, light rings, amber pip. Square; macOS applies
-       the squircle mask. Same mark as mark.svg, padded for Apple's icon grid. -->
-  <rect width="1024" height="1024" fill="#1C1C1E"/>
+  <!-- Rounded silhouette and transparent margin are part of the asset;
+       macOS does not mask an ICNS icon. -->
+  <defs>
+    <linearGradient id="graphite" x1="0" y1="0" x2="0" y2="1">
+      <stop stop-color="#343436"/>
+      <stop offset="1" stop-color="#1C1C1E"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="18" stdDeviation="16" flood-opacity=".24"/>
+    </filter>
+  </defs>
+  <path d="M340 100H684C852 100 924 172 924 340V684C924 852 852 924 684 924H340C172 924 100 852 100 684V340C100 172 172 100 340 100Z"
+        fill="url(#graphite)" stroke="#FFF" stroke-opacity=".12" stroke-width="2" filter="url(#shadow)"/>
   <g fill="none" stroke="#F5F5F7" stroke-linecap="round">
     <circle cx="512" cy="512" r="300" stroke-width="52"/>
     <circle cx="512" cy="512" r="148" stroke-width="44"/>

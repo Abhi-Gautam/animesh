@@ -24,11 +24,23 @@ impl std::fmt::Debug for Migration {
     }
 }
 
-pub const MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    name: "V0001__daily_driver",
-    sql: include_str!("../../migrations/V0001__daily_driver.sql"),
-}];
+pub const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        name: "V0001__daily_driver",
+        sql: include_str!("../../migrations/V0001__daily_driver.sql"),
+    },
+    Migration {
+        version: 2,
+        name: "V0002__multi_source",
+        sql: include_str!("../../migrations/V0002__multi_source.sql"),
+    },
+    Migration {
+        version: 3,
+        name: "V0003__command_center",
+        sql: include_str!("../../migrations/V0003__command_center.sql"),
+    },
+];
 
 /// The newest schema version this build can operate.
 pub fn supported_version() -> i64 {
@@ -125,9 +137,18 @@ pub fn apply(conn: &mut Connection, now: i64) -> Result<usize, StoreError> {
         if already.iter().any(|m| m.version == migration.version) {
             continue;
         }
+        // V0002 rebuilds CHECK-constrained tables. PRAGMA foreign_keys is a
+        // no-op inside a transaction, so it has to flip outside.
+        let rebuilds = migration.version == 2;
+        if rebuilds {
+            conn.pragma_update(None, "foreign_keys", "OFF")?;
+        }
         let tx = conn.transaction()?;
         apply_one(&tx, migration, now)?;
         tx.commit()?;
+        if rebuilds {
+            conn.pragma_update(None, "foreign_keys", "ON")?;
+        }
         ran += 1;
     }
     Ok(ran)
@@ -165,8 +186,8 @@ mod tests {
     #[test]
     fn apply_creates_the_schema_and_records_it() {
         let mut conn = db();
-        assert_eq!(apply(&mut conn, 100).expect("apply"), 1);
-        assert_eq!(current_version(&conn).expect("version"), 1);
+        assert_eq!(apply(&mut conn, 100).expect("apply"), 3);
+        assert_eq!(current_version(&conn).expect("version"), 3);
 
         let count: i64 = conn
             .query_row(
@@ -181,9 +202,9 @@ mod tests {
     #[test]
     fn apply_is_idempotent() {
         let mut conn = db();
-        assert_eq!(apply(&mut conn, 100).expect("first"), 1);
+        assert_eq!(apply(&mut conn, 100).expect("first"), 3);
         assert_eq!(apply(&mut conn, 200).expect("second"), 0);
-        assert_eq!(current_version(&conn).expect("version"), 1);
+        assert_eq!(current_version(&conn).expect("version"), 3);
     }
 
     #[test]
@@ -202,7 +223,7 @@ mod tests {
             error,
             StoreError::SchemaTooNew {
                 found: 99,
-                supported: 1
+                supported: 3
             }
         ));
 
