@@ -47,6 +47,9 @@ jobs:
       - name: Frontend
         run: npm ci --prefix desktop/ui && npm run build --prefix desktop/ui
 
+      - name: Signing gates
+        run: python3 scripts/test-signing.py
+
       - name: Format
         run: cargo fmt --all --check
 

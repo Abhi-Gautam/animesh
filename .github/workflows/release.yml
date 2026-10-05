@@ -89,7 +89,20 @@ jobs:
       - name: Test
         run: cargo test --workspace --locked
 
+      - name: Prepare Developer ID signing
+        if: runner.os == 'macOS' && vars.MACOS_SIGNING_ENABLED == 'true'
+        run: python3 scripts/sign-release.py prepare
+        env:
+          ANIMESH_CODESIGN_IDENTITY: ${{ vars.APPLE_SIGNING_IDENTITY }}
+          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_NOTARY_KEY_P8: ${{ secrets.APPLE_NOTARY_KEY_P8 }}
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+
       - name: Build and verify the complete distribution
+        env:
+          ANIMESH_CODESIGN_IDENTITY: ${{ runner.os == 'macOS' && vars.MACOS_SIGNING_ENABLED == 'true' && vars.APPLE_SIGNING_IDENTITY || '-' }}
         run: |
           cargo xtask bundle --release
           if [ "$RUNNER_OS" = "macOS" ]; then
@@ -99,10 +112,30 @@ jobs:
           fi
           cargo test --manifest-path desktop/Cargo.toml --release --locked
 
+      - name: Notarize and staple the app
+        if: runner.os == 'macOS' && vars.MACOS_SIGNING_ENABLED == 'true'
+        run: python3 scripts/sign-release.py app
+        env:
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+
       - name: Package native installers and tarballs
         run: python3 scripts/package-release.py "$TARGET"
         env:
           TARGET: ${{ matrix.target }}
+          ANIMESH_NOTARIZED: ${{ runner.os == 'macOS' && vars.MACOS_SIGNING_ENABLED == 'true' && 'true' || 'false' }}
+
+      - name: Notarize and staple the disk image
+        if: runner.os == 'macOS' && vars.MACOS_SIGNING_ENABLED == 'true'
+        run: python3 scripts/sign-release.py packages
+        env:
+          ANIMESH_CODESIGN_IDENTITY: ${{ vars.APPLE_SIGNING_IDENTITY }}
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+
+      - name: Remove Apple signing credentials
+        if: always() && runner.os == 'macOS' && vars.MACOS_SIGNING_ENABLED == 'true'
+        run: python3 scripts/sign-release.py cleanup
 
       - name: Install and exercise the Linux desktop
         if: runner.os == 'Linux'

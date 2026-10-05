@@ -2,6 +2,7 @@
 """Package the already verified native build; do not compile or publish it."""
 import argparse
 import hashlib
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -43,6 +44,9 @@ def package(target: str) -> None:
     output.mkdir(parents=True, exist_ok=True)
     name = f"animesh-{version}-{target}"
     is_mac = target.endswith("apple-darwin")
+    notarized = is_mac and os.environ.get("ANIMESH_NOTARIZED") == "true"
+    if notarized:
+        subprocess.run(["xcrun", "stapler", "validate", str(ROOT / "target/bundle/Animesh.app")], check=True)
     artifacts = []
     with tempfile.TemporaryDirectory(prefix="package-", dir=output) as temporary:
         work = Path(temporary)
@@ -50,7 +54,10 @@ def package(target: str) -> None:
         stage.mkdir()
         for file in ["LICENSE", "README.md"]:
             shutil.copy2(ROOT / file, stage / file)
-        (stage / "INSTALL.txt").write_text(MAC_INSTALL if is_mac else LINUX_INSTALL)
+        instructions = MAC_INSTALL if is_mac else LINUX_INSTALL
+        if notarized:
+            instructions = instructions.replace("This download is ad-hoc signed, not notarized. macOS may block it after\ndownload. Prefer Homebrew for a source build, or use macOS's Privacy &\nSecurity settings to allow this app. Never move the CLI out of the bundle.", "This download is Developer ID signed and notarized by Apple.\nNever move the CLI out of the bundle.")
+        (stage / "INSTALL.txt").write_text(instructions)
         if is_mac:
             shutil.copytree(ROOT / "target/bundle/Animesh.app", stage / "Animesh.app", symlinks=True)
             dmg_stage = work / "dmg"
