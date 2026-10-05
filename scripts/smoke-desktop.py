@@ -14,13 +14,20 @@ URL = "http://127.0.0.1:4444"
 ELEMENT = "element-6066-11e4-a52e-4f735466cecf"
 
 
+class WebDriverError(RuntimeError):
+    pass
+
+
 def request(method, path, data=None):
     payload = json.dumps(data).encode() if data is not None else None
     req = urllib.request.Request(URL + path, payload, {"Content-Type": "application/json"}, method=method)
-    with urllib.request.urlopen(req, timeout=40) as response:
-        result = json.load(response)["value"]
+    try:
+        with urllib.request.urlopen(req, timeout=40) as response:
+            result = json.load(response)["value"]
+    except urllib.error.HTTPError as error:
+        result = json.load(error)["value"]
     if isinstance(result, dict) and "error" in result:
-        raise RuntimeError(result)
+        raise WebDriverError(result)
     return result
 
 
@@ -53,8 +60,17 @@ def smoke(binary, screenshots):
                 return request("POST", base + "/execute/sync", {"script": script, "args": args or []})
 
             def click(selector):
-                element = request("POST", base + "/element", {"using": "css selector", "value": selector})
-                request("POST", base + f"/element/{element[ELEMENT]}/click", {})
+                for attempt in range(3):
+                    element = request("POST", base + "/element", {"using": "css selector", "value": selector})
+                    try:
+                        request("POST", base + f"/element/{element[ELEMENT]}/click", {})
+                        return
+                    except WebDriverError as error:
+                        # A daemon revision can replace the page between find
+                        # and click. A stale element was never clicked; find
+                        # its replacement instead of replaying a lost action.
+                        if error.args[0]["error"] != "stale element reference" or attempt == 2:
+                            raise
 
             wait(lambda: execute("return document.querySelector('#engine-state .healthy') !== null && document.querySelector('#home .page-footer') !== null"), "real daemon connection and Home render")
             assert execute("return location.origin") != "null", "webview loaded with a null origin"
