@@ -57,7 +57,7 @@ On Ubuntu 24.04 or newer, download the `.deb` matching your architecture from
 the [latest release](https://github.com/Abhi-Gautam/animesh/releases/latest):
 
 ```bash
-sudo apt install ./animesh_0.7.1_amd64.deb  # x86_64; use arm64 on ARM
+sudo apt install ./animesh_0.7.2_amd64.deb  # x86_64; use arm64 on ARM
 ```
 
 Open **Animesh** from your applications menu. It starts the background service
@@ -130,14 +130,30 @@ $ animesh --json next -n 3
 Failures answer `{"error":{"code":...},"ok":false}` on stdout. The `code` is
 meant to be branched on; the message is prose and will change.
 
-`animesh skill install` writes an [Agent Skill](https://agentskills.io) to
-`~/.agents/skills/animesh/` — the vendor-neutral location read by Codex,
-Cursor, Gemini CLI, Copilot, OpenCode and Goose — and mirrors it to
-`~/.claude/skills/` when Claude Code is installed. An agent can then answer
+`animesh skill install` installs the same standard [Agent Skill](https://agentskills.io)
+for compatible AI assistants, including Codex and Claude Code. An agent can then answer
 what is airing tonight, follow something for you, or read what you actually
 watch before recommending anything, against your library, on your machine.
 
 `animesh skill status` says where it landed; `animesh skill uninstall` removes it.
+
+The desktop app also offers **Install Animesh skill** in its first-use Home
+guidance. If you skip it, open **Health → Your AI assistant** to install it later
+or check its installation. This reads the files on disk, including skills
+installed through the CLI, and keeps any locally edited skill intact.
+
+Local skill discovery is supported by [Codex](https://learn.chatgpt.com/docs/build-skills),
+[Cursor](https://cursor.com/docs/skills), [Gemini CLI](https://geminicli.com/docs/cli/skills/),
+[Copilot](https://docs.github.com/en/copilot/concepts/agents/about-agent-skills),
+and [OpenCode](https://opencode.ai/docs/skills/) through `~/.agents/skills/`.
+[Claude Code](https://code.claude.com/docs/en/skills#choose-where-skills-load)
+uses `~/.claude/skills/`; the installer writes the same skill there when that
+configuration directory exists. Agents need local CLI access and skills enabled;
+this does not make your library available to remote agents. After installing a
+new assistant, check installation again to pick up any additional discovery path.
+
+For agent-assisted setup, copy the prompt on the [download page](https://animesh.syntropicsystems.dev/#download).
+It links to the app downloads and the same Animesh skill.
 
 ## Website and release signing
 

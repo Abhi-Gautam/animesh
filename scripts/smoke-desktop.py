@@ -75,6 +75,8 @@ def smoke(binary, screenshots):
             wait(lambda: execute("return document.querySelector('#engine-state .healthy') !== null && document.querySelector('#home .page-footer') !== null"), "real daemon connection and Home render")
             assert execute("return location.origin") != "null", "webview loaded with a null origin"
             if execute("return !!document.querySelector('#home .getting-started')"):
+                wait(lambda: execute("return !!document.querySelector('#home .agent-skill') && document.querySelector('#home .agent-skill').getAttribute('aria-busy') === 'false'"), "onboarding skill setup")
+                assert execute("return document.querySelector('#home .agent-skill').textContent.includes('Your AI assistant')"), "Onboarding omitted the optional skill setup"
                 click("#home .empty .primary")
                 wait(lambda: execute("return location.hash === '#search' && document.activeElement.id === 'query'"), "first-show search focus")
                 click('#search-controls button[data-focus-key="kind-anime"]')
@@ -124,6 +126,9 @@ def smoke(binary, screenshots):
                 (screenshots / f"{screen}-900-largest-text.png").write_bytes(base64.b64decode(request("GET", base + "/screenshot")))
                 print(f"{screen} 900x650 largest text: footer visible, content fits", flush=True)
             click('#text-size option[value="standard"]')
+            click('nav a[href="#health"]')
+            wait(lambda: execute("return !!document.querySelector('#health .agent-skill') && document.querySelector('#health .agent-skill').getAttribute('aria-busy') === 'false'"), "skill setup remains available after onboarding")
+            assert execute("return document.querySelector('#health .agent-skill').textContent.includes('Your AI assistant')"), "Health omitted skill setup"
             click('nav a[href="#home"]')
             wait(lambda: execute("return document.querySelector('#home .page-footer button') !== null"), "Home action")
             click("#home .page-footer button")

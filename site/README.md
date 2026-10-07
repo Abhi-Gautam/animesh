@@ -12,6 +12,9 @@ The address is `https://animesh.syntropicsystems.dev/`, served by the
 then deploy with `npx wrangler deploy` using the root `wrangler.jsonc`.
 The Worker serves only static assets; downloads remain on GitHub.
 
+The download section includes a copyable agent-assisted setup prompt linking to
+the latest app release and the standard Animesh `SKILL.md` in this repository.
+
 Screenshots are real app captures. macOS captures use the maintainer’s library; Linux captures come from the native WebKit release smoke test. Terminal images
 render actual read-only command output in a terminal frame. Dates are sample
 views from capture time, not a live airing schedule. The screenshot viewer

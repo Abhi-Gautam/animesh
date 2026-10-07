@@ -19,3 +19,18 @@ for (const control of document.querySelectorAll("[data-view]")) {
     document.getElementById("terminal-search").hidden = control.dataset.view !== "terminal";
   });
 }
+
+const copySetup = document.getElementById("copy-setup-prompt");
+copySetup.hidden = false;
+copySetup.addEventListener("click", async () => {
+  const prompt = document.getElementById("agent-setup-prompt");
+  const status = document.getElementById("setup-copy-status");
+  try {
+    await navigator.clipboard.writeText(prompt.value);
+    status.textContent = "Copied. Paste it into your AI assistant.";
+  } catch {
+    prompt.focus();
+    prompt.select();
+    status.textContent = "Select and copy the prompt, then paste it into your AI assistant.";
+  }
+});

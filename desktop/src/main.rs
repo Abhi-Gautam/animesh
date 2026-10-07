@@ -25,6 +25,8 @@ fn main() {
             bridge::refresh,
             bridge::open_source,
             bridge::start_service,
+            bridge::skill_status,
+            bridge::install_skill,
         ])
         .setup(|app| {
             let handle = app.handle().clone();

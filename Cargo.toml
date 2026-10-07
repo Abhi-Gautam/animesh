@@ -4,7 +4,7 @@ exclude = ["desktop"]
 
 [package]
 name = "animesh"
-version = "0.7.1"
+version = "0.7.2"
 edition = "2021"
 rust-version = "1.96"
 authors = ["Abhishek Gautam"]

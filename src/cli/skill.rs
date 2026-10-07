@@ -13,6 +13,8 @@
 
 use std::path::{Path, PathBuf};
 
+use serde::Serialize;
+
 use crate::error::{AppError, ErrorCode};
 
 /// The skill's directory name, which the spec requires to match the `name`
@@ -53,15 +55,13 @@ impl Target {
 /// Every location the skill is installed to, in order of precedence.
 fn targets(home: &Path) -> Vec<Target> {
     vec![
-        // The vendor-neutral path the Agent Skills spec settled on. Codex,
-        // Cursor, Gemini CLI, Copilot, OpenCode, Goose and Amp all read it, so
-        // one write covers every agent that is not Claude Code.
+        // Shared discovery directory for hosts that support ~/.agents/skills.
         Target {
             root: home.join(".agents").join("skills"),
             always: true,
             label: "agents",
         },
-        // Claude Code reads only its own directory.
+        // The same standard skill in Claude Code's personal discovery directory.
         Target {
             root: home.join(".claude").join("skills"),
             always: false,
@@ -71,6 +71,10 @@ fn targets(home: &Path) -> Vec<Target> {
 }
 
 fn home() -> Result<PathBuf, AppError> {
+    #[cfg(feature = "test-harness")]
+    if let Some(root) = std::env::var_os("ANIMESH_SKILL_HOME") {
+        return Ok(PathBuf::from(root));
+    }
     std::env::var_os("HOME")
         .map(PathBuf::from)
         .ok_or_else(|| AppError::internal("HOME is unset, so there is no place to install a skill"))
@@ -81,11 +85,44 @@ fn io(action: &str, path: &Path, error: std::io::Error) -> AppError {
 }
 
 /// What is on disk at one target right now.
-enum Installed {
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Installed {
     Absent,
     Current,
     /// Present, but not what this build would write.
     Edited,
+}
+
+/// A standard skill file and its actual state on disk.
+#[derive(Debug, Serialize)]
+pub struct SkillLocation {
+    pub path: PathBuf,
+    pub state: Installed,
+}
+
+/// Applicable discovery locations, independent of daemon availability.
+#[derive(Debug, Serialize)]
+pub struct SkillStatus {
+    pub locations: Vec<SkillLocation>,
+}
+
+pub fn installation_status() -> Result<SkillStatus, AppError> {
+    installation_status_in(&home()?)
+}
+
+fn installation_status_in(home: &Path) -> Result<SkillStatus, AppError> {
+    let mut locations = Vec::new();
+    for target in targets(home) {
+        let state = inspect(&target)?;
+        if target.applies() || !matches!(state, Installed::Absent) {
+            locations.push(SkillLocation {
+                path: target.file(),
+                state,
+            });
+        }
+    }
+    Ok(SkillStatus { locations })
 }
 
 fn inspect(target: &Target) -> Result<Installed, AppError> {
@@ -241,6 +278,48 @@ mod tests {
         install_into(home.path(), false).expect("install");
         let file = home.path().join(".agents/skills/animesh/SKILL.md");
         assert_eq!(std::fs::read_to_string(&file).expect("read"), SKILL_MD);
+    }
+
+    #[test]
+    fn structured_status_tracks_disk_changes_and_new_discovery_locations() {
+        let home = home_with(&[]);
+        let missing = installation_status_in(home.path()).expect("status");
+        assert_eq!(missing.locations.len(), 1);
+        assert!(matches!(missing.locations[0].state, Installed::Absent));
+
+        install_into(home.path(), false).expect("install");
+        let installed = installation_status_in(home.path()).expect("status");
+        assert!(matches!(installed.locations[0].state, Installed::Current));
+        assert_eq!(
+            serde_json::to_value(&installed).expect("serialize")["locations"][0]["state"],
+            "current"
+        );
+
+        std::fs::create_dir(home.path().join(".claude")).expect("new assistant");
+        let partial = installation_status_in(home.path()).expect("status");
+        assert_eq!(partial.locations.len(), 2);
+        assert!(matches!(partial.locations[1].state, Installed::Absent));
+
+        install_into(home.path(), false).expect("complete installation");
+        std::fs::write(&installed.locations[0].path, "user customization").expect("edit");
+        let edited = installation_status_in(home.path()).expect("status");
+        assert!(matches!(edited.locations[0].state, Installed::Edited));
+        assert!(matches!(edited.locations[1].state, Installed::Current));
+
+        uninstall_from(home.path()).expect("uninstall");
+        assert!(installation_status_in(home.path())
+            .expect("status")
+            .locations
+            .iter()
+            .all(|location| matches!(location.state, Installed::Absent)));
+    }
+
+    #[test]
+    fn structured_status_reports_unreadable_files_instead_of_missing_installation() {
+        let home = home_with(&[]);
+        std::fs::create_dir_all(home.path().join(".agents/skills/animesh/SKILL.md"))
+            .expect("directory at file path");
+        assert!(installation_status_in(home.path()).is_err());
     }
 
     #[test]

@@ -21,6 +21,25 @@ async fn request(paths: &AppPaths, command: Request) -> Result<Response, AppErro
 }
 
 #[tauri::command]
+pub async fn skill_status() -> Result<animesh::cli::skill::SkillStatus, AppError> {
+    tauri::async_runtime::spawn_blocking(animesh::cli::skill::installation_status)
+        .await
+        .map_err(|_| AppError::internal("Could not check the Animesh skill"))?
+}
+
+#[tauri::command]
+pub async fn install_skill() -> Result<animesh::cli::skill::SkillStatus, AppError> {
+    tauri::async_runtime::spawn_blocking(|| {
+        // Use the CLI's installer and conflict protection. No shell or daemon
+        // is needed, and the webview cannot choose a path or overwrite edits.
+        animesh::cli::skill::install(false)?;
+        animesh::cli::skill::installation_status()
+    })
+    .await
+    .map_err(|_| AppError::internal("Could not install the Animesh skill"))?
+}
+
+#[tauri::command]
 pub async fn view(paths: State<'_, AppPaths>, query: ViewQuery) -> Result<ViewSnapshot, AppError> {
     read_view(&paths, query).await
 }

@@ -5,6 +5,8 @@ import * as library from "./screens/library.js";
 import * as schedule from "./screens/schedule.js";
 import * as health from "./screens/health.js";
 import * as detail from "./screens/detail.js";
+import * as skill from "./skill.js";
+import type { SkillStatus } from "./types.js";
 
 const state: { screen: Screen; kind: Kind | null; sort: "alphabetical" | "next_release"; cursor: Cursor | null; snapshot: Snapshot | null; selected: Detail | SearchHit | null; search: SearchResults | null } = { screen: "home", kind: null, sort: "next_release", cursor: null, snapshot: null, selected: null, search: null };
 let viewGeneration = 0;
@@ -16,6 +18,39 @@ let selectedGeneration = 0;
 let appliedStamp: Snapshot["stamp"] | null = null;
 let engineConnected = false;
 let detailOpener: HTMLElement | null = null;
+let skillGeneration = 0;
+const skillSetup: skill.SkillSetup = { status: null, pending: null, error: null, install: () => void installSkill(), check: () => void loadSkillStatus() };
+
+function renderSkillSetup(): void {
+  for (const screen of ["home", "health"] as const) {
+    const parent = get(screen).querySelector<HTMLElement>(screen === "home" ? ".empty" : ".page-body");
+    if (!parent) continue;
+    let panel = parent.querySelector<HTMLElement>(".agent-skill");
+    if (!panel) { panel = node("section", "agent-skill"); parent.append(panel); }
+    skill.render(panel, skillSetup, screen === "home");
+  }
+}
+
+async function loadSkillStatus(): Promise<void> {
+  if (skillSetup.pending === "installing") return;
+  const generation = ++skillGeneration;
+  skillSetup.pending = "checking"; skillSetup.error = null; renderSkillSetup();
+  try {
+    const status = await invoke<SkillStatus>("skill_status");
+    if (generation === skillGeneration) skillSetup.status = status;
+  } catch (error) { if (generation === skillGeneration) skillSetup.error = errorMessage(error); }
+  finally { if (generation === skillGeneration) { skillSetup.pending = null; renderSkillSetup(); } }
+}
+
+async function installSkill(): Promise<void> {
+  if (skillSetup.pending) return;
+  ++skillGeneration; skillSetup.pending = "installing"; skillSetup.error = null; renderSkillSetup();
+  try {
+    skillSetup.status = await invoke<SkillStatus>("install_skill");
+    toast("Animesh skill installed. Open a new chat or reload your assistant’s skills.");
+  } catch (error) { skillSetup.error = errorMessage(error); }
+  finally { skillSetup.pending = null; renderSkillSetup(); }
+}
 
 async function invoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   if (!window.__TAURI__) throw { code: "unavailable", message: "Open the Animesh desktop app to connect to your local service." };
@@ -53,6 +88,7 @@ function navigate(screen: Screen): void {
   get("refresh").hidden = screen === "search";
   viewGeneration++; notice(null); resetScroll(); get("main").focus({ preventScroll: true });
   if (screen === "search") { renderSearch(); get<HTMLInputElement>("query").focus(); } else void load();
+  if (screen === "home" || screen === "health") void loadSkillStatus();
 }
 function greeting(): string { const hour = new Date().getHours(); return hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening"; }
 const subtitles: Record<Screen, string> = { home: "", search: "Find the exact anime or TV title you heard about", schedule: "Recently dropped and upcoming episodes, in your local time", library: "The titles you deliberately follow", health: "Your local engine, sources, and notifications" };
@@ -83,6 +119,7 @@ async function load(): Promise<void> {
       const recovery = node("details"); recovery.append(node("summary", "", "Show recovery steps"), node("p", "", "Start the local service, then retry. If the service is already running, make sure the desktop app and daemon come from the same build."), node("pre", "", "animesh service start"));
       const panel = empty("Animesh service unavailable", message, [retry]); panel.append(recovery); page(target, [panel], [], [node("span", "quiet", "Local engine disconnected")]);
     }
+    renderSkillSetup();
   }
 }
 function render(snapshot: Snapshot): void {
@@ -95,6 +132,7 @@ function render(snapshot: Snapshot): void {
       break;
     }
   }
+  renderSkillSetup();
 }
 function planBoundary(snapshot: Snapshot): void {
   clearTimeout(boundaryTimer);

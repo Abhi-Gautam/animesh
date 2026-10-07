@@ -1,6 +1,6 @@
 # Mac release signing
 
-The current v0.7.1 downloads are ad-hoc signed and not notarized. This workflow
+The current v0.7.2 downloads are ad-hoc signed and not notarized. This workflow
 prepares future Developer ID releases; enabling it requires an Apple Developer
 Program membership, a Developer ID Application certificate with its private
 key, and a team App Store Connect API key permitted to use notarization.

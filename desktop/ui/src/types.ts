@@ -25,6 +25,7 @@ export type ViewData =
   | { screen: "health"; data: { sources: { source: Source; blocked_until: number | null; last_success_at: number | null }[]; operations: Operation[] } };
 export interface Snapshot { stamp: Stamp; generated_at: number; health: Health; view: ViewData }
 export interface Connection { connected: boolean; message: string | null; stamp: Stamp | null }
+export interface SkillStatus { locations: { path: string; state: "absent" | "current" | "edited" }[] }
 
 declare global {
   interface Window {

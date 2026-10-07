@@ -41,6 +41,12 @@ h3 { font-size: 1rem; font-weight: 650; }
 .platforms .small { margin-top: 4px; }
 .download-links { display: flex; gap: 18px; flex-wrap: wrap; justify-content: center; margin-top: 12px; font-size: .875rem; }
 .install-note { margin-bottom: 8px; }
+.agent-setup { max-width: 640px; margin: 32px auto 0; padding-top: 24px; border-top: 1px solid #dedbd4; }
+.agent-setup label { display: block; margin-block: 8px 12px; }
+.agent-setup textarea { display: block; width: 100%; resize: vertical; padding: 12px; border: 1px solid #dedbd4; border-radius: 7px; font: inherit; color: inherit; background: #fff; }
+.agent-setup .button { margin-top: 12px; border: 0; font-size: .875rem; }
+.agent-setup p { margin-top: 8px; }
+.agent-setup textarea:focus-visible { outline: 3px solid #98601c; outline-offset: 5px; }
 .site-footer { padding-block: 24px; border-top: 1px solid #dedbd4; }
 @media (max-width: 600px) {
   .wrap { width: calc(100% - 32px); }
