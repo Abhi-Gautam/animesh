@@ -43,7 +43,7 @@ dependencies = [
 
 [[package]]
 name = "animesh"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "block2",
  "chrono",
@@ -68,7 +68,7 @@ dependencies = [
 
 [[package]]
 name = "animesh-desktop"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "animesh",
  "serde",

@@ -5,7 +5,7 @@ about, see what is next, and get notified when an episode drops. Your library
 lives in a SQLite database on your machine — no account or cloud sync. Searches
 and schedule updates contact AniList and TVmaze. Anime and TV are supported.
 
-![Animesh desktop release radar](site/assets/share.png)
+![Animesh desktop release radar](site/assets/screenshots/mac-home.png)
 
 The desktop app has Home, Search, Schedule, Library, and Health.
 Search and follow titles by name, see their next release, and keep tracking
@@ -57,7 +57,7 @@ On Ubuntu 24.04 or newer, download the `.deb` matching your architecture from
 the [latest release](https://github.com/Abhi-Gautam/animesh/releases/latest):
 
 ```bash
-sudo apt install ./animesh_0.7.0_amd64.deb  # x86_64; use arm64 on ARM
+sudo apt install ./animesh_0.7.1_amd64.deb  # x86_64; use arm64 on ARM
 ```
 
 Open **Animesh** from your applications menu. It starts the background service

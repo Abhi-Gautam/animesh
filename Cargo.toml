@@ -4,14 +4,14 @@ exclude = ["desktop"]
 
 [package]
 name = "animesh"
-version = "0.7.0"
+version = "0.7.1"
 edition = "2021"
 rust-version = "1.96"
 authors = ["Abhishek Gautam"]
 description = "Personal release radar for anime and TV — menu-bar app and CLI"
 license = "MIT"
 repository = "https://github.com/Abhi-Gautam/animesh"
-homepage = "https://github.com/Abhi-Gautam/animesh"
+homepage = "https://animesh.syntropicsystems.dev/"
 keywords = ["anime", "tv", "anilist", "cli", "schedule"]
 categories = ["command-line-utilities"]
 exclude = [
