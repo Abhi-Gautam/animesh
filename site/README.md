@@ -12,8 +12,7 @@ The address is `https://animesh.syntropicsystems.dev/`, served by the
 then deploy with `npx wrangler deploy` using the root `wrangler.jsonc`.
 The Worker serves only static assets; downloads remain on GitHub.
 
-Screenshots are real app captures. macOS captures use the maintainer’s library;
-Linux captures come from the native WebKit release smoke test. Terminal images
+Screenshots are real app captures. macOS captures use the maintainer’s library. Terminal images
 render actual read-only command output in a terminal frame. Dates are sample
 views from capture time, not a live airing schedule. The screenshot viewer
 leaves the interface unchanged. Share images use the actual app capture.

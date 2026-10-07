@@ -1,8 +1,7 @@
 const views = {
-  home: ["mac-home.png", "Animesh Home showing recent and upcoming episodes from a library of 16 followed shows.", "What dropped. What’s next."],
+  home: ["mac-home.png", "Animesh Home showing recent and upcoming episodes from followed anime and TV shows.", "What dropped. What’s next."],
   schedule: ["mac-schedule.png", "Animesh Schedule showing upcoming anime and TV episodes by date.", "Your upcoming episodes, by date."],
   library: ["mac-library.png", "Animesh Library showing followed anime and TV shows and their next episodes.", "The shows you follow."],
-  linux: ["linux-discover.png", "Animesh Discover running on Ubuntu, with airing anime and Follow buttons.", "On Linux, too."],
   menubar: ["mac-menubar.png", "Animesh’s Mac menu bar showing upcoming releases and an Open Animesh button.", "A quick look from the Mac menu bar."],
   terminal: ["cli-next.png", "Actual animesh next terminal output listing upcoming episodes and release times.", "The same library, from your terminal."],
 };
