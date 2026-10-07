@@ -22,21 +22,6 @@ const MEDIA_FIELDS: &str = "
     seasonYear
 ";
 
-/// Finite source-ordered catalog page. No popularity or engagement ranking.
-pub fn discovery(season: bool) -> String {
-    let filter = if season {
-        "season: $season, seasonYear: $year"
-    } else {
-        "status: RELEASING"
-    };
-    let variables = if season {
-        "$season: MediaSeason, $year: Int,"
-    } else {
-        ""
-    };
-    format!("query ({variables} $perPage: Int) {{ Page(page: 1, perPage: $perPage) {{ media(type: ANIME, {filter}, sort: ID_DESC) {{{MEDIA_FIELDS} nextAiringEpisode {{ episode airingAt }} }} }} }}")
-}
-
 /// One media item by AniList ID.
 pub fn detail() -> String {
     format!(

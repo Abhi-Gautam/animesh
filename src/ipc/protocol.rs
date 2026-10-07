@@ -118,7 +118,9 @@ mod tests {
             Request::FollowAnilist {
                 id: AniListId::new(21).expect("valid id"),
             },
-            Request::SearchTv { query: None },
+            Request::SearchTv {
+                query: "ted lasso".into(),
+            },
             Request::FollowTv {
                 id: TvMazeId::new(82).expect("valid id"),
             },
@@ -211,7 +213,10 @@ mod tests {
             id: AniListId::new(21).expect("valid id"),
         }
         .touches_source());
-        assert!(Request::SearchTv { query: None }.touches_source());
+        assert!(Request::SearchTv {
+            query: "ted lasso".into()
+        }
+        .touches_source());
         assert!(Request::FollowTv {
             id: TvMazeId::new(82).expect("valid id"),
         }

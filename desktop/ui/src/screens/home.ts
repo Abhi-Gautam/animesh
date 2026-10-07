@@ -1,12 +1,12 @@
 import type { Key, Snapshot } from "../types.js";
 import { button, empty, fields, node, page, releaseRow, section, time } from "../ui.js";
 
-export function render(target: HTMLElement, snapshot: Snapshot, open: (key: Key) => void, navigate: (screen: "search" | "discover" | "schedule" | "health") => void): void {
+export function render(target: HTMLElement, snapshot: Snapshot, open: (key: Key) => void, navigate: (screen: "search" | "schedule" | "health") => void): void {
   if (snapshot.view.screen !== "home") return;
   const data = snapshot.view.data;
   const overview = node("div", "overview"); const releases = node("div");
   if (!snapshot.health.active_follows) {
-    const welcome = empty("Your next episode, without the checking", "Follow your first anime or TV show. Animesh keeps its schedule on this device and reminds you when the next episode releases.", [button("Find your first show", () => navigate("search"), "primary"), button("Explore what is airing", () => navigate("discover"))]);
+    const welcome = empty("Your next episode, without the checking", "Follow your first anime or TV show. Animesh keeps its schedule on this device and reminds you when the next episode releases.", [button("Find your first show", () => navigate("search"), "primary")]);
     const steps = node("ol", "getting-started");
     for (const [title, description] of [["Find a show", "Search by name. Check the year and source to pick the right title."], ["Follow it", "Choose Follow. Its next known episode appears on Home and Schedule."], ["Allow reminders", "On macOS, allow notifications when asked. On Linux, your desktop handles notifications."]]) {
       const step = node("li"); step.append(node("h3", "", title), node("p", "", description)); steps.append(step);

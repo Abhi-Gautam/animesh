@@ -37,7 +37,7 @@ pub enum Request {
         id: AniListId,
     },
     SearchTv {
-        query: Option<String>,
+        query: String,
     },
     FollowTv {
         id: TvMazeId,
@@ -113,8 +113,7 @@ impl Request {
             ),
             Self::Search { query, .. } => validate_query(query),
             Self::SearchAnime { query } => validate_query(query),
-            Self::SearchTv { query: Some(query) } => validate_query(query),
-            Self::SearchTv { query: None } => Ok(()),
+            Self::SearchTv { query } => validate_query(query),
             Self::Upcoming { limit: Some(0), .. } => {
                 Err(AppError::invalid_argument("limit must be at least 1"))
             }

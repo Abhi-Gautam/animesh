@@ -106,13 +106,11 @@ Searches AniList for anime. Returns candidates with `source` (`anilist`),
 This is a lookup step, not an answer. Run it to turn a title into a
 `source_id` before following.
 
-### `animesh --json search --tv ["QUERY"]`
+### `animesh --json search --tv "QUERY"`
 
-Searches TVmaze for TV. With a query, title search. With no query, currently
-airing English-language US broadcasts and streams — this is the answer to
-"what's on TV", not a lookup you have to invent a query for. Candidates have `source: "tvmaze"`. Follow with `follow tvmaze:SOURCE_ID`.
-This is discovery of the US linear grid, not the user's library. `next` is
-what they actually follow.
+Searches TVmaze by title. A query is required. Candidates have
+`source: "tvmaze"`. Follow with `follow tvmaze:SOURCE_ID`.
+Search results are transient; the library changes only when the user follows a title.
 
 ### `animesh --json follow ID`
 
@@ -164,7 +162,7 @@ Whether the background daemon is registered with the system.
 
 1. Prefer `next` and `list`. They are local, instant, and never fail from the
    network. For "what's on TV right now" that is not already in the library,
-   `search --tv` with no query.
+   `search --tv "TITLE"`. Ask for a title if none was given.
 2. Convert every `scheduled_at` to the user's local timezone. A UTC timestamp
    read aloud is a wrong answer.
 3. Never invent an ID. Every ID comes from a command you just ran.

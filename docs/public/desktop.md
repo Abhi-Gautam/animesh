@@ -13,11 +13,13 @@ Animesh 0.7.0 adds a desktop app for macOS and Linux, and TV shows alongside ani
 
 The [first article](/writing/animesh/) explained why a notification app needs a process that stays running. That part has not changed. The desktop window gives the same library a more useful way to browse.
 
+**Update, October 7:** The current development build removes Discover and its background catalog storage. Finding a new title is now an explicit search → follow action. This change will be in the next packaged release.
+
 ## One library, several ways to use it
 
-The window has Home, Discover, Search, Schedule, Library, and Health. Home shows what recently dropped and what is next. Schedule groups episodes by date. Health shows whether the background service, sources, and notifications need attention.
+The window has Home, Search, Schedule, Library, and Health. Home shows what recently dropped and what is next. Schedule groups episodes by date. Health shows whether the background service, sources, and notifications need attention.
 
-![Animesh Home on macOS, showing recently released episodes, upcoming shows, and a summary of 16 followed titles.](https://animesh.syntropicsystems.dev/assets/screenshots/mac-home.png)
+![Animesh Home on macOS, showing recently released episodes, upcoming shows, and a summary of followed titles.](https://animesh.syntropicsystems.dev/assets/screenshots/mac-home.png)
 
 The window does not open SQLite or fetch schedules itself. It sends requests to the existing engine over the local socket. The CLI uses that same engine, and the Mac menu bar reads the same followed titles. Following a show in one place makes it available in the others.
 

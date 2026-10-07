@@ -27,7 +27,7 @@ impl Library {
             },
             async {
                 if kind != Some(MediaKind::Anime) {
-                    self.search_tv(Some(query)).await
+                    self.search_tv(query).await
                 } else {
                     Ok(Vec::new())
                 }
@@ -194,7 +194,6 @@ impl Library {
                     }
                 })
             }
-            RefreshTarget::Discovery(feed) => self.refresh_discovery(feed).await,
         };
         operation.state = match &result {
             Ok(_) => OperationState::Completed,

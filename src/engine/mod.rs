@@ -4,7 +4,6 @@
 //! requirement: with nothing due there must be no wake, no request, no write.
 
 pub mod bootstrap;
-pub mod discovery;
 pub mod notifier;
 pub mod reconciler;
 

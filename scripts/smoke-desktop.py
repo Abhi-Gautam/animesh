@@ -86,7 +86,7 @@ def smoke(binary, screenshots):
                 wait(lambda: execute("return document.documentElement.dataset.theme === arguments[0]", [theme]), f"{theme} theme")
                 for width, height in [(1440, 900), (900, 650)]:
                     request("POST", base + "/window/rect", {"width": width, "height": height})
-                    for screen in ["home", "discover", "search", "schedule", "library", "health"]:
+                    for screen in ["home", "search", "schedule", "library", "health"]:
                         click(f'nav a[href="#{screen}"]')
                         wait(lambda: execute("return location.hash === '#' + arguments[0] && !document.getElementById(arguments[0]).hidden && document.querySelector('#' + arguments[0] + ' .page-footer') !== null && !document.querySelector('#' + arguments[0] + ' .loading')", [screen]), f"{screen} render")
                         request("POST", base + "/execute/async", {
@@ -106,7 +106,7 @@ def smoke(binary, screenshots):
                         print(f"{screen} {width}x{height} {theme}: connected, footer visible, no page overflow", flush=True)
             click('#text-size option[value="largest"]')
             request("POST", base + "/window/rect", {"width": 900, "height": 650})
-            for screen in ["home", "discover", "search", "schedule", "library", "health"]:
+            for screen in ["home", "search", "schedule", "library", "health"]:
                 click(f'nav a[href="#{screen}"]')
                 wait(lambda: execute("return !document.getElementById(arguments[0]).hidden && document.querySelector('#' + arguments[0] + ' .page-footer') !== null && !document.querySelector('#' + arguments[0] + ' .loading')", [screen]), f"large-text {screen}")
                 geometry = execute("""

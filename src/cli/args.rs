@@ -91,9 +91,7 @@ pub enum Command {
     /// Search for a title. AniList by default; `--tv` uses TVmaze.
     Search {
         /// Free-text query. Quote it if it contains spaces.
-        ///
-        /// With `--tv` and no query, lists currently airing English-language
-        /// US broadcasts and streams.
+        #[arg(required = true)]
         query: Vec<String>,
         /// Search TVmaze instead of AniList.
         #[arg(long)]
@@ -218,10 +216,13 @@ mod tests {
 
     #[test]
     fn tv_flags_select_tvmaze() {
-        let search = Cli::try_parse_from(["animesh", "search", "--tv"]).expect("parse");
+        assert!(Cli::try_parse_from(["animesh", "search", "--tv"]).is_err());
+        assert!(Cli::try_parse_from(["animesh", "search"]).is_err());
+        let search =
+            Cli::try_parse_from(["animesh", "search", "--tv", "Ted Lasso"]).expect("parse");
         match search.command {
             Command::Search { query, tv } => {
-                assert!(query.is_empty());
+                assert_eq!(query, vec!["Ted Lasso"]);
                 assert!(tv);
             }
             other => panic!("expected search, got {other:?}"),

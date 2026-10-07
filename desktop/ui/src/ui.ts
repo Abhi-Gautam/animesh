@@ -1,6 +1,6 @@
 import type { Candidate, Cursor, Detail, Key, NextAiring, Release, Screen, Source } from "./types.js";
 
-export const screens: Screen[] = ["home", "discover", "search", "schedule", "library", "health"];
+export const screens: Screen[] = ["home", "search", "schedule", "library", "health"];
 export const sourceName = (source: Source): string => source === "anilist" ? "AniList" : "TVmaze";
 export const kindName = (source: Source): string => source === "anilist" ? "Anime" : "TV";
 export const humanize = (value: string): string => value.replaceAll("_", " ").replace(/^./, c => c.toUpperCase());

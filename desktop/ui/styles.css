@@ -109,7 +109,6 @@ dd{margin:0;text-align:right;font-size:0.9286rem;font-variant-numeric:tabular-nu
 #notice{color:var(--text);border-left:2px solid var(--accent)}
 #notice{margin:0 28px 12px;flex-shrink:0;display:flex;align-items:center;flex-wrap:wrap;gap:12px}
 #notice button{margin-left:auto;flex-shrink:0;font-size:0.8571rem}
-.collection-description{font-size:0.8571rem;color:var(--muted);margin-top:10px}
 .empty{display:grid;justify-items:start;align-content:center;min-height:240px;padding:28px;border:1px solid var(--border);border-radius:var(--radius);gap:14px}
 .empty svg{color:var(--accent);width:28px;height:28px}
 .empty p{color:var(--muted);font-size:0.9286rem;max-width:55ch}

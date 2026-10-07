@@ -28,7 +28,7 @@ export function render(target: HTMLElement, snapshot: Snapshot, connected: boole
   const content: HTMLElement[] = [grid];
   for (const reason of h.degraded) content.push(node("p", "explanation", remediation[reason] ?? humanize(reason)));
   const operations = node("section", "group"); operations.append(node("h2", "section-heading", "Recent refreshes"));
-  for (const operation of snapshot.view.data.operations) operations.append(node("p", "explanation", `${operation.target.kind === "library" ? "Library" : humanize(operation.target.feed)} · ${humanize(operation.state)} · ${date(operation.updated_at)}${operation.message ? `\n${operation.message}` : ""}`));
+  for (const operation of snapshot.view.data.operations) operations.append(node("p", "explanation", `Library · ${humanize(operation.state)} · ${date(operation.updated_at)}${operation.message ? `\n${operation.message}` : ""}`));
   if (!snapshot.view.data.operations.length) operations.append(node("p", "quiet", "No manual refreshes yet."));
   content.push(operations); page(target, content, [], [node("span", "quiet", status), button("Copy diagnostics", copy)]);
 }

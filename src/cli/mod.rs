@@ -163,16 +163,7 @@ async fn execute(cli: Cli) -> Result<Outcome, AppError> {
         Command::Search { query, tv } => {
             let joined = query.join(" ");
             if tv {
-                Request::SearchTv {
-                    query: {
-                        let trimmed = joined.trim();
-                        if trimmed.is_empty() {
-                            None
-                        } else {
-                            Some(trimmed.to_owned())
-                        }
-                    },
-                }
+                Request::SearchTv { query: joined }
             } else {
                 Request::SearchAnime { query: joined }
             }

@@ -1,8 +1,7 @@
 export type Source = "anilist" | "tvmaze";
 export type Kind = "anime" | "tv";
 export type Freshness = "fresh" | "stale" | "backing_off";
-export type Screen = "home" | "discover" | "search" | "schedule" | "library" | "health";
-export type Feed = "anime_this_season" | "anime_airing_this_week" | "tv_on_now";
+export type Screen = "home" | "search" | "schedule" | "library" | "health";
 export interface Key { source: Source; id: number }
 export interface Stamp { instance_id: string; revision: number }
 export interface Cursor extends Stamp { offset: number; scope: string }
@@ -16,11 +15,10 @@ export interface SearchHit { candidate: Candidate; media_id: number | null; foll
 export interface SearchResults { items: SearchHit[]; issues: { source: Source; message: string }[] }
 export interface Health { process_version: string; schema_version: number; bootstrap: string; database_ready: boolean; active_follows: number; started_at: number; last_success_at: number | null; authorization: string; degraded: string[]; refresh: { due: number; stale: number; backing_off: number; failed: number }; notifications: { desired: number; registered: number; failed: number; deferred_capacity: number }; source_blocked_until: number | null }
 export interface Operation { id: string; target: RefreshTarget; state: "queued" | "running" | "completed" | "throttled" | "failed"; updated_at: number; message: string | null }
-export type RefreshTarget = { kind: "library" } | { kind: "discovery"; feed: Feed };
-export type ViewQuery = { screen: "home" | "health" } | { screen: "discovery"; feed: Feed } | { screen: "schedule"; kind: Kind | null; cursor: Cursor | null } | { screen: "library"; kind: Kind | null; state: "active" | "dropped"; sort: "alphabetical" | "next_release"; cursor: Cursor | null } | { screen: "detail"; key: Key };
+export type RefreshTarget = { kind: "library" };
+export type ViewQuery = { screen: "home" | "health" } | { screen: "schedule"; kind: Kind | null; cursor: Cursor | null } | { screen: "library"; kind: Kind | null; state: "active" | "dropped"; sort: "alphabetical" | "next_release"; cursor: Cursor | null } | { screen: "detail"; key: Key };
 export type ViewData =
   | { screen: "home"; data: { dropped: Release[]; upcoming: Release[]; anime: number; tv: number } }
-  | { screen: "discovery"; data: { key: Feed; generated_at: number | null; expires_at: number | null; freshness: Freshness; last_error: string | null; items: Detail[] } }
   | { screen: "library"; data: { items: Detail[]; next: Cursor | null } }
   | { screen: "schedule"; data: { items: Release[]; next: Cursor | null } }
   | { screen: "detail"; data: Detail }
