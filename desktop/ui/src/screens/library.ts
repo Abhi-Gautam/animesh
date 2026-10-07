@@ -28,7 +28,7 @@ export function render(target: HTMLElement, snapshot: Snapshot, kind: Kind | nul
       else next.textContent = "No upcoming episode known";
       row.append(avatar(facts.display_title), main, next); return row;
     }));
-    if (!rows.childElementCount) rows.append(empty(data.items.length ? "No titles match" : "No followed titles here", data.items.length ? "Try a different title filter." : "Search for a title or explore a discovery collection."));
+    if (!rows.childElementCount) rows.append(empty(data.items.length ? "No titles match" : "No followed titles here", data.items.length ? "Try a different title filter." : "Search for a title to follow."));
   };
   filter.addEventListener("input", populate); populate();
   const footer = pagination("", data.next, next, first, notFirst); footer[0] = count;

@@ -147,8 +147,7 @@ pub fn schedule(
     now: UnixTimestamp,
 ) -> String {
     if dropped.is_empty() && upcoming.is_empty() {
-        return "Nothing scheduled.\n\nFind anime with 'animesh search <query>', or what's \
-                on TV with 'animesh search --tv', then follow it."
+        return "Nothing scheduled.\n\nFind anime with 'animesh search <query>', or TV with 'animesh search --tv TITLE', then follow it."
             .to_owned();
     }
 
@@ -181,7 +180,7 @@ fn write_upcoming_rows(out: &mut String, rows: &[UpcomingRelease], now: UnixTime
 
 pub fn search(candidates: &[SearchCandidate]) -> String {
     if candidates.is_empty() {
-        return "No matches.\n\nAnime is the default catalog. Try 'animesh search --tv' for TV."
+        return "No matches.\n\nAnime is the default catalog. Try 'animesh search --tv TITLE' for TV."
             .to_owned();
     }
 

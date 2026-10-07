@@ -64,10 +64,6 @@ pub async fn run(
                 wake_rx,
                 shutdown.clone(),
             ));
-            let discovery = tokio::spawn(super::discovery::run(
-                Arc::clone(&library),
-                shutdown.clone(),
-            ));
 
             if let Some(hook) = on_ready {
                 hook(Arc::clone(&library), wake.clone());
@@ -78,7 +74,6 @@ pub async fn run(
             serve(&endpoint, instance_id, dispatcher, shutdown).await;
 
             scheduler.abort();
-            discovery.abort();
             Ok(())
         }
 

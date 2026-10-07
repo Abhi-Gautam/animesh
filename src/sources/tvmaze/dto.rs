@@ -14,7 +14,6 @@ pub struct Show {
     pub status: Option<String>,
     #[serde(rename = "type")]
     pub show_type: Option<String>,
-    pub language: Option<String>,
     pub premiered: Option<String>,
     #[serde(rename = "_embedded")]
     pub embedded: Option<Embedded>,
@@ -30,28 +29,4 @@ pub struct Episode {
     pub season: Option<i32>,
     pub number: Option<i64>,
     pub airstamp: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct ScheduleRow {
-    pub season: Option<i32>,
-    pub number: Option<i64>,
-    pub airstamp: Option<String>,
-    /// Broadcast `/schedule` inlines the show. Web `/schedule/web` embeds it.
-    pub show: Option<Show>,
-    #[serde(rename = "_embedded")]
-    pub embedded: Option<ScheduleEmbedded>,
-}
-
-impl ScheduleRow {
-    pub fn show(&self) -> Option<&Show> {
-        self.show
-            .as_ref()
-            .or_else(|| self.embedded.as_ref().and_then(|e| e.show.as_ref()))
-    }
-}
-
-#[derive(Debug, Deserialize)]
-pub struct ScheduleEmbedded {
-    pub show: Option<Show>,
 }

@@ -590,39 +590,33 @@ async fn tv_search_percent_encodes_the_query() {
         .await;
 
     let world = world_with("http://127.0.0.1:1".into(), tv.url()).await;
-    let hits = world
-        .library
-        .search_tv(Some("foo&bar"))
-        .await
-        .expect("search");
+    let hits = world.library.search_tv("foo&bar").await.expect("search");
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].source.as_str(), "tvmaze");
     mock.assert_async().await;
 }
 
 #[tokio::test]
-async fn empty_tv_search_hits_us_broadcast_and_web_schedules() {
+async fn empty_tv_search_is_rejected_without_source_traffic() {
     let mut tv = mockito::Server::new_async().await;
-    let broadcast = tv
-        .mock("GET", "/schedule?country=US")
-        .with_status(200)
-        .with_body(r#"[{"show":{"id":1,"name":"Network","type":"Scripted","language":"English","status":"Running"}}]"#)
-        .expect(1)
+    let mock = tv
+        .mock("GET", mockito::Matcher::Any)
+        .expect(0)
         .create_async()
         .await;
-    let web = tv
-        .mock("GET", "/schedule/web?country=US")
-        .with_status(200)
-        .with_body(r#"[{"_embedded":{"show":{"id":2,"name":"Stream","type":"Animation","language":"English","status":"Running"}}}]"#)
-        .expect(1)
-        .create_async()
-        .await;
-
     let world = world_with("http://127.0.0.1:1".into(), tv.url()).await;
-    let hits = world.library.search_tv(None).await.expect("search");
-    assert_eq!(hits.len(), 2);
-    broadcast.assert_async().await;
-    web.assert_async().await;
+    for query in ["", "   "] {
+        assert_eq!(
+            world
+                .library
+                .search_tv(query)
+                .await
+                .expect_err("query required")
+                .code,
+            ErrorCode::InvalidArgument
+        );
+    }
+    mock.assert_async().await;
 }
 
 #[tokio::test]
@@ -649,157 +643,15 @@ async fn following_the_same_tv_show_twice_makes_no_second_request() {
     mock.assert_async().await;
 }
 
-fn catalog_body(items: Vec<serde_json::Value>) -> String {
-    serde_json::json!({"data": {"Page": {"media": items}}}).to_string()
-}
-
-fn catalog_item(id: i64, title: &str) -> serde_json::Value {
-    let body: serde_json::Value =
-        serde_json::from_str(&detail_body(id, 5, NOW + 1000)).expect("fixture");
-    let mut item = body["data"]["Media"].clone();
-    item["title"]["english"] = title.into();
-    item
-}
-
-#[tokio::test]
-async fn discovery_is_durable_without_following_or_notification_intent() {
-    use animesh::domain::command_center::{FeedKey, ViewData, ViewQuery};
-    let mut server = mockito::Server::new_async().await;
-    let mock = server
-        .mock("POST", "/")
-        .with_status(200)
-        .with_body(catalog_body(vec![catalog_item(21, "One Piece")]))
-        .expect(1)
-        .create_async()
-        .await;
-    let world = world(server.url()).await;
-    world
-        .library
-        .refresh_discovery(FeedKey::AnimeAiringThisWeek)
-        .await
-        .expect("ingest");
-    let snapshot = world
-        .library
-        .view(ViewQuery::Discovery {
-            feed: FeedKey::AnimeAiringThisWeek,
-        })
-        .await
-        .expect("offline projection");
-    let ViewData::Discovery(feed) = snapshot.view else {
-        panic!("feed")
-    };
-    assert_eq!(feed.items.len(), 1);
-    assert_eq!(feed.items[0].follow_state, None);
-    assert_eq!(snapshot.health.active_follows, 0);
-    assert_eq!(snapshot.health.notifications.desired, 0);
-    assert!(world
-        .library
-        .upcoming(None)
-        .await
-        .expect("no followed events")
-        .is_empty());
-    assert!(world
-        .library
-        .list_follows()
-        .await
-        .expect("no follows")
-        .is_empty());
-    mock.assert_async().await;
-    let reopened = rusqlite::Connection::open(&world.db_path).expect("reopen");
-    assert_eq!(
-        animesh::store::command_center::discovery(&reopened, FeedKey::AnimeAiringThisWeek, at(NOW))
-            .expect("saved feed")
-            .items,
-        feed.items
-    );
-}
-
-#[tokio::test]
-async fn failed_and_partial_discovery_preserve_the_last_complete_contents() {
-    use animesh::domain::command_center::{FeedKey, SnapshotCompleteness};
-    let mut server = mockito::Server::new_async().await;
-    let initial = server
-        .mock("POST", "/")
-        .with_status(200)
-        .with_body(catalog_body(vec![catalog_item(21, "Original title")]))
-        .create_async()
-        .await;
-    let world = world(server.url()).await;
-    let key = FeedKey::AnimeThisSeason;
-    world
-        .library
-        .refresh_discovery(key)
-        .await
-        .expect("complete");
-    initial.remove_async().await;
-    let partial = server
-        .mock("POST", "/")
-        .with_status(200)
-        .with_body(catalog_body(vec![
-            catalog_item(21, "Partial title"),
-            serde_json::Value::Null,
-        ]))
-        .create_async()
-        .await;
-    world
-        .library
-        .refresh_discovery(key)
-        .await
-        .expect_err("partial");
-    partial.remove_async().await;
-    let conn = rusqlite::Connection::open(&world.db_path).expect("open");
-    let partial_feed =
-        animesh::store::command_center::discovery(&conn, key, at(NOW)).expect("feed");
-    assert_eq!(
-        partial_feed.last_attempt,
-        Some(SnapshotCompleteness::Partial)
-    );
-    assert_eq!(
-        partial_feed.items[0].facts.display_title.as_str(),
-        "Original title"
-    );
-    let failed = server
-        .mock("POST", "/")
-        .with_status(503)
-        .with_body("offline")
-        .expect(5)
-        .create_async()
-        .await;
-    for _ in 0..5 {
-        world
-            .library
-            .refresh_discovery(key)
-            .await
-            .expect_err("offline");
-    }
-    let saved = animesh::store::command_center::discovery(&conn, key, at(NOW)).expect("saved");
-    assert_eq!(saved.last_attempt, Some(SnapshotCompleteness::Failed));
-    assert_eq!(saved.items, partial_feed.items);
-    assert!(saved.last_error.is_some());
-    assert_eq!(
-        conn.query_row(
-            "SELECT COUNT(*) FROM discovery_snapshots WHERE feed_key = ?1",
-            [key.as_str()],
-            |row| row.get::<_, i64>(0)
-        )
-        .expect("bounded history"),
-        4
-    );
-    failed.assert_async().await;
-}
-
 #[tokio::test]
 async fn every_local_desktop_view_works_without_source_requests() {
-    use animesh::domain::command_center::{FeedKey, FollowSort, ViewQuery};
+    use animesh::domain::command_center::{FollowSort, ViewQuery};
     use animesh::domain::release::FollowState;
     let world = world("http://127.0.0.1:1".into()).await;
     let before = world.library.revision_stamp();
     for query in [
         ViewQuery::Home,
         ViewQuery::Health,
-        ViewQuery::Discovery {
-            feed: FeedKey::TvOnNow,
-        },
         ViewQuery::Schedule {
             kind: None,
             cursor: None,

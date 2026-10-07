@@ -1,13 +1,12 @@
-import type { Connection, Cursor, Detail, Feed, Key, Kind, Operation, RefreshTarget, Screen, SearchHit, SearchResults, Snapshot, ViewQuery } from "./types.js";
+import type { Connection, Cursor, Detail, Key, Kind, Operation, RefreshTarget, Screen, SearchHit, SearchResults, Snapshot, ViewQuery } from "./types.js";
 import { button, candidate, empty, factsRow, get, humanize, kindControls, node, page, relative, replaceContent, screens, sourceName } from "./ui.js";
 import * as home from "./screens/home.js";
-import * as discover from "./screens/discover.js";
 import * as library from "./screens/library.js";
 import * as schedule from "./screens/schedule.js";
 import * as health from "./screens/health.js";
 import * as detail from "./screens/detail.js";
 
-const state: { screen: Screen; kind: Kind | null; feed: Feed; sort: "alphabetical" | "next_release"; cursor: Cursor | null; snapshot: Snapshot | null; selected: Detail | SearchHit | null; search: SearchResults | null } = { screen: "home", kind: null, feed: "anime_airing_this_week", sort: "next_release", cursor: null, snapshot: null, selected: null, search: null };
+const state: { screen: Screen; kind: Kind | null; sort: "alphabetical" | "next_release"; cursor: Cursor | null; snapshot: Snapshot | null; selected: Detail | SearchHit | null; search: SearchResults | null } = { screen: "home", kind: null, sort: "next_release", cursor: null, snapshot: null, selected: null, search: null };
 let viewGeneration = 0;
 let searchGeneration = 0;
 let mutationPending = false;
@@ -37,7 +36,6 @@ function showConnection(connected: boolean, message?: string): void {
 }
 function query(): ViewQuery {
   switch (state.screen) {
-    case "discover": return { screen: "discovery", feed: state.feed };
     case "library": return { screen: "library", kind: state.kind, state: "active", sort: state.sort, cursor: state.cursor };
     case "schedule": return { screen: "schedule", kind: state.kind, cursor: state.cursor };
     default: return { screen: state.screen === "health" ? "health" : "home" };
@@ -57,7 +55,7 @@ function navigate(screen: Screen): void {
   if (screen === "search") { renderSearch(); get<HTMLInputElement>("query").focus(); } else void load();
 }
 function greeting(): string { const hour = new Date().getHours(); return hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening"; }
-const subtitles: Record<Screen, string> = { home: "", discover: "A bounded view of what is releasing now", search: "Find the exact anime or TV title you heard about", schedule: "Recently dropped and upcoming episodes, in your local time", library: "The titles you deliberately follow", health: "Your local engine, sources, and notifications" };
+const subtitles: Record<Screen, string> = { home: "", search: "Find the exact anime or TV title you heard about", schedule: "Recently dropped and upcoming episodes, in your local time", library: "The titles you deliberately follow", health: "Your local engine, sources, and notifications" };
 function updateHeading(): void {
   const screen = state.screen;
   get("page-title").textContent = screen === "home" ? greeting() : screen === "health" ? "System health" : humanize(screen);
@@ -90,7 +88,6 @@ async function load(): Promise<void> {
 function render(snapshot: Snapshot): void {
   switch (snapshot.view.screen) {
     case "home": home.render(get("home"), snapshot, key => void openKey(key), navigate); break;
-    case "discovery": discover.render(get("discover"), snapshot, feed => { state.feed = feed; resetScroll(); void load(); }, key => void openKey(key), item => void confirmMutation(item), () => void refresh()); break;
     case "library": library.render(get("library"), snapshot, state.kind, state.sort, (kind, sort) => { state.kind = kind; state.sort = sort; firstPage(); }, key => void openKey(key), nextPage, firstPage, state.cursor !== null); break;
     case "schedule": schedule.render(get("schedule"), snapshot, state.kind, chooseKind, key => void openKey(key), nextPage, firstPage, state.cursor !== null); break;
     case "health": {
@@ -161,7 +158,7 @@ async function refresh(): Promise<void> {
   const control = get<HTMLButtonElement>("refresh"); if (control.disabled) return;
   if (state.screen === "search") { get<HTMLFormElement>("search-form").requestSubmit(); return; }
   control.disabled = true; control.textContent = "Refreshing…";
-  const target: RefreshTarget = state.screen === "discover" ? { kind: "discovery", feed: state.feed } : { kind: "library" };
+  const target: RefreshTarget = { kind: "library" };
   try { const operation = await invoke<Operation>("refresh", { target }); toast(operation.message ?? (operation.state === "completed" ? "Refresh completed." : `${humanize(operation.state)}. Refresh will resume automatically when possible.`)); await load(); }
   catch (error) { toast(errorMessage(error)); }
   finally { control.disabled = false; control.textContent = "Refresh"; }
@@ -229,7 +226,7 @@ document.addEventListener("keydown", event => {
   if (get<HTMLDialogElement>("confirmation").open || get<HTMLDialogElement>("palette").open) return;
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") { event.preventDefault(); openPalette(); return; }
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "r") { event.preventDefault(); void refresh(); return; }
-  if ((event.metaKey || event.ctrlKey) && /^[1-6]$/.test(event.key)) { event.preventDefault(); const screen = screens[Number(event.key) - 1]; if (screen) navigate(screen); return; }
+  if ((event.metaKey || event.ctrlKey) && /^[1-5]$/.test(event.key)) { event.preventDefault(); const screen = screens[Number(event.key) - 1]; if (screen) navigate(screen); return; }
   if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement) return;
   if (event.key === "Escape" && !get("detail-panel").hidden) closeDetail();
   if (state.selected) { const followed = "facts" in state.selected ? state.selected.follow_state === "active" : state.selected.followed; if ((event.key.toLowerCase() === "f" && !followed) || (event.key === "Delete" && followed)) { event.preventDefault(); void confirmMutation(state.selected); } }

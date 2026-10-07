@@ -101,95 +101,6 @@ pub fn follow_counts(conn: &Connection) -> Result<(u32, u32), StoreError> {
     Ok(conn.query_row("SELECT COALESCE(SUM(m.kind = 'anime'), 0), COALESCE(SUM(m.kind = 'tv'), 0) FROM follows f JOIN media m ON m.media_id = f.media_id WHERE f.state = 'active'", [], |r| Ok((r.get(0)?, r.get(1)?)))?)
 }
 
-pub fn discovery(
-    conn: &Connection,
-    key: FeedKey,
-    now: UnixTimestamp,
-) -> Result<DiscoveryFeed, StoreError> {
-    let (snapshot, generated, expires, retry, error) = conn.query_row(
-        "SELECT f.current_snapshot_id, s.generated_at, s.expires_at, f.retry_after, f.last_error
-         FROM discovery_feeds f LEFT JOIN discovery_snapshots s ON s.snapshot_id = f.current_snapshot_id WHERE f.feed_key = ?1",
-        [key.as_str()], |r| Ok((r.get::<_, Option<i64>>(0)?, r.get::<_, Option<i64>>(1)?, r.get::<_, Option<i64>>(2)?, r.get::<_, Option<i64>>(3)?, r.get::<_, Option<String>>(4)?)),
-    )?;
-    let mut items = Vec::new();
-    if let Some(snapshot) = snapshot {
-        let mut stmt = conn.prepare("SELECT sm.source, sm.source_id FROM discovery_members dm JOIN source_media sm ON sm.source_media_id = dm.source_media_id WHERE dm.snapshot_id = ?1 ORDER BY dm.rank LIMIT 50")?;
-        let keys = stmt
-            .query_map([snapshot], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-        for (source, id) in keys {
-            let identity = SourceKey {
-                source: Source::parse(&source).map_err(bad)?,
-                id: SourceNumericId::new(id).map_err(bad)?,
-            };
-            if let Some(item) = detail(conn, identity, now)? {
-                items.push(item);
-            }
-        }
-    }
-    Ok(DiscoveryFeed {
-        key,
-        generated_at: generated
-            .map(|s| UnixTimestamp::new(s).map_err(bad))
-            .transpose()?,
-        expires_at: expires
-            .map(|s| UnixTimestamp::new(s).map_err(bad))
-            .transpose()?,
-        freshness: read_models::freshness(now, expires, retry),
-        last_error: error,
-        last_attempt: conn.query_row("SELECT completeness FROM discovery_snapshots WHERE feed_key = ?1 ORDER BY snapshot_id DESC LIMIT 1", [key.as_str()], |row| row.get::<_, String>(0)).optional()?.map(|state| serde_json::from_value(serde_json::Value::String(state)).map_err(bad)).transpose()?,
-        items,
-    })
-}
-
-pub fn next_discovery(conn: &Connection) -> Result<Option<(FeedKey, UnixTimestamp)>, StoreError> {
-    let row = conn.query_row("SELECT feed_key, MAX(refresh_after, COALESCE(retry_after, 0)) FROM discovery_feeds ORDER BY MAX(refresh_after, COALESCE(retry_after, 0)), feed_key LIMIT 1", [], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))).optional()?;
-    row.map(|(key, time)| {
-        Ok((
-            FeedKey::ALL
-                .into_iter()
-                .find(|f| f.as_str() == key)
-                .ok_or_else(|| bad("unknown feed"))?,
-            UnixTimestamp::new(time).map_err(bad)?,
-        ))
-    })
-    .transpose()
-}
-
-pub fn discovery_failure(
-    tx: &Transaction<'_>,
-    key: FeedKey,
-    now: UnixTimestamp,
-    error: &str,
-    retry: i64,
-) -> Result<(), StoreError> {
-    tx.execute("INSERT INTO discovery_snapshots (feed_key, generated_at, expires_at, completeness, error_code) VALUES (?1, ?2, ?3, 'failed', ?4)", rusqlite::params![key.as_str(), now.get(), now.get() + DISCOVERY_TTL, error])?;
-    tx.execute(
-        "UPDATE discovery_feeds SET retry_after = ?2, last_error = ?3 WHERE feed_key = ?1",
-        rusqlite::params![key.as_str(), now.get() + retry.max(60), error],
-    )?;
-    prune_discovery(tx, key)
-}
-
-pub fn prune_discovery(tx: &Transaction<'_>, key: FeedKey) -> Result<(), StoreError> {
-    tx.execute("DELETE FROM discovery_snapshots WHERE feed_key = ?1 AND snapshot_id NOT IN (SELECT snapshot_id FROM discovery_snapshots WHERE feed_key = ?1 ORDER BY snapshot_id DESC LIMIT 3) AND snapshot_id NOT IN (SELECT current_snapshot_id FROM discovery_feeds WHERE current_snapshot_id IS NOT NULL)", [key.as_str()])?;
-    Ok(())
-}
-
-/// Reserve the last ten requests until the known source reset; no guessed quota.
-pub fn discovery_budget(
-    conn: &Connection,
-    source: Source,
-    now: UnixTimestamp,
-) -> Result<Option<UnixTimestamp>, StoreError> {
-    let reset = conn.query_row("SELECT rate_limit_reset_at FROM source_runtime_state WHERE source = ?1 AND rate_limit_remaining <= 10 AND rate_limit_reset_at > ?2", rusqlite::params![source.as_str(), now.get()], |row| row.get::<_, i64>(0)).optional()?;
-    reset
-        .map(|time| UnixTimestamp::new(time).map_err(bad))
-        .transpose()
-}
-
 pub fn interrupt_operations(tx: &Transaction<'_>, now: UnixTimestamp) -> Result<(), StoreError> {
     tx.execute("UPDATE operations SET state = 'failed', updated_at = ?1, message = 'The service restarted before this refresh completed. Retry the refresh.' WHERE state IN ('queued', 'running')", [now.get()])?;
     Ok(())
@@ -290,7 +201,6 @@ pub fn snapshot(
                 upcoming: read_models::upcoming(&tx, now, 8, 0)?,
             }
         }
-        ViewQuery::Discovery { feed } => ViewData::Discovery(discovery(&tx, feed, now)?),
         ViewQuery::Library {
             kind,
             state,

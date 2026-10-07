@@ -58,9 +58,7 @@ async fn handle(library: &Arc<Library>, request: Request) -> Result<Response, Ap
             Ok(Response::FollowAnilist(Box::new(library.follow(id).await?)))
         }
 
-        Request::SearchTv { query } => Ok(Response::SearchTv(
-            library.search_tv(query.as_deref()).await?,
-        )),
+        Request::SearchTv { query } => Ok(Response::SearchTv(library.search_tv(&query).await?)),
 
         Request::FollowTv { id } => Ok(Response::FollowTv(Box::new(library.follow_tv(id).await?))),
 

@@ -136,45 +136,6 @@ pub fn parse_detail(requested: TvMazeId, body: &str) -> DetailResult {
     }
 }
 
-/// English-language, currently running shows from a schedule payload.
-pub fn parse_simulcast(body: &str) -> Vec<SearchCandidate> {
-    let Ok(rows) = serde_json::from_str::<Vec<crate::sources::tvmaze::dto::ScheduleRow>>(body)
-    else {
-        return Vec::new();
-    };
-    let mut seen = std::collections::BTreeSet::new();
-    let mut out = Vec::new();
-    for row in rows {
-        let Some(show) = row.show() else {
-            continue;
-        };
-        if show.language.as_deref() != Some("English") {
-            continue;
-        }
-        if show.status.as_deref() != Some("Running") {
-            continue;
-        }
-        // News/sports/talk dominate a US calendar day. The radar is for shows.
-        match show.show_type.as_deref() {
-            Some("Scripted" | "Animation") => {}
-            _ => continue,
-        }
-        let Ok(id) = parse_id(show.id) else {
-            continue;
-        };
-        if !seen.insert(id) {
-            continue;
-        }
-        if let Ok(candidate) = parse_candidate(show) {
-            out.push(candidate);
-        }
-        if out.len() >= 20 {
-            break;
-        }
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -201,45 +162,6 @@ mod tests {
         let next = parse_show(&show).expect("parse").next_airing.expect("next");
         assert_eq!(next.episode.get(), 20);
         assert_eq!(next.season, Some(4));
-    }
-
-    #[test]
-    fn simulcast_keeps_english_running_shows_and_drops_the_rest() {
-        let body = r#"[
-            {"show":{"id":1,"name":"Network","type":"Scripted","language":"English","status":"Running"}},
-            {"show":{"id":2,"name":"Donghua","type":"Scripted","language":"Chinese","status":"Running"}},
-            {"show":{"id":3,"name":"Ended","type":"Scripted","language":"English","status":"Ended"}},
-            {"show":{"id":4,"name":"News","type":"News","language":"English","status":"Running"}},
-            {"show":{"id":1,"name":"Network","type":"Scripted","language":"English","status":"Running"}}
-        ]"#;
-        let hits = parse_simulcast(body);
-        assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].source_id.get(), 1);
-    }
-
-    #[test]
-    fn simulcast_reads_an_inlined_broadcast_show_and_an_embedded_web_show() {
-        let body = r#"[
-            {"show":{"id":10,"name":"Broadcast","type":"Scripted","language":"English","status":"Running"}},
-            {"_embedded":{"show":{"id":11,"name":"Stream","type":"Animation","language":"English","status":"Running"}}}
-        ]"#;
-        let hits = parse_simulcast(body);
-        assert_eq!(hits.len(), 2);
-        assert_eq!(hits[0].source_id.get(), 10);
-        assert_eq!(hits[1].source_id.get(), 11);
-    }
-
-    #[test]
-    fn simulcast_caps_at_twenty() {
-        let rows: Vec<String> = (1..=25)
-            .map(|id| {
-                format!(
-                    r#"{{"_embedded":{{"show":{{"id":{id},"name":"S{id}","type":"Scripted","language":"English","status":"Running"}}}}}}"#
-                )
-            })
-            .collect();
-        let body = format!("[{}]", rows.join(","));
-        assert_eq!(parse_simulcast(&body).len(), 20);
     }
 
     #[test]

@@ -5,4 +5,4 @@ pub mod dto;
 pub mod parser;
 
 pub use client::TvMazeClient;
-pub use parser::{parse_detail, parse_simulcast, DetailResult};
+pub use parser::{parse_detail, DetailResult};

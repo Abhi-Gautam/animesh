@@ -7,7 +7,7 @@ and schedule updates contact AniList and TVmaze. Anime and TV are supported.
 
 ![Animesh desktop release radar](site/assets/share.png)
 
-The desktop app has Home, Discover, Search, Schedule, Library, and Health.
+The desktop app has Home, Search, Schedule, Library, and Health.
 Search and follow titles by name, see their next release, and keep tracking
 when the window is closed. On macOS, a menu-bar view keeps upcoming episodes
 one click away. The CLI uses the same local library.
@@ -96,7 +96,6 @@ the first time; declining is fine, since nothing in the CLI depends on it.
 ```bash
 animesh search "one piece"   # find a title on AniList
 animesh follow anilist:21    # follow it
-animesh search --tv          # currently airing English-language US TV
 animesh follow tvmaze:82     # follow a TVmaze show (or: follow --tv 82)
 animesh drop media:1         # stop following, by the token list/next print
 animesh next                 # upcoming episodes; local only, never hits the network
@@ -151,7 +150,7 @@ The current release remains ad-hoc signed.
 
 The desktop Command Center uses Tauri 2 with plain HTML, CSS, and TypeScript.
 It connects to the existing daemon; the daemon owns the library, source calls,
-refresh policy, and notifications. Home, Discover, Search, Schedule, Library,
+refresh policy, and notifications. Home, Search, Schedule, Library,
 and Health share a fixed header and footer with scrolling content between them.
 On macOS, **Open Animesh** in the menu bar opens the bundled desktop app.
 

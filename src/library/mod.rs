@@ -10,4 +10,3 @@ pub mod reducers;
 pub mod service;
 
 pub mod command_center;
-mod discovery;

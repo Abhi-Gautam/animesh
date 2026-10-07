@@ -56,7 +56,6 @@ pub struct Library {
     /// restart, because a fresh process reconciles against OS truth on its
     /// first pass anyway.
     plan_generation: AtomicU64,
-    pub(super) discovery_lock: tokio::sync::Mutex<()>,
 }
 
 impl std::fmt::Debug for Library {
@@ -91,7 +90,6 @@ impl Library {
             schema_version,
             data_revision: tokio::sync::watch::channel(0).0,
             plan_generation: AtomicU64::new(0),
-            discovery_lock: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -214,77 +212,36 @@ impl Library {
         }
     }
 
-    /// Search TVmaze. An empty query lists currently airing English-language
-    /// US broadcasts and streams rather than matching a title.
+    /// Search TVmaze by title. Results are transient until the user follows one.
     pub async fn search_tv(
         &self,
-        query: Option<&str>,
+        query: &str,
     ) -> Result<Vec<crate::domain::media::SearchCandidate>, AppError> {
+        let query = query.trim();
+        if query.is_empty() {
+            return Err(AppError::invalid_argument("search query is empty"));
+        }
         let now = self.now();
         self.check_tv_available(now).await?;
-
-        if let Some(query) = query.map(str::trim).filter(|q| !q.is_empty()) {
-            let encoded = crate::sources::tvmaze::client::encode_query(query);
-            let response = self
-                .tvmaze
-                .get(&format!("/search/shows?q={encoded}"), now)
-                .await;
-            self.record_tv_rate_state(&response, now).await?;
-            let body = self.usable_tv_body(&response)?;
-            let hits: Vec<crate::sources::tvmaze::dto::SearchHit> = serde_json::from_str(&body)
-                .map_err(|e| {
-                    AppError::new(
-                        ErrorCode::SourceUnavailable,
-                        format!("TVmaze sent an unreadable search: {e}"),
-                    )
-                })?;
-            return Ok(hits
-                .iter()
-                .filter_map(|hit| crate::sources::tvmaze::parser::parse_candidate(&hit.show).ok())
-                .take(20)
-                .collect());
-        }
-
-        let broadcast = self.tvmaze.get("/schedule?country=US", now).await;
-        self.record_tv_rate_state(&broadcast, now).await?;
-        if broadcast.http_status == Some(429) {
-            return Err(self.tv_rate_limited(&broadcast));
-        }
-        let web = self.tvmaze.get("/schedule/web?country=US", now).await;
-        self.record_tv_rate_state(&web, now).await?;
-        if web.http_status == Some(429) {
-            return Err(self.tv_rate_limited(&web));
-        }
-
-        let broadcast_body = match self.usable_tv_body(&broadcast) {
-            Ok(body) => Some(body),
-            Err(error) if error.code == ErrorCode::SourceRateLimited => return Err(error),
-            Err(_) => None,
-        };
-        let web_body = match self.usable_tv_body(&web) {
-            Ok(body) => Some(body),
-            Err(error) if error.code == ErrorCode::SourceRateLimited => return Err(error),
-            Err(_) => None,
-        };
-        if broadcast_body.is_none() && web_body.is_none() {
-            return Err(AppError::new(
-                ErrorCode::SourceUnavailable,
-                "could not reach TVmaze",
-            ));
-        }
-
-        let mut candidates = crate::sources::tvmaze::parser::parse_simulcast(
-            broadcast_body.as_deref().unwrap_or_default(),
-        );
-        for extra in
-            crate::sources::tvmaze::parser::parse_simulcast(web_body.as_deref().unwrap_or_default())
-        {
-            if !candidates.iter().any(|c| c.source_id == extra.source_id) {
-                candidates.push(extra);
-            }
-        }
-        candidates.truncate(20);
-        Ok(candidates)
+        let encoded = crate::sources::tvmaze::client::encode_query(query);
+        let response = self
+            .tvmaze
+            .get(&format!("/search/shows?q={encoded}"), now)
+            .await;
+        self.record_tv_rate_state(&response, now).await?;
+        let body = self.usable_tv_body(&response)?;
+        let hits: Vec<crate::sources::tvmaze::dto::SearchHit> = serde_json::from_str(&body)
+            .map_err(|e| {
+                AppError::new(
+                    ErrorCode::SourceUnavailable,
+                    format!("TVmaze sent an unreadable search: {e}"),
+                )
+            })?;
+        Ok(hits
+            .iter()
+            .filter_map(|hit| crate::sources::tvmaze::parser::parse_candidate(&hit.show).ok())
+            .take(20)
+            .collect())
     }
 
     /// Follow a TVmaze show id.
