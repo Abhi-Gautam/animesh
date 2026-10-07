@@ -22,9 +22,9 @@
 # tarballs for people who would rather not compile.
 class Animesh < Formula
   desc "Personal release radar for anime and other scheduled media"
-  homepage "https://github.com/Abhi-Gautam/animesh"
-  url "https://github.com/Abhi-Gautam/animesh/archive/refs/tags/v0.7.0.tar.gz"
-  sha256 "f9bbe4b6a772e253c1187c5384dfcaeaa3f2b79e486eaac8837270ad0bc3e871"
+  homepage "https://animesh.syntropicsystems.dev/"
+  url "https://github.com/Abhi-Gautam/animesh/archive/refs/tags/v0.7.1.tar.gz"
+  sha256 "9a96463a90c2023ed9db5e097a7262a67f1ad3d804821bd3f7fd84ad0a74902c"
   license "MIT"
   head "https://github.com/Abhi-Gautam/animesh.git", branch: "master"
 
