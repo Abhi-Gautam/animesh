@@ -517,6 +517,7 @@ fn stop_installed_app(target: &Path) {
         .status();
 }
 
+#[cfg(target_os = "macos")]
 fn link_cli(app: &Path) -> Fallible {
     let Some(home) = std::env::var_os("HOME") else {
         return Err("HOME is unset; cannot link the CLI".to_owned());

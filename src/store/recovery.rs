@@ -269,7 +269,7 @@ pub fn operate(database: &Path, action: &str, argument: &str) -> Result<String, 
     if action == "restore" {
         restore(database, argument)?;
         return Ok(
-            "Restored the verified library backup. A before-restore snapshot was preserved.".into(),
+            "Restored the verified library backup. Original recovery bytes were preserved.".into(),
         );
     }
     let mut conn = super::connection::open(database, true)?;

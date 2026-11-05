@@ -47,6 +47,14 @@ impl AniListClient {
     }
 
     pub fn production() -> Result<Self, reqwest::Error> {
+        #[cfg(feature = "test-harness")]
+        if std::env::var_os("ANIMESH_DATA_ROOT").is_some()
+            && std::env::var_os("ANIMESH_LOG_ROOT").is_some()
+        {
+            if let Ok(url) = std::env::var("ANIMESH_SOURCE_URL") {
+                return Self::new(url);
+            }
+        }
         Self::new(DEFAULT_BASE_URL)
     }
 
