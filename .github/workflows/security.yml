@@ -23,7 +23,7 @@ jobs:
           node-version: 22
       - name: Install pinned advisory scanner
         run: cargo install cargo-audit --version 0.22.2 --locked
-      - name: Audit both dependency graphs and release configuration
+      - name: Audit dependencies and release configuration
         run: python3 scripts/check-security.py
       - name: Frontend advisories
         run: |
@@ -34,3 +34,4 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libglib2.0-dev
           cargo test --manifest-path desktop/vendor/glib/Cargo.toml --locked --release variant_iter
+          cargo test --manifest-path desktop/vendor/glib/Cargo.toml --locked --release --features compiletests --test subclass_compiletest --no-run

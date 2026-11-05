@@ -123,6 +123,7 @@ version = "^0.1"
 version = "3"
 
 [dev-dependencies.trybuild2]
+package = "trybuild"
 version = "1"
 
 [features]

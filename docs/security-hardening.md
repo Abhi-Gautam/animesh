@@ -39,13 +39,13 @@ corrupt-original recovery, corrupt-backup rejection, private path links, saturat
 wait subscriptions, installer rollback, and hostile release archives. An
 isolated Linux container also runs nine installer cases, including transition
 from the old flat v0.7.2 layout, failed first installation, and concurrent installs.
-An
-exhaustive small-state mutation test checks all subsets of four follows in both
+An exhaustive small-state mutation test checks all subsets of four follows in both
 deletion orders, including rollback, repeated erasure, and repeated retention.
 End-to-end tests use temporary roots, explicit harness binaries, and local mock
 providers; they never open a maintainer's real library.
 
-Both Rust lockfiles and both npm lockfiles are checked for advisories. The GLib
+Both application Rust lockfiles, the separate upstream test lockfile, and both
+npm lockfiles are checked for advisories. The GLib
 fixed-advisory exception and the build-only `proc-macro-error` maintenance notice
 are scoped and expire on 1 February 2027. Replace them with a supported compatible
 GTK stack when available; do not broaden or silently renew the exceptions.

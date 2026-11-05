@@ -45,7 +45,7 @@ def check_config():
 def audit(lockfile):
     contents=(ROOT / lockfile).read_text()
     local_glib='[[package]\nname = "glib"\nversion = "0.18.5"\n'
-    patched_glib=lockfile=="desktop/Cargo.lock" and local_glib in contents and local_glib+'source =' not in contents
+    patched_glib=lockfile.startswith("desktop/") and local_glib in contents and local_glib+'source =' not in contents
     # Local patches have no registry identity. Restore that identity only in the
     # scanner input so newly published advisories still cover the vendored crate.
     if patched_glib:
@@ -83,7 +83,7 @@ def audit(lockfile):
 if __name__ == "__main__":
     try:
         check_config()
-        for lockfile in ["Cargo.lock", "desktop/Cargo.lock"]:
+        for lockfile in ["Cargo.lock", "desktop/Cargo.lock", "desktop/vendor/glib/Cargo.lock"]:
             audit(lockfile)
     except Exception as error:
         print(str(error), file=sys.stderr)
