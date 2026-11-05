@@ -37,6 +37,9 @@ Regression coverage includes hostile provider text/status/redirect/backoff,
 over-limit IPC responses, retention integrity, full-disk transaction rollback,
 corrupt-original recovery, corrupt-backup rejection, private path links, saturated
 wait subscriptions, installer rollback, and hostile release archives. An
+isolated Linux container also runs nine installer cases, including transition
+from the old flat v0.7.2 layout, failed first installation, and concurrent installs.
+An
 exhaustive small-state mutation test checks all subsets of four follows in both
 deletion orders, including rollback, repeated erasure, and repeated retention.
 End-to-end tests use temporary roots, explicit harness binaries, and local mock
