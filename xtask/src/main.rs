@@ -432,19 +432,58 @@ fn install(release: bool) -> Fallible {
     let staged = bundle(release)?;
     let target = installed_app();
 
-    stop_installed_app(&target);
-
-    if target.exists() {
-        std::fs::remove_dir_all(&target)
-            .map_err(|e| format!("cannot remove the installed app: {e}"))?;
+    let candidate = target.with_file_name(format!(".Animesh-staged-{}.app", std::process::id()));
+    let previous = target.with_file_name(".Animesh-previous.app");
+    if candidate.exists() {
+        return Err("an unfinished staged installation exists; inspect it before retrying".into());
     }
+    std::fs::create_dir(&candidate).map_err(|e| format!("cannot reserve staged bundle: {e}"))?;
     run(
         "cp",
-        &["-R", &staged.to_string_lossy(), &target.to_string_lossy()],
+        &[
+            "-R",
+            &staged.join(".").to_string_lossy(),
+            &candidate.to_string_lossy(),
+        ],
     )?;
-
-    link_cli(&target)?;
-    verify(&target)?;
+    if let Err(error) = verify(&candidate) {
+        let _ = std::fs::remove_dir_all(&candidate);
+        return Err(error);
+    }
+    stop_installed_app(&target);
+    if previous.exists() {
+        std::fs::remove_dir_all(&previous)
+            .map_err(|e| format!("cannot clear old rollback bundle: {e}"))?;
+    }
+    #[cfg(target_os = "macos")]
+    if target.exists() {
+        rustix::fs::renameat_with(
+            rustix::fs::CWD,
+            &candidate,
+            rustix::fs::CWD,
+            &target,
+            rustix::fs::RenameFlags::EXCHANGE,
+        )
+        .map_err(|e| format!("cannot atomically exchange app bundles: {e}"))?;
+        // The old complete app now occupies candidate. Keep it as the rollback copy.
+        if let Err(error) = link_cli(&target).and_then(|_| verify(&target)) {
+            let _ = rustix::fs::renameat_with(
+                rustix::fs::CWD,
+                &candidate,
+                rustix::fs::CWD,
+                &target,
+                rustix::fs::RenameFlags::EXCHANGE,
+            );
+            return Err(error);
+        }
+        std::fs::rename(&candidate, &previous)
+            .map_err(|e| format!("cannot retain previous app bundle: {e}"))?;
+    } else {
+        std::fs::rename(&candidate, &target)
+            .map_err(|e| format!("cannot activate staged app: {e}"))?;
+        link_cli(&target)?;
+        verify(&target)?;
+    }
 
     println!("installed {}", target.display());
     println!("launch it once so it can request notification permission:");

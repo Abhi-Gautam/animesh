@@ -108,6 +108,7 @@ async fn serve(
 }
 
 async fn open_library(paths: &AppPaths) -> Result<Library, StoreError> {
+    crate::store::recovery::cleanup_staging(&paths.database())?;
     let store = Store::open(&paths.database())?;
     let now = SystemClock.now();
 
@@ -115,7 +116,20 @@ async fn open_library(paths: &AppPaths) -> Result<Library, StoreError> {
     // transaction while the schema moves.
     let migrated = store
         .writer()
-        .call(move |conn| migrations::apply(conn, now.get()))
+        .call({
+            let database = paths.database();
+            move |conn| {
+                let old = migrations::current_version(conn)?;
+                if old > 0 && old < migrations::supported_version() {
+                    crate::store::recovery::snapshot(conn, &database, "pre-upgrade")?;
+                }
+                let count = migrations::apply(conn, now.get())?;
+                let tx = conn.transaction()?;
+                crate::store::maintenance::prune(&tx, now.get())?;
+                tx.commit()?;
+                Ok(count)
+            }
+        })
         .await?;
 
     if migrated > 0 {
@@ -138,7 +152,7 @@ async fn open_library(paths: &AppPaths) -> Result<Library, StoreError> {
     let tvmaze = TvMazeClient::production()
         .map_err(|e| StoreError::Integrity(format!("building the TVmaze client: {e}")))?;
 
-    Ok(Library::new(
+    let library = Library::new(
         store,
         source,
         tvmaze,
@@ -146,7 +160,11 @@ async fn open_library(paths: &AppPaths) -> Result<Library, StoreError> {
         Arc::new(KeyedJitter::default()),
         installation,
         migrations::supported_version(),
-    ))
+    );
+    if let Err(error) = library.maintain_storage().await {
+        tracing::warn!(code = error.code.as_str(), "initial backup needs attention");
+    }
+    Ok(library)
 }
 
 fn degraded_snapshot(

@@ -2,6 +2,7 @@ import type { Snapshot } from "../types.js";
 import { button, fields, humanize, node, page, sourceName, time } from "../ui.js";
 
 export const remediation: Record<string, string> = {
+  backup_unavailable: "Library backup could not complete. Check free disk space and backup directory permissions. Your saved schedules remain readable.",
   notifications_denied: "Enable Animesh notifications in your system’s notification settings.",
   notification_capacity_exceeded: "The system has limited notification capacity. Animesh registers the nearest releases first.",
   source_rate_limited: "A source asked Animesh to wait. Existing local schedules remain available, and refresh resumes automatically.",

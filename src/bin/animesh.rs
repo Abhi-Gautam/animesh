@@ -12,6 +12,13 @@ use clap::error::ErrorKind;
 use clap::Parser;
 
 fn main() -> ExitCode {
+    if std::env::args().nth(1).as_deref() == Some("--test-harness") {
+        if cfg!(feature = "test-harness") {
+            println!("animesh-isolated-harness");
+            return ExitCode::SUCCESS;
+        }
+        return ExitCode::from(2);
+    }
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(error) => return clap_failure(error),
@@ -57,7 +64,10 @@ fn clap_failure(error: clap::Error) -> ExitCode {
             println!("{}", json::failure(&AppError::invalid_argument(message)));
             ExitCode::from(1)
         }
-        _ => error.exit(),
+        _ => {
+            eprintln!("{}", cli::render::terminal_text(&error.to_string()));
+            ExitCode::from(1)
+        }
     }
 }
 

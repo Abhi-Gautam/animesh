@@ -249,15 +249,7 @@ fn populate(menu: &NSMenu, target: &MenuTarget, model: &MenuModel, mtm: MainThre
     menu.addItem(&NSMenuItem::separatorItem(mtm));
     add_action(menu, target, "Quit Animesh", sel!(quit:), "q", mtm);
 
-    tracing::debug!(
-        items = menu.numberOfItems(),
-        titles = %(0..menu.numberOfItems())
-            .filter_map(|i| menu.itemAtIndex(i))
-            .map(|item| format!("[{}]", item.title()))
-            .collect::<Vec<_>>()
-            .join(" "),
-        "menu populated"
-    );
+    tracing::debug!(items = menu.numberOfItems(), "menu populated");
 }
 
 /// A non-clickable line. Disabled rather than absent so the layout is stable.

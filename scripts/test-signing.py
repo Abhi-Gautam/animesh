@@ -15,9 +15,21 @@ def load(name):
 
 
 sign = load("sign-release")
+package = load("package-release")
 
 
 class SigningChecks(unittest.TestCase):
+    def test_public_mac_packaging_fails_before_native_commands_without_notarization(self):
+        with tempfile.TemporaryDirectory() as temp, patch.object(package, "ROOT", Path(temp)), patch.dict(os.environ, {"ANIMESH_NOTARIZED": "false"}), patch.object(package.subprocess, "run") as run:
+            (Path(temp) / "Cargo.toml").write_text('[package]\nversion = "0.7.2"\n')
+            with self.assertRaisesRegex(ValueError, "require Developer ID"):
+                package.package("aarch64-apple-darwin")
+            run.assert_not_called()
+
+    def test_unsigned_instructions_never_recommend_gatekeeper_bypass(self):
+        self.assertNotIn("Privacy &", package.MAC_INSTALL)
+        self.assertIn("Never disable Gatekeeper", package.MAC_INSTALL)
+
     def test_missing_credentials_do_not_create_a_keychain(self):
         with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {}, clear=True), patch.object(sign, "run") as run:
             with self.assertRaises(ValueError):

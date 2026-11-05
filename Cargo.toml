@@ -21,6 +21,7 @@ exclude = [
     "docs/",
     "site/",
     "scripts/",
+    "tools/",
     "CLAUDE.md",
     "clippy.toml",
     "deny.toml",
@@ -59,7 +60,7 @@ chrono = { version = "0.4", default-features = false, features = ["std", "clock"
 clap = { version = "4", features = ["derive"] }
 directories = "6"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-rusqlite = { version = "0.37", features = ["bundled"] }
+rusqlite = { version = "0.37", features = ["bundled", "backup"] }
 rustix = { version = "1", features = ["fs", "process"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -87,7 +88,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
 # duplicates the UNUserNotificationCenter adapter we already have. Pure Rust, so
 # a static-ish build and CI cross-compilation stay simple.
 [target.'cfg(target_os = "linux")'.dependencies]
-zbus = { version = "5.18", default-features = false, features = ["tokio"] }
+zbus = { version = "6.2", default-features = false, features = ["tokio", "proxy"] }
 
 # Apple frameworks. `src/platform/mod.rs` gates the modules; without this the
 # dependency graph would still pull them in and no other platform could build.

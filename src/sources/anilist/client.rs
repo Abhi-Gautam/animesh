@@ -36,14 +36,14 @@ impl AniListClient {
         base_url: impl Into<String>,
         timeout: Duration,
     ) -> Result<Self, reqwest::Error> {
+        let base_url = base_url.into();
         let client = reqwest::Client::builder()
+            .https_only(base_url.starts_with("https://"))
+            .redirect(reqwest::redirect::Policy::none())
             .timeout(timeout)
             .user_agent(USER_AGENT)
             .build()?;
-        Ok(Self {
-            client,
-            base_url: base_url.into(),
-        })
+        Ok(Self { client, base_url })
     }
 
     pub fn production() -> Result<Self, reqwest::Error> {

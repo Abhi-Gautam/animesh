@@ -10,3 +10,6 @@ pub mod graph;
 pub mod migrations;
 pub mod read_models;
 pub mod releases;
+
+pub mod maintenance;
+pub mod recovery;

@@ -195,6 +195,14 @@ impl Reconciler {
         // arrives. Attempting without it would only produce one failure per job
         // per pass forever, and the prompt is raised deliberately by the menu,
         // never as a side effect of reconciling.
+        // Privacy removals must run even when notification display permission is denied.
+        let removals = self.library.pending_notification_removals().await?;
+        if !removals.is_empty() {
+            match self.surface.remove(removals.clone()).await {
+                Ok(()) => self.library.ack_notification_removals(removals).await?,
+                Err(error) => return self.abort(authorization, &error).await,
+            }
+        }
         if !authorization.permits_registration() {
             let (reason, code) = match authorization {
                 AuthorizationState::Denied => ("notifications are denied", Some("denied")),

@@ -63,7 +63,7 @@ pub async fn run(cli: Cli) -> ExitCode {
                 println!("{}", json::failure(&error));
             } else {
                 // Stderr is diagnostics; stdout stays data-only so piping works.
-                eprintln!("animesh: {}", error.message);
+                eprintln!("animesh: {}", render::terminal_text(&error.message));
                 if let Some(seconds) = error.retry_after_secs {
                     eprintln!("         try again in about {seconds}s");
                 }
@@ -109,8 +109,12 @@ fn render_human(outcome: &Outcome, now: crate::domain::ids::UnixTimestamp) -> St
             warn_about_staleness(rows);
             render::upcoming(rows, now)
         }
+        Response::ReadPage(_) => "Read a library page.".to_owned(),
         Response::ListFollows(rows) => render::follows(rows, now),
-        Response::Drop(summary) => format!("Stopped following {}.", summary.display_title),
+        Response::Drop(summary) => format!(
+            "Stopped following {}.",
+            render::terminal_text(summary.display_title.as_str())
+        ),
         Response::TriggerRefresh(accepted) => match accepted.disposition {
             crate::domain::read_models::RefreshDisposition::Started => {
                 "Refreshed. Run 'animesh next' to see the schedule.".to_owned()
@@ -140,6 +144,29 @@ async fn execute(cli: Cli) -> Result<Outcome, AppError> {
             return Ok(Outcome::Local {
                 kind: "service",
                 message,
+            });
+        }
+        Command::Library { action } => {
+            use args::LibraryAction;
+            let (action, argument) = match action {
+                LibraryAction::Backup => ("backup", String::new()),
+                LibraryAction::Restore { slot, .. } => ("restore", slot.as_str().to_owned()),
+                LibraryAction::Storage => ("storage", String::new()),
+            };
+            return Ok(Outcome::Local {
+                kind: "library",
+                message: crate::service::library_tool(action, &argument)?,
+            });
+        }
+        Command::Privacy { action } => {
+            use args::PrivacyAction;
+            let (action, argument) = match action {
+                PrivacyAction::Forget { id, .. } => ("forget", id.to_string()),
+                PrivacyAction::Notifications { mode } => ("notifications", mode.clone()),
+            };
+            return Ok(Outcome::Local {
+                kind: "privacy",
+                message: crate::service::library_tool(action, &argument)?,
             });
         }
         Command::Skill { action } => {
@@ -224,7 +251,10 @@ async fn execute(cli: Cli) -> Result<Outcome, AppError> {
         Command::Refresh => Request::TriggerRefresh,
         Command::Status => Request::Status,
         // Both returned above, before any socket work.
-        Command::Service { .. } | Command::Skill { .. } => {
+        Command::Service { .. }
+        | Command::Skill { .. }
+        | Command::Library { .. }
+        | Command::Privacy { .. } => {
             return Ok(Outcome::Local {
                 kind: "none",
                 message: String::new(),
@@ -244,7 +274,53 @@ async fn send_request(
     paths: &crate::paths::AppPaths,
     request: Request,
 ) -> Result<Response, AppError> {
-    client::send(paths, request).await
+    use crate::domain::command_center::{ReadKind, ReadRows};
+    let kind = match &request {
+        Request::ListFollows => Some(ReadKind::Library),
+        Request::Upcoming { dropped, .. } => Some(if *dropped {
+            ReadKind::Dropped
+        } else {
+            ReadKind::Upcoming
+        }),
+        _ => None,
+    };
+    let Some(kind) = kind else {
+        return client::send(paths, request).await;
+    };
+    request.validate()?;
+    let limit = match request {
+        Request::Upcoming { limit, dropped } => limit.unwrap_or(if dropped {
+            crate::domain::read_models::DROPPED_BAND
+        } else {
+            crate::domain::read_models::DEFAULT_UPCOMING_LIMIT
+        }) as usize,
+        _ => usize::MAX,
+    };
+    let mut cursor = None;
+    let mut follows = Vec::new();
+    let mut upcoming = Vec::new();
+    loop {
+        let Response::ReadPage(page) =
+            client::send(paths, Request::ReadPage { kind, cursor }).await?
+        else {
+            return Err(AppError::internal("Unexpected library page"));
+        };
+        match page.rows {
+            ReadRows::Library(rows) if kind == ReadKind::Library => follows.extend(rows),
+            ReadRows::Upcoming(rows) if kind != ReadKind::Library => upcoming.extend(rows),
+            _ => return Err(AppError::internal("Unexpected library page kind")),
+        }
+        cursor = page.next;
+        if cursor.is_none() || upcoming.len() >= limit {
+            break;
+        }
+    }
+    if kind == ReadKind::Library {
+        Ok(Response::ListFollows(follows))
+    } else {
+        upcoming.truncate(limit);
+        Ok(Response::Upcoming(upcoming))
+    }
 }
 
 async fn resolve_drop(

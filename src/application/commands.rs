@@ -46,6 +46,10 @@ pub enum Request {
         media_id: MediaId,
     },
     ListFollows,
+    ReadPage {
+        kind: crate::domain::command_center::ReadKind,
+        cursor: Option<crate::domain::command_center::PageCursor>,
+    },
     Upcoming {
         limit: Option<u32>,
         /// Just-aired rows inside the visibility window. Default is the future.
@@ -74,6 +78,7 @@ impl Request {
             Self::FollowTv { .. } => "follow_tv",
             Self::Drop { .. } => "drop",
             Self::ListFollows => "list_follows",
+            Self::ReadPage { .. } => "read_page",
             Self::Upcoming { .. } => "upcoming",
             Self::TriggerRefresh => "trigger_refresh",
             Self::WaitForRevision { .. } => "wait_for_revision",
@@ -161,6 +166,7 @@ pub enum Response {
     FollowTv(Box<FollowResult>),
     Drop(Box<FollowSummary>),
     ListFollows(Vec<FollowSummary>),
+    ReadPage(crate::domain::command_center::ReadPage),
     Upcoming(Vec<UpcomingRelease>),
     TriggerRefresh(RefreshAccepted),
     WaitForRevision(crate::domain::command_center::RevisionStamp),
@@ -180,6 +186,7 @@ impl Response {
             Self::FollowTv(_) => "follow_tv",
             Self::Drop(_) => "drop",
             Self::ListFollows(_) => "list_follows",
+            Self::ReadPage(_) => "read_page",
             Self::Upcoming(_) => "upcoming",
             Self::TriggerRefresh(_) => "trigger_refresh",
             Self::WaitForRevision(_) => "wait_for_revision",

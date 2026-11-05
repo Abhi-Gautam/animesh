@@ -146,10 +146,66 @@ pub enum Command {
         action: ServiceAction,
     },
 
+    /// Back up, restore, or inspect local library storage.
+    Library {
+        #[command(subcommand)]
+        action: LibraryAction,
+    },
+    /// Control retained history and notification privacy.
+    Privacy {
+        #[command(subcommand)]
+        action: PrivacyAction,
+    },
+
     /// Install the Agent Skill, so any AI agent can drive Animesh.
     Skill {
         #[command(subcommand)]
         action: SkillAction,
+    },
+}
+
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+pub enum BackupSlot {
+    Daily,
+    Manual,
+    PreUpgrade,
+}
+impl BackupSlot {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Daily => "daily",
+            Self::Manual => "manual",
+            Self::PreUpgrade => "pre-upgrade",
+        }
+    }
+}
+#[derive(Debug, Subcommand)]
+pub enum LibraryAction {
+    /// Create and integrity-check a consistent snapshot. Briefly stops the managed service.
+    Backup,
+    /// Restore a verified snapshot with the service stopped. Preserves a rollback copy.
+    Restore {
+        #[arg(long = "from", value_enum)]
+        slot: BackupSlot,
+        #[arg(long, required = true)]
+        yes: bool,
+    },
+    /// Show disk usage and evidence budget without printing titles.
+    Storage,
+}
+#[derive(Debug, Subcommand)]
+pub enum PrivacyAction {
+    /// Erase this title's local history and all app-managed backups. Irreversible.
+    Forget {
+        #[arg(value_parser=parse_media_key)]
+        id: MediaId,
+        #[arg(long, required = true)]
+        yes: bool,
+    },
+    /// Hide titles/episode details in notification banners.
+    Notifications {
+        #[arg(value_parser=["private","titles"])]
+        mode: String,
     },
 }
 
@@ -178,6 +234,13 @@ pub enum ServiceAction {
     Status,
 }
 
+fn parse_media_key(raw: &str) -> Result<MediaId, String> {
+    raw.strip_prefix("media:")
+        .ok_or_else(|| "Use media:N from your library".to_owned())?
+        .parse::<MediaId>()
+        .map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -194,7 +257,8 @@ mod tests {
         assert_eq!(
             names,
             vec![
-                "search", "follow", "next", "list", "drop", "refresh", "status", "service", "skill"
+                "search", "follow", "next", "list", "drop", "refresh", "status", "service",
+                "library", "privacy", "skill"
             ]
         );
     }

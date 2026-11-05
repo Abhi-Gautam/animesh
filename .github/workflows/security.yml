@@ -1,0 +1,36 @@
+name: Security
+on:
+  pull_request:
+  push:
+    branches: [master, 'codex/**']
+  schedule:
+    - cron: '17 4 * * 1'
+  workflow_call:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  security:
+    name: Security gates
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - name: Install pinned advisory scanner
+        run: cargo install cargo-audit --version 0.22.2 --locked
+      - name: Audit both dependency graphs and release configuration
+        run: python3 scripts/check-security.py
+      - name: Frontend advisories
+        run: |
+          npm audit --prefix desktop/ui
+          npm audit --prefix tools/cloudflare
+      - name: Runtime backport regression
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libglib2.0-dev
+          cargo test --manifest-path desktop/vendor/glib/Cargo.toml --locked --release variant_iter

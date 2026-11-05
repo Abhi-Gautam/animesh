@@ -14,6 +14,9 @@ use crate::domain::ids::UnixTimestamp;
 /// must not be able to make us allocate them first.
 pub const MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
 
+/// Source-wide backoff is never persisted beyond one day.
+pub const MAX_RETRY_AFTER_SECS: u32 = 24 * 60 * 60;
+
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Classification of one response occurrence.
@@ -110,12 +113,16 @@ pub fn parse_retry_after(value: &str, now: UnixTimestamp) -> Option<u32> {
     let value = value.trim();
 
     if let Ok(seconds) = value.parse::<u32>() {
-        return Some(seconds);
+        return Some(seconds.clamp(1, MAX_RETRY_AFTER_SECS));
     }
 
     let deadline = chrono::DateTime::parse_from_rfc2822(value).ok()?;
     let delta = deadline.timestamp() - now.get();
-    u32::try_from(delta.max(0)).ok()
+    Some(
+        u32::try_from(delta.max(1))
+            .unwrap_or(MAX_RETRY_AFTER_SECS)
+            .min(MAX_RETRY_AFTER_SECS),
+    )
 }
 
 #[cfg(test)]
@@ -183,7 +190,7 @@ mod tests {
     fn retry_after_parses_the_seconds_form() {
         assert_eq!(parse_retry_after("120", at(1_000)), Some(120));
         assert_eq!(parse_retry_after("  60 ", at(1_000)), Some(60));
-        assert_eq!(parse_retry_after("0", at(1_000)), Some(0));
+        assert_eq!(parse_retry_after("0", at(1_000)), Some(1));
     }
 
     #[test]
@@ -198,11 +205,11 @@ mod tests {
     }
 
     #[test]
-    fn a_past_http_date_clamps_to_zero_rather_than_underflowing() {
+    fn a_past_http_date_clamps_to_one_rather_than_underflowing() {
         let deadline = 1_445_412_480;
         assert_eq!(
             parse_retry_after("Wed, 21 Oct 2015 07:28:00 GMT", at(deadline + 500)),
-            Some(0)
+            Some(1)
         );
     }
 

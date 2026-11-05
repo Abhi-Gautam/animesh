@@ -5,7 +5,7 @@
 //! evidence, the observation, the projection, and the notification intent
 //! together.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use crate::domain::ids::{
@@ -56,6 +56,7 @@ pub struct Library {
     /// restart, because a fresh process reconciles against OS truth on its
     /// first pass anyway.
     plan_generation: AtomicU64,
+    backup_failed: AtomicBool,
 }
 
 impl std::fmt::Debug for Library {
@@ -90,7 +91,115 @@ impl Library {
             schema_version,
             data_revision: tokio::sync::watch::channel(0).0,
             plan_generation: AtomicU64::new(0),
+            backup_failed: AtomicBool::new(false),
         }
+    }
+
+    pub async fn read_page(
+        &self,
+        kind: crate::domain::command_center::ReadKind,
+        cursor: Option<crate::domain::command_center::PageCursor>,
+    ) -> Result<crate::domain::command_center::ReadPage, AppError> {
+        use crate::domain::command_center::{PageCursor, ReadKind, ReadPage, ReadRows};
+        let stamp = self.revision_stamp();
+        let scope = format!("read:{kind:?}");
+        let offset = if let Some(c) = cursor {
+            if c.instance_id != stamp.instance_id
+                || c.revision != stamp.revision
+                || c.scope != scope
+                || c.offset > u32::MAX - 50
+            {
+                return Err(AppError::invalid_argument(
+                    "The library changed while reading it; retry from the first page",
+                ));
+            }
+            c.offset
+        } else {
+            0
+        };
+        let now = self.now();
+        let (rows, more) = match kind {
+            ReadKind::Library => {
+                let mut rows = self
+                    .store
+                    .read(move |conn| summaries_page(conn, now, Some(offset)))
+                    .await?;
+                let more = rows.len() > 50;
+                rows.truncate(50);
+                (ReadRows::Library(rows), more)
+            }
+            ReadKind::Upcoming | ReadKind::Dropped => {
+                let all = if kind == ReadKind::Dropped {
+                    self.recently_aired(Some(500)).await?
+                } else {
+                    self.upcoming(Some(500)).await?
+                };
+                let more = all.len() > offset as usize + 50;
+                (
+                    ReadRows::Upcoming(all.into_iter().skip(offset as usize).take(50).collect()),
+                    more,
+                )
+            }
+        };
+        if self.data_revision() != stamp.revision {
+            return Err(AppError::invalid_argument(
+                "The library changed while reading it; retry",
+            ));
+        }
+        let next = more.then_some(PageCursor {
+            instance_id: stamp.instance_id,
+            revision: stamp.revision,
+            scope,
+            offset: offset + 50,
+        });
+        Ok(ReadPage { rows, next })
+    }
+
+    pub async fn pending_notification_removals(&self) -> Result<Vec<String>, AppError> {
+        Ok(self
+            .store
+            .read(|conn| {
+                let mut stmt =
+                    conn.prepare("SELECT os_identifier FROM notification_removals LIMIT 256")?;
+                let rows = stmt
+                    .query_map([], |r| r.get(0))?
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(rows)
+            })
+            .await?)
+    }
+    pub async fn ack_notification_removals(&self, ids: Vec<String>) -> Result<(), AppError> {
+        self.store
+            .write(move |tx| {
+                for id in ids {
+                    tx.execute(
+                        "DELETE FROM notification_removals WHERE os_identifier=?1",
+                        [id],
+                    )?;
+                }
+                Ok(())
+            })
+            .await?;
+        Ok(())
+    }
+
+    pub async fn maintain_storage(&self) -> Result<(), AppError> {
+        let database = self.store.database_path().to_path_buf();
+        let result = self
+            .store
+            .writer()
+            .call(move |conn| crate::store::recovery::daily(conn, &database))
+            .await
+            .map_err(AppError::from);
+        let failed = result.is_err();
+        if self.backup_failed.swap(failed, Ordering::SeqCst) != failed {
+            self.bump_data();
+        }
+        result
+    }
+
+    pub fn backup_failed(&self) -> bool {
+        self.backup_failed.load(Ordering::SeqCst)
     }
 
     pub fn instance_id(&self) -> Arc<str> {
@@ -599,7 +708,7 @@ impl Library {
         let started_at = self.started_at;
         let schema_version = self.schema_version;
 
-        Ok(self
+        let mut snapshot = self
             .store
             .read(move |conn| {
                 read_models::health(
@@ -611,7 +720,13 @@ impl Library {
                     PROTOCOL_VERSION,
                 )
             })
-            .await?)
+            .await?;
+        if self.backup_failed() {
+            snapshot
+                .degraded
+                .push(crate::domain::read_models::DegradedReason::BackupUnavailable);
+        }
+        Ok(snapshot)
     }
 
     // -----------------------------------------------------------------------
@@ -709,6 +824,14 @@ impl Library {
         let fingerprint = format!("id_in={}", ids.len());
         let duration_ms = response.duration_ms;
 
+        if response
+            .http_status
+            .is_some_and(|status| !(200..300).contains(&status))
+        {
+            let evidence = OwnedFetch::from_response(&response, "batch", &fingerprint)
+                .stamped(now, duration_ms);
+            return self.fail_all(due, &claims, evidence, now, "http").await;
+        }
         let Some(body) = response.body.clone() else {
             let code = response.outcome.as_str().to_owned();
             let evidence = OwnedFetch::from_response(&response, "batch", &fingerprint)
@@ -1081,7 +1204,12 @@ impl Library {
     ) -> Result<(), AppError> {
         let rate_limited = response.http_status == Some(429);
         let blocked_until = rate_limited.then(|| {
-            let wait = i64::from(response.retry_after_secs.unwrap_or(10));
+            let wait = i64::from(
+                response
+                    .retry_after_secs
+                    .unwrap_or(10)
+                    .clamp(1, crate::sources::fetch::MAX_RETRY_AFTER_SECS),
+            );
             now.saturating_add_secs(wait)
         });
         if blocked_until.is_none() {
@@ -1101,12 +1229,26 @@ impl Library {
             ErrorCode::SourceRateLimited,
             "TVmaze is rate limiting requests",
         )
-        .with_retry_after(response.retry_after_secs.unwrap_or(10))
+        .with_retry_after(
+            response
+                .retry_after_secs
+                .unwrap_or(10)
+                .clamp(1, crate::sources::fetch::MAX_RETRY_AFTER_SECS),
+        )
     }
 
     pub(super) fn usable_tv_body(&self, response: &RawResponse) -> Result<String, AppError> {
         if response.http_status == Some(429) {
             return Err(self.tv_rate_limited(response));
+        }
+        if response
+            .http_status
+            .is_some_and(|status| !(200..300).contains(&status) && status != 404)
+        {
+            return Err(AppError::new(
+                ErrorCode::SourceUnavailable,
+                "The source returned an unsuccessful HTTP response",
+            ));
         }
         match (&response.body, response.outcome) {
             (Some(body), _) => Ok(body.clone()),
@@ -1191,7 +1333,12 @@ impl Library {
     ) -> Result<(), AppError> {
         let rate_limited = response.http_status == Some(429);
         let blocked_until = rate_limited.then(|| {
-            let wait = i64::from(response.retry_after_secs.unwrap_or(60));
+            let wait = i64::from(
+                response
+                    .retry_after_secs
+                    .unwrap_or(60)
+                    .clamp(1, crate::sources::fetch::MAX_RETRY_AFTER_SECS),
+            );
             now.saturating_add_secs(wait)
         });
 
@@ -1228,9 +1375,40 @@ impl Library {
                 ErrorCode::SourceRateLimited,
                 "AniList is rate limiting requests",
             )
-            .with_retry_after(response.retry_after_secs.unwrap_or(60)));
+            .with_retry_after(
+                response
+                    .retry_after_secs
+                    .unwrap_or(60)
+                    .clamp(1, crate::sources::fetch::MAX_RETRY_AFTER_SECS),
+            ));
         }
 
+        if response
+            .http_status
+            .is_some_and(|status| !(200..300).contains(&status) && status != 404)
+        {
+            return Err(AppError::new(
+                ErrorCode::SourceUnavailable,
+                "The source returned an unsuccessful HTTP response",
+            ));
+        }
+        if response.http_status == Some(404) {
+            let envelope = response
+                .body
+                .as_deref()
+                .and_then(|body| serde_json::from_str::<serde_json::Value>(body).ok());
+            if !envelope.as_ref().is_some_and(|value| {
+                value
+                    .get("data")
+                    .and_then(|data| data.get("Media"))
+                    .is_some_and(serde_json::Value::is_null)
+            }) {
+                return Err(AppError::new(
+                    ErrorCode::SourceUnavailable,
+                    "AniList returned an unsuccessful HTTP response",
+                ));
+            }
+        }
         match (&response.body, response.outcome) {
             (Some(body), _) => Ok(body.clone()),
             (None, FetchOutcome::Timeout) => Err(AppError::new(
@@ -1490,13 +1668,20 @@ fn summaries(
     conn: &rusqlite::Connection,
     now: UnixTimestamp,
 ) -> Result<Vec<FollowSummary>, StoreError> {
+    summaries_page(conn, now, None)
+}
+
+fn summaries_page(
+    conn: &rusqlite::Connection,
+    now: UnixTimestamp,
+    offset: Option<u32>,
+) -> Result<Vec<FollowSummary>, StoreError> {
     let upcoming = read_models::upcoming(
         conn,
         now,
         crate::domain::read_models::MAX_UPCOMING_LIMIT,
         AIRED_VISIBILITY_SECS,
     )?;
-
     let mut stmt = conn.prepare(
         "SELECT f.media_id, sm.source, sm.source_id, m.display_title, f.state,
                 rs.last_success_at, rs.refresh_after, rs.retry_after
@@ -1504,22 +1689,31 @@ fn summaries(
          JOIN media m ON m.media_id = f.media_id
          JOIN source_media sm ON sm.media_id = f.media_id
          LEFT JOIN source_refresh_state rs ON rs.source_media_id = sm.source_media_id
-         ORDER BY m.display_title COLLATE NOCASE ASC, f.media_id ASC",
+         WHERE (?1 IS NULL OR f.state='active')
+         ORDER BY m.display_title COLLATE NOCASE ASC, f.media_id ASC
+         LIMIT ?2 OFFSET ?3",
     )?;
 
     let rows = stmt
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, i64>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, String>(4)?,
-                row.get::<_, Option<i64>>(5)?,
-                row.get::<_, Option<i64>>(6)?,
-                row.get::<_, Option<i64>>(7)?,
-            ))
-        })?
+        .query_map(
+            rusqlite::params![
+                offset,
+                if offset.is_some() { 51_i64 } else { -1_i64 },
+                offset.unwrap_or(0)
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, Option<i64>>(5)?,
+                    row.get::<_, Option<i64>>(6)?,
+                    row.get::<_, Option<i64>>(7)?,
+                ))
+            },
+        )?
         .collect::<Result<Vec<_>, _>>()?;
 
     rows.into_iter()

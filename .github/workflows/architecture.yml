@@ -18,11 +18,16 @@ on:
     branches: [master, 'codex/**']
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   layering:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       # grep exits 1 on no match, which is the success case here, so each check
       # inverts explicitly rather than relying on the exit status.

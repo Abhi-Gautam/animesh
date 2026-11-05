@@ -128,7 +128,7 @@ function render(snapshot: Snapshot): void {
     case "library": library.render(get("library"), snapshot, state.kind, state.sort, (kind, sort) => { state.kind = kind; state.sort = sort; firstPage(); }, key => void openKey(key), nextPage, firstPage, state.cursor !== null); break;
     case "schedule": schedule.render(get("schedule"), snapshot, state.kind, chooseKind, key => void openKey(key), nextPage, firstPage, state.cursor !== null); break;
     case "health": {
-      health.render(get("health"), snapshot, engineConnected, () => { void navigator.clipboard.writeText(JSON.stringify({ stamp: snapshot.stamp, health: snapshot.health }, null, 2)).then(() => toast("Diagnostics copied.")).catch(() => toast("Expand Diagnostic details to select and copy the text.")); });
+      health.render(get("health"), snapshot, engineConnected, () => { void navigator.clipboard.writeText(JSON.stringify({ process_version: snapshot.health.process_version, schema_version: snapshot.health.schema_version, bootstrap: snapshot.health.bootstrap, database_ready: snapshot.health.database_ready, degraded: snapshot.health.degraded, authorization: snapshot.health.authorization, notifications: snapshot.health.notifications, refresh: snapshot.health.refresh }, null, 2)).then(() => toast("Redacted diagnostics copied. Titles and library identifiers are omitted.")).catch(() => toast("Expand Diagnostic details to select and copy the text.")); });
       break;
     }
   }

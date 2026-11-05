@@ -6,6 +6,7 @@ rust-version = "1.96"
 publish = false
 
 [workspace]
+exclude = ["vendor/glib"]
 
 [features]
 test-harness = ["animesh/test-harness"]
@@ -23,3 +24,7 @@ tauri-build = { version = "2", features = [] }
 strip = true
 lto = "thin"
 codegen-units = 1
+
+# API-compatible backport of gtk-rs/gtk-rs-core#1343 for the GTK3 stack.
+[patch.crates-io]
+glib = { path = "vendor/glib" }

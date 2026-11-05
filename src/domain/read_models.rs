@@ -172,6 +172,7 @@ pub enum DegradedReason {
     NotificationsDenied,
     NotificationCapacityExceeded,
     SourceRateLimited,
+    BackupUnavailable,
 }
 
 impl DegradedReason {
@@ -199,6 +200,7 @@ impl DegradedReason {
             Self::NotificationCapacityExceeded => {
                 "More releases are scheduled than the system will hold. The nearest ones are registered."
             }
+            Self::BackupUnavailable => "Library backup could not complete. Check free disk space and backup directory permissions; existing schedules remain readable.",
             Self::SourceRateLimited => {
                 "A source is rate limiting requests. Refreshes resume automatically."
             }

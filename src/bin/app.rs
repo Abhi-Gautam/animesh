@@ -25,6 +25,13 @@ use animesh::paths::AppPaths;
 use tokio::sync::watch;
 
 fn main() -> ExitCode {
+    if std::env::args().nth(1).as_deref() == Some("--test-harness") {
+        if cfg!(feature = "test-harness") {
+            println!("animesh-isolated-harness");
+            return ExitCode::SUCCESS;
+        }
+        return ExitCode::from(2);
+    }
     init_tracing();
 
     let paths = match AppPaths::production() {
@@ -35,6 +42,27 @@ fn main() -> ExitCode {
         }
     };
 
+    if std::env::args().nth(1).as_deref() == Some("--library-tool") {
+        let action = std::env::args().nth(2).unwrap_or_default();
+        let argument = std::env::args().nth(3).unwrap_or_default();
+        return match animesh::engine::recovery::offline(&paths, &action, &argument) {
+            Ok(message) => {
+                println!("{message}");
+                ExitCode::SUCCESS
+            }
+            Err(error) => {
+                eprintln!(
+                    "{}",
+                    animesh::cli::render::terminal_text(&error.to_string())
+                );
+                ExitCode::from(2)
+            }
+        };
+    }
+    #[cfg(feature = "test-harness")]
+    if std::env::var_os("ANIMESH_HEADLESS").is_some() {
+        return ExitCode::from(run_engine(paths, |_| None));
+    }
     run(paths)
 }
 

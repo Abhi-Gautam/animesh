@@ -382,6 +382,8 @@ impl NotificationSurface for NotificationCenter {
             {
                 self.centre
                     .removePendingNotificationRequestsWithIdentifiers(&array);
+                self.centre
+                    .removeDeliveredNotificationsWithIdentifiers(&array);
             }
             Ok(())
         })

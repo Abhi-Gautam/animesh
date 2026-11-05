@@ -6,6 +6,7 @@
 pub mod bootstrap;
 pub mod notifier;
 pub mod reconciler;
+pub mod recovery;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -65,6 +66,9 @@ pub async fn run_scheduler(
             break;
         }
 
+        if let Err(error) = library.maintain_storage().await {
+            tracing::warn!(code = error.code.as_str(), "library backup needs attention");
+        }
         let sleep_for = match library.earliest_due().await {
             Ok(Some(deadline)) => {
                 let seconds = library.now().seconds_until(deadline);

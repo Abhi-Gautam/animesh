@@ -5,7 +5,7 @@ prepares future Developer ID releases; enabling it requires an Apple Developer
 Program membership, a Developer ID Application certificate with its private
 key, and a team App Store Connect API key permitted to use notarization.
 
-In the repository’s Actions settings, add these **secrets**:
+In the protected `release` environment in Actions settings, add these **secrets**:
 
 - `APPLE_CERTIFICATE_P12`: base64-encoded certificate and private key export.
 - `APPLE_CERTIFICATE_PASSWORD`: the password protecting that export.
@@ -14,8 +14,7 @@ In the repository’s Actions settings, add these **secrets**:
 - `APPLE_NOTARY_ISSUER_ID`: its issuer ID.
 
 Add the **variable** `APPLE_SIGNING_IDENTITY`, using the exact
-`Developer ID Application: … (…)` certificate identity. Set the variable
-`MACOS_SIGNING_ENABLED` to `true` only after all credentials are configured.
+`Developer ID Application: … (…)` certificate identity. Public release jobs always require signing; there is no signing-disable switch.
 Do not put credentials in Git, issue comments, or chat. Certificate purchase,
 account enrollment, and acceptance of Apple agreements are maintainer steps.
 
@@ -29,9 +28,10 @@ certificate, rejection, or timeout fails the build rather than falling back to
 an unsigned download. Cleanup restores the runner’s keychain search list and
 removes temporary credentials even when a build fails.
 
-With signing disabled, source builds and CI smoke continue to use ad-hoc
-signatures. Their install instructions remain explicit about notarization.
+Local source builds and CI smoke continue to use ad-hoc signatures. Public Mac packaging refuses that mode.
 Do not describe a release as notarized until both Mac architecture jobs pass
 Apple acceptance, ticket validation, and Gatekeeper assessment.
 
 See [Apple’s notarization workflow](https://developer.apple.com/documentation/security/customizing-the-notarization-workflow).
+
+Crates.io publishing uses short-lived OIDC credentials. Configure a trusted publisher for `Abhi-Gautam/animesh`, workflow `release.yml`, environment `release`, in the crate's settings. Revoke the old registry token after this is configured; do not add a long-lived registry token to Actions. Every release tag must point to a commit on protected `master`. The protected release environment requires owner approval before credentials are released.

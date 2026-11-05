@@ -378,9 +378,16 @@ impl fmt::Display for InstallationUuid {
 }
 
 /// A bounded, non-empty string used where the schema caps a text column.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(transparent)]
 pub struct BoundedText(String);
+
+impl<'de> Deserialize<'de> for BoundedText {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = String::deserialize(deserializer)?;
+        Self::new("text", 512, value).map_err(serde::de::Error::custom)
+    }
+}
 
 impl BoundedText {
     /// Constructs a bounded string, rejecting empty and over-long input.
