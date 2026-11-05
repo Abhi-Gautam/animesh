@@ -2,6 +2,7 @@
 import importlib.util
 import json
 import io
+import gzip
 import tarfile
 import os
 from pathlib import Path
@@ -47,10 +48,14 @@ class SigningChecks(unittest.TestCase):
         for name,link,size in [("../../scripts/sign-release.py",None,0),("Animesh.app/escape","../../../../outside",0),("Animesh.app/huge",None,513*1024*1024)]:
             with tempfile.TemporaryDirectory() as temp:
                 archive=Path(temp)/"bundle.tar.gz"
-                with tarfile.open(archive,"w:gz") as tar:
-                    member=tarfile.TarInfo(name);member.size=size
-                    if link:member.type=tarfile.SYMTYPE;member.linkname=link
-                    tar.addfile(member)
+                member=tarfile.TarInfo(name);member.size=size
+                if link:member.type=tarfile.SYMTYPE;member.linkname=link
+                if size:
+                    # A hostile size declaration must be rejected before any body is read.
+                    with gzip.open(archive,"wb") as raw:
+                        raw.write(member.tobuf());raw.write(b"\0"*1024)
+                else:
+                    with tarfile.open(archive,"w:gz") as tar:tar.addfile(member)
                 with self.assertRaises((ValueError,tarfile.FilterError)):
                     unpack.unpack("aarch64-apple-darwin",archive,Path(temp)/"output")
                 self.assertFalse((Path(temp)/"outside").exists())

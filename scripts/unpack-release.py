@@ -15,7 +15,7 @@ def unpack(target, archive=None, output=None):
         members=[];total=0
         for member in tar:
             members.append(member);total+=member.size
-            if len(members)>5000 or total>512*1024*1024:
+            if member.size<0 or len(members)>5000 or total>512*1024*1024:
                 raise ValueError("Distribution archive exceeds its extraction budget")
             path=PurePosixPath(member.name)
             if path.is_absolute() or ".." in path.parts or not path.parts or path.parts[0]!=expected:
