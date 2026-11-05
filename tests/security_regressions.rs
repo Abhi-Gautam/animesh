@@ -500,7 +500,7 @@ async fn unsuccessful_batch_preserves_current_facts() {
         .await;
     let w = world(server.url(), "http://127.0.0.1:1".into()).await;
     w.library.follow(AniListId::new(21).unwrap()).await.unwrap();
-    server.reset_async().await;
+    server.reset();
     server.mock("POST","/").with_status(500).with_body(serde_json::json!({"data":{"Page":{"media":[{"id":21,"title":{"english":"Failed HTTP replacement"},"status":"FINISHED","nextAiringEpisode":null}]}}}).to_string()).create_async().await;
     w.clock.set(at(NOW + 20000));
     let pass = w.library.refresh_due(25).await.unwrap();
