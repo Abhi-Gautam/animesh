@@ -18,7 +18,7 @@ Add the **variable** `APPLE_SIGNING_IDENTITY`, using the exact
 Do not put credentials in Git, issue comments, or chat. Certificate purchase,
 account enrollment, and acceptance of Apple agreements are maintainer steps.
 
-Both native Mac jobs import the certificate into an ephemeral keychain. The
+Compilation and dependency scripts run on unprivileged builders. Separate clean packaging runners download bounded, path-validated archives and import the certificate into an ephemeral keychain; no compilation or package scripts run with signing credentials. The
 CLI, nested desktop app, and outer app are signed inside-out with hardened
 runtime and secure timestamps. The app is submitted to Apple, stapled, and
 checked with Gatekeeper before packaging; the disk image is then signed,

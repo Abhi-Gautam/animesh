@@ -74,7 +74,6 @@ jobs:
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
     runs-on: ${{ matrix.os }}
-    environment: release
     env:
       VERSION: ${{ needs.version.outputs.version }}
       NAME: animesh-${{ needs.version.outputs.version }}-${{ matrix.target }}
@@ -106,6 +105,68 @@ jobs:
       - name: Test
         run: cargo test --workspace --locked
 
+      - name: Build and verify the complete distribution
+        env:
+          ANIMESH_CODESIGN_IDENTITY: '-'
+        run: |
+          cargo xtask bundle --release
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            cargo xtask verify --path target/bundle/Animesh.app
+          else
+            cargo xtask verify --path target/bundle/animesh
+          fi
+          cargo test --manifest-path desktop/Cargo.toml --release --locked
+
+      - name: Stage unsigned distribution for an isolated packaging runner
+        run: |
+          mkdir -p target/unsigned
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            tar -C target/bundle -czf target/unsigned/bundle.tar.gz Animesh.app
+          else
+            tar -C target/bundle -czf target/unsigned/bundle.tar.gz animesh
+          fi
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: unsigned-${{ matrix.target }}
+          path: target/unsigned/bundle.tar.gz
+
+  package:
+    name: Package ${{ matrix.target }}
+    needs: [version, build]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The runner's own architecture is the target; nothing here
+          # cross-compiles, so each artifact is built on the machine it runs on.
+          - os: macos-14
+            target: aarch64-apple-darwin
+          # macos-13 was retired in December 2025; macos-15-intel is the Intel
+          # image, and GitHub retires x86_64 macOS entirely in August 2027.
+          # This matrix entry goes away then, not the whole job.
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+    runs-on: ${{ matrix.os }}
+    environment: release
+    env:
+      NAME: animesh-${{ needs.version.outputs.version }}-${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: unsigned-${{ matrix.target }}
+          path: target/unsigned
+      - name: Safely unpack the built distribution
+        run: python3 scripts/unpack-release.py "${{ matrix.target }}"
+      - name: Linux packaging and smoke dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y dpkg-dev libwebkit2gtk-4.1-0 libgtk-3-0t64 xdg-utils webkit2gtk-driver xvfb dbus-x11
       - name: Prepare Developer ID signing
         if: runner.os == 'macOS'
         run: python3 scripts/sign-release.py prepare
@@ -117,18 +178,11 @@ jobs:
           APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
           APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
 
-      - name: Build and verify the complete distribution
+      - name: Sign the prebuilt Mac application
+        if: runner.os == 'macOS'
+        run: python3 scripts/sign-release.py sign
         env:
           ANIMESH_CODESIGN_IDENTITY: ${{ vars.APPLE_SIGNING_IDENTITY }}
-        run: |
-          cargo xtask bundle --release
-          if [ "$RUNNER_OS" = "macOS" ]; then
-            cargo xtask verify --path target/bundle/Animesh.app
-          else
-            cargo xtask verify --path target/bundle/animesh
-          fi
-          cargo test --manifest-path desktop/Cargo.toml --release --locked
-
       - name: Notarize and staple the app
         if: runner.os == 'macOS'
         run: python3 scripts/sign-release.py app
@@ -196,18 +250,20 @@ jobs:
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - name: Verify the crate before obtaining publishing credentials
+        run: cargo package --locked
       - name: Obtain a short-lived crates.io publishing token
         id: crates-auth
         uses: rust-lang/crates-io-auth-action@3268eb413133e2960fa4ae0e963ca76380c54cd9 # v1
       - name: Publish
-        run: cargo publish --locked
+        run: cargo publish --locked --no-verify
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.crates-auth.outputs.token }}
 
   release:
     name: GitHub Release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [version, build]
+    needs: [version, package]
     runs-on: ubuntu-24.04
     environment: release
     permissions:

@@ -32,6 +32,11 @@ def check_config():
     assert "environment: release" in release
     assert "attest-build-provenance@" in release
     assert "needs: [version, security]" in release
+    unsigned=release.split("  build:\n",1)[1].split("  package:\n",1)[0]
+    assert "secrets." not in unsigned and "environment:" not in unsigned
+    signer=release.split("  package:\n",1)[1].split("  crates-io:\n",1)[0]
+    assert "cargo " not in signer and "npm " not in signer
+    assert "python3 scripts/sign-release.py sign" in signer
 
 
 def audit(lockfile):
