@@ -480,6 +480,72 @@ fn forgetting_a_title_erases_raw_batches_and_preserves_other_follows() {
     animesh::store::connection::verify_integrity(&conn).unwrap();
 }
 
+// Exhaust the small state space: every subset, in either deletion order.
+// Rollback must preserve all titles; committed erasure must be idempotent and
+// independent of order, while retention preserves every surviving follow.
+#[test]
+fn forgetting_subsets_preserves_survivors_under_rollback_and_retention() {
+    use animesh::domain::ids::SourceKey;
+    use animesh::store::{connection, maintenance};
+    for mask in 0_u32..16 {
+        for reverse in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let mut conn = connection::open(&temp.path().join("library.db"), true).unwrap();
+            migrations::apply(&mut conn, NOW).unwrap();
+            let tx = conn.transaction().unwrap();
+            for id in 1..=4 {
+                let title = BoundedText::new("title", 512, format!("Title {id}")).unwrap();
+                let row = graph::create_media(
+                    &tx,
+                    SourceKey::anilist(AniListId::new(id).unwrap()),
+                    &title,
+                    at(NOW),
+                )
+                .unwrap();
+                graph::set_follow(&tx, row.media_id, FollowState::Active, at(NOW)).unwrap();
+            }
+            tx.commit().unwrap();
+            let mut deleted: Vec<i64> = (1..=4).filter(|id| mask & (1 << (id - 1)) != 0).collect();
+            if reverse {
+                deleted.reverse();
+            }
+            {
+                let tx = conn.transaction().unwrap();
+                for id in &deleted {
+                    assert!(maintenance::forget(&tx, *id).unwrap());
+                }
+                // Simulates interruption before commit.
+            }
+            let original: i64 = conn
+                .query_row("SELECT count(*) FROM follows", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(original, 4, "rollback mask={mask}, reverse={reverse}");
+            let tx = conn.transaction().unwrap();
+            for id in &deleted {
+                assert!(maintenance::forget(&tx, *id).unwrap());
+                assert!(!maintenance::forget(&tx, *id).unwrap());
+            }
+            maintenance::prune(&tx, NOW + 100 * 86400).unwrap();
+            maintenance::prune(&tx, NOW + 100 * 86400).unwrap();
+            tx.commit().unwrap();
+            let mut statement = conn
+                .prepare("SELECT m.media_id, m.display_title FROM media m JOIN follows f USING(media_id) ORDER BY m.media_id")
+                .unwrap();
+            let survivors: Vec<(i64, String)> = statement
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            let expected: Vec<_> = (1..=4)
+                .filter(|id| !deleted.contains(id))
+                .map(|id| (id, format!("Title {id}")))
+                .collect();
+            assert_eq!(survivors, expected, "mask={mask}, reverse={reverse}");
+            connection::verify_integrity(&conn).unwrap();
+        }
+    }
+}
+
 #[test]
 fn bounded_text_is_validated_when_received_over_ipc() {
     assert!(

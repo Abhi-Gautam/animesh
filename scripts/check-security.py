@@ -37,6 +37,9 @@ def check_config():
     signer=release.split("  package:\n",1)[1].split("  crates-io:\n",1)[0]
     assert "cargo " not in signer and "npm " not in signer
     assert "python3 scripts/sign-release.py sign" in signer
+    publisher=release.split("  crates-io:\n",1)[1].split("  release:\n",1)[0]
+    assert "cargo package" not in publisher and "cargo build" not in publisher and "cargo test" not in publisher
+    assert "cargo publish --locked --no-verify" in publisher
 
 
 def audit(lockfile):

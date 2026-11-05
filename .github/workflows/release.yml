@@ -105,6 +105,10 @@ jobs:
       - name: Test
         run: cargo test --workspace --locked
 
+      - name: Verify the publishable crate without publishing credentials
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: cargo package --locked
+
       - name: Build and verify the complete distribution
         env:
           ANIMESH_CODESIGN_IDENTITY: '-'
@@ -250,8 +254,8 @@ jobs:
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
-      - name: Verify the crate before obtaining publishing credentials
-        run: cargo package --locked
+      # The unprivileged Linux builder already verified this exact source ref.
+      # Never execute dependency build scripts on the token-bearing runner.
       - name: Obtain a short-lived crates.io publishing token
         id: crates-auth
         uses: rust-lang/crates-io-auth-action@3268eb413133e2960fa4ae0e963ca76380c54cd9 # v1
