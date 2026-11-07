@@ -6,5 +6,5 @@
     "build": "rm -rf dist && tsc && cp index.html styles.css dist/",
     "check": "tsc --noEmit"
   },
-  "devDependencies": { "typescript": "~5.9.3" }
+  "devDependencies": { "typescript": "~7.0.2" }
 }
