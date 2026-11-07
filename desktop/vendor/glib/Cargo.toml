@@ -111,7 +111,7 @@ features = [
 ]
 
 [dependencies.thiserror]
-version = "1"
+version = "2"
 
 [dev-dependencies.criterion]
 version = "0.5.1"
