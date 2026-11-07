@@ -66,9 +66,21 @@ impl Library {
             .store()
             .read(move |conn| {
                 let rows = releases::plan(conn, NATIVE_CAPACITY)?;
+                let private: bool = conn.query_row(
+                    "SELECT private_notifications FROM app_preferences WHERE singleton_id=1",
+                    [],
+                    |r| r.get(0),
+                )?;
                 let items = rows
                     .into_iter()
-                    .map(to_item)
+                    .map(|row| {
+                        let mut item = to_item(row)?;
+                        if private {
+                            item.request.title = "Animesh release reminder".into();
+                            item.request.body = "A followed release is now airing.".into();
+                        }
+                        Ok::<_, StoreError>(item)
+                    })
                     .collect::<Result<Vec<_>, StoreError>>()?;
                 Ok((items, releases::deferred_count(conn, NATIVE_CAPACITY)?))
             })

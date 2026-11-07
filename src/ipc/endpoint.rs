@@ -54,12 +54,15 @@ pub struct SingletonLock {
 
 impl SingletonLock {
     pub fn acquire(path: &Path) -> Result<Self, IpcError> {
+        crate::paths::check_parent(path)?;
+        crate::paths::check_file(path)?;
         let file = OpenOptions::new()
             .create(true)
             .read(true)
             .write(true)
             .truncate(false)
             .mode(0o600)
+            .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
             .open(path)?;
 
         match rustix::fs::flock(&file, rustix::fs::FlockOperation::NonBlockingLockExclusive) {

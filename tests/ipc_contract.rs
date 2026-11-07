@@ -276,3 +276,76 @@ async fn a_client_with_no_server_reports_not_running() {
         .expect_err("nothing is listening");
     assert_eq!(error.code, ErrorCode::Unavailable);
 }
+
+#[tokio::test]
+async fn revision_waits_do_not_starve_requests_or_shutdown() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let paths = AppPaths::under_root(temp.path());
+    let endpoint = Endpoint::bind(&paths).expect("endpoint");
+    let (shutdown, rx) = watch::channel(false);
+    let waiting = Arc::new(AtomicU32::new(0));
+    let observed = Arc::clone(&waiting);
+    let serving = tokio::spawn(async move {
+        server::serve(
+            &endpoint,
+            Arc::from("instance"),
+            move |request| {
+                let waiting = Arc::clone(&waiting);
+                async move {
+                    Ok(match request {
+                        Request::WaitForRevision { .. } => {
+                            waiting.fetch_add(1, Ordering::SeqCst);
+                            tokio::time::sleep(Duration::from_secs(60)).await;
+                            Response::WaitForRevision(
+                                animesh::domain::command_center::RevisionStamp {
+                                    instance_id: "instance".into(),
+                                    revision: 1,
+                                },
+                            )
+                        }
+                        _ => Response::Status(Box::new(snapshot())),
+                    })
+                }
+            },
+            rx,
+        )
+        .await;
+    });
+    let mut clients = Vec::new();
+    for _ in 0..8 {
+        let paths = paths.clone();
+        clients.push(tokio::spawn(async move {
+            client::send(
+                &paths,
+                Request::WaitForRevision {
+                    instance_id: "instance".into(),
+                    after: 0,
+                },
+            )
+            .await
+        }));
+    }
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while observed.load(Ordering::SeqCst) != 8 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("all wait subscriptions should be active");
+    let response = tokio::time::timeout(
+        Duration::from_secs(2),
+        client::send(&paths, Request::Status),
+    )
+    .await
+    .expect("status must not queue behind wait subscriptions")
+    .expect("status");
+    assert!(matches!(response, Response::Status(_)));
+    shutdown.send(true).expect("shutdown");
+    tokio::time::timeout(Duration::from_secs(2), serving)
+        .await
+        .expect("shutdown must not wait for stalled handlers")
+        .expect("server");
+    for client in clients {
+        let _ = client.await;
+    }
+}

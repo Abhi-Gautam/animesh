@@ -9,7 +9,7 @@ build from saved GitHub release metadata without a network request.
 
 The address is `https://animesh.syntropicsystems.dev/`, served by the
 `animesh-website` Cloudflare Worker. Build with `python3 scripts/build-site.py`,
-then deploy with `npx wrangler deploy` using the root `wrangler.jsonc`.
+then install the pinned hosting CLI with `npm ci --prefix tools/cloudflare` and deploy with `tools/cloudflare/node_modules/.bin/wrangler deploy --config wrangler.jsonc` from the repository root.
 The Worker serves only static assets; downloads remain on GitHub.
 
 The download section includes a copyable agent-assisted setup prompt linking to

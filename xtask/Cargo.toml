@@ -6,6 +6,7 @@ publish = false
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
+rustix = { version = "1", features = ["fs"] }
 
 [lints.clippy]
 todo = "warn"

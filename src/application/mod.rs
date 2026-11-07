@@ -66,6 +66,9 @@ async fn handle(library: &Arc<Library>, request: Request) -> Result<Response, Ap
             library.drop_follow(media_id).await?,
         ))),
 
+        Request::ReadPage { kind, cursor } => {
+            Ok(Response::ReadPage(library.read_page(kind, cursor).await?))
+        }
         Request::ListFollows => Ok(Response::ListFollows(library.list_follows().await?)),
 
         Request::Upcoming { limit, dropped } => Ok(Response::Upcoming(if dropped {

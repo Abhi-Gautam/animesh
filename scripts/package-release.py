@@ -19,9 +19,8 @@ To use the CLI and start the background service at login:
   ln -sf /Applications/Animesh.app/Contents/Helpers/animesh ~/.local/bin/animesh
   /Applications/Animesh.app/Contents/Helpers/animesh service start
 
-This download is ad-hoc signed, not notarized. macOS may block it after
-download. Prefer Homebrew for a source build, or use macOS's Privacy &
-Security settings to allow this app. Never move the CLI out of the bundle.
+This download must be Developer ID signed and notarized. Verify its identity
+before opening it. Never disable Gatekeeper or move the CLI out of the bundle.
 """
 LINUX_INSTALL = """Built for Ubuntu 24.04 or newer. The desktop needs WebKitGTK 4.1.
 The .deb release is the easiest install and resolves runtime dependencies:
@@ -45,6 +44,8 @@ def package(target: str) -> None:
     name = f"animesh-{version}-{target}"
     is_mac = target.endswith("apple-darwin")
     notarized = is_mac and os.environ.get("ANIMESH_NOTARIZED") == "true"
+    if is_mac and not notarized:
+        raise ValueError("Public Mac packages require Developer ID signing and notarization")
     if notarized:
         subprocess.run(["xcrun", "stapler", "validate", str(ROOT / "target/bundle/Animesh.app")], check=True)
     artifacts = []

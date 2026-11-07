@@ -13,6 +13,15 @@ use crate::domain::read_models::{
     UpcomingRelease,
 };
 
+/// Renders untrusted text without terminal controls, forged lines or bidi overrides.
+pub fn terminal_text(text: &str) -> String {
+    text.chars().flat_map(|c| {
+        if c.is_control() || matches!(c, '\u{2028}' | '\u{2029}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}') {
+            c.escape_unicode().collect::<Vec<_>>()
+        } else { vec![c] }
+    }).collect()
+}
+
 /// Formats an absolute instant in the viewer's local timezone, naming the zone.
 ///
 /// The zone is not decoration. An airtime without one is exactly the thing that
@@ -168,7 +177,7 @@ fn write_upcoming_rows(out: &mut String, rows: &[UpcomingRelease], now: UnixTime
         let mark = if row.aired { "*" } else { " " };
         out.push_str(&format!(
             "{mark} {}  ·  {}\n    {}  {}  {}{}\n",
-            row.display_title,
+            terminal_text(row.display_title.as_str()),
             identity_line(row),
             episode_phrase(row),
             local_time(row.scheduled_at),
@@ -195,7 +204,7 @@ pub fn search(candidates: &[SearchCandidate]) -> String {
         out.push_str(&format!(
             "{:>9}  {}{}\n           {}{}\n",
             format!("{}:{}", candidate.source, candidate.source_id),
-            candidate.display_title,
+            terminal_text(candidate.display_title.as_str()),
             year,
             candidate.status.as_str(),
             episodes,
@@ -230,7 +239,7 @@ pub fn follows(summaries: &[FollowSummary], now: UnixTimestamp) -> String {
                 source: summary.source,
                 id: summary.source_id,
             },
-            summary.display_title,
+            terminal_text(summary.display_title.as_str()),
             next,
             freshness_note(summary.freshness),
         ));
@@ -261,7 +270,7 @@ pub fn follow_result(result: &FollowResult, now: UnixTimestamp) -> String {
 
     format!(
         "{verb}: {}\n  {}  {}\n{next}",
-        result.display_title,
+        terminal_text(result.display_title.as_str()),
         crate::domain::ids::SourceKey {
             source: result.source,
             id: result.source_id,
@@ -289,7 +298,7 @@ pub fn health(snapshot: &HealthSnapshot, now: UnixTimestamp) -> String {
     match &snapshot.earliest_upcoming {
         Some(next) => out.push_str(&format!(
             "Next: {} {} {}\n",
-            next.display_title,
+            terminal_text(next.display_title.as_str()),
             next.episode
                 .map(|e| episode_label(e, next.season))
                 .unwrap_or_else(|| "?".to_owned()),

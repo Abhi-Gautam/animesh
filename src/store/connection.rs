@@ -54,6 +54,9 @@ pub enum StoreError {
     #[error("integrity check failed: {0}")]
     Integrity(String),
 
+    #[error("storage: {0}")]
+    Io(#[from] std::io::Error),
+
     #[error("the writer thread is gone")]
     WriterGone,
 
@@ -68,7 +71,7 @@ impl StoreError {
             Self::SchemaTooNew { .. } => ErrorCode::SchemaTooNew,
             Self::Integrity(_) | Self::ChecksumMismatch { .. } => ErrorCode::DatabaseCorrupt,
             Self::PragmaMismatch { .. } => ErrorCode::Internal,
-            Self::WriterGone | Self::Path(_) => ErrorCode::Internal,
+            Self::WriterGone | Self::Path(_) | Self::Io(_) => ErrorCode::Internal,
             Self::Sqlite(error) => match error.sqlite_error_code() {
                 Some(rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked) => {
                     ErrorCode::DatabaseBusy
@@ -117,6 +120,17 @@ pub fn configure(conn: &Connection, writable: bool) -> Result<(), StoreError> {
         }
     }
 
+    conn.pragma_update(None, "secure_delete", "ON")?;
+    if writable {
+        let size: i64 = conn.query_row("PRAGMA page_size", [], |r| r.get(0))?;
+        let used: i64 = conn.query_row("PRAGMA page_count", [], |r| r.get(0))?;
+        conn.pragma_update(
+            None,
+            "max_page_count",
+            (256 * 1024 * 1024_i64 / size).max(used),
+        )?;
+    }
+    conn.pragma_update(None, "journal_size_limit", 8 * 1024 * 1024_i64)?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
     expect_int(conn, "foreign_keys", 1)?;
 
@@ -155,8 +169,40 @@ fn expect_int(conn: &Connection, name: &'static str, expected: i64) -> Result<()
 
 /// Opens and configures one connection.
 pub fn open(path: &Path, writable: bool) -> Result<Connection, StoreError> {
+    // SQLite NOFOLLOW rejects system aliases such as /var on macOS too.
+    // Resolve the checked parent, while retaining NOFOLLOW on the final object.
+    let resolved = if path == Path::new(":memory:") {
+        path.to_path_buf()
+    } else {
+        paths::check_parent(path)?;
+        let parent = path.parent().unwrap_or(Path::new("."));
+        parent.canonicalize()?.join(
+            path.file_name()
+                .ok_or_else(|| std::io::Error::other("missing database filename"))?,
+        )
+    };
+    let path = resolved.as_path();
     let conn = if writable {
-        Connection::open(path)?
+        if path != Path::new(":memory:") {
+            for candidate in [
+                path.to_path_buf(),
+                PathBuf::from(format!("{}-wal", path.display())),
+                PathBuf::from(format!("{}-shm", path.display())),
+            ] {
+                paths::check_parent(&candidate)
+                    .and_then(|_| paths::check_file(&candidate))
+                    .map_err(|source| paths::PathError::CreateDir {
+                        path: candidate.display().to_string(),
+                        source,
+                    })?;
+            }
+        }
+        Connection::open_with_flags(
+            path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE
+                | rusqlite::OpenFlags::SQLITE_OPEN_CREATE
+                | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW,
+        )?
     } else {
         Connection::open_with_flags(
             path,
@@ -193,12 +239,12 @@ type WriterJob = Box<dyn FnOnce(&mut Connection) + Send>;
 /// The single write connection, owned by a dedicated thread.
 #[derive(Debug)]
 pub struct Writer {
-    tx: mpsc::UnboundedSender<WriterJob>,
+    tx: mpsc::Sender<WriterJob>,
 }
 
 impl Writer {
     fn spawn(mut conn: Connection) -> Self {
-        let (tx, mut rx) = mpsc::unbounded_channel::<WriterJob>();
+        let (tx, mut rx) = mpsc::channel::<WriterJob>(64);
         std::thread::Builder::new()
             .name("animesh-store-writer".into())
             .spawn(move || {
@@ -225,6 +271,7 @@ impl Writer {
             .send(Box::new(move |conn| {
                 let _ = reply_tx.send(f(conn));
             }))
+            .await
             .map_err(|_| StoreError::WriterGone)?;
         reply_rx.await.map_err(|_| StoreError::WriterGone)?
     }
@@ -317,6 +364,10 @@ impl Store {
             writer: Writer::spawn(conn),
             readers: ReaderPool::new(path.to_path_buf()),
         })
+    }
+
+    pub fn database_path(&self) -> &Path {
+        &self.readers.path
     }
 
     pub fn writer(&self) -> &Writer {

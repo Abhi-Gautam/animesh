@@ -143,3 +143,23 @@ pub struct SearchResults {
     pub items: Vec<SearchHit>,
     pub issues: Vec<SourceIssue>,
 }
+
+/// Bounded CLI/agent reads. Cursors are tied to a daemon revision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReadKind {
+    Library,
+    Upcoming,
+    Dropped,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "items", rename_all = "snake_case")]
+pub enum ReadRows {
+    Library(Vec<super::read_models::FollowSummary>),
+    Upcoming(Vec<UpcomingRelease>),
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReadPage {
+    pub rows: ReadRows,
+    pub next: Option<PageCursor>,
+}

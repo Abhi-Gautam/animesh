@@ -123,10 +123,18 @@ impl Library {
                 protocol_version: crate::ipc::protocol::PROTOCOL_VERSION,
             };
             let query = query.clone();
-            let snapshot = self
+            let mut snapshot = self
                 .store()
                 .read(move |conn| serving::snapshot(conn, query, context))
                 .await?;
+            if self.backup_failed() {
+                if let Some(snapshot) = snapshot.as_mut() {
+                    snapshot
+                        .health
+                        .degraded
+                        .push(crate::domain::read_models::DegradedReason::BackupUnavailable);
+                }
+            }
             if stamp.revision == self.data_revision() {
                 return snapshot.ok_or_else(|| {
                     AppError::not_found(

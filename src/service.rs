@@ -98,11 +98,8 @@ fn write_file(path: &Path, contents: &str) -> Result<(), AppError> {
 }
 
 fn write_bytes(path: &Path, contents: &[u8]) -> Result<(), AppError> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| failed(format!("creating {}: {e}", parent.display())))?;
-    }
-    std::fs::write(path, contents).map_err(|e| failed(format!("writing {}: {e}", path.display())))
+    crate::paths::atomic_write(path, contents)
+        .map_err(|e| failed(format!("writing {}: {e}", path.display())))
 }
 
 /// Runs a service-manager command, returning its stdout.
@@ -175,7 +172,13 @@ fn unit_contents(daemon: &Path) -> String {
 </dict>
 </plist>
 "#,
-        daemon.display()
+        daemon
+            .to_string_lossy()
+            .replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('"', "&quot;")
+            .replace('\'', "&apos;")
     )
 }
 
@@ -436,6 +439,41 @@ pub fn status() -> Outcome {
     } else {
         "Not registered. Run 'animesh service start' to run Animesh in the background.".to_owned()
     })
+}
+
+/// Recovery runs in the daemon executable under its singleton lock; the CLI never opens SQLite.
+pub fn library_tool(action: &str, argument: &str) -> Outcome {
+    let daemon = daemon_path()?;
+    #[cfg(feature = "test-harness")]
+    let isolated = std::env::var_os("ANIMESH_DATA_ROOT").is_some()
+        && std::env::var_os("ANIMESH_LOG_ROOT").is_some();
+    #[cfg(not(feature = "test-harness"))]
+    let isolated = false;
+    let registered = !isolated && is_registered();
+    if registered {
+        unregister()?;
+    }
+    let result = Command::new(&daemon)
+        .args(["--library-tool", action, argument])
+        .output()
+        .map_err(|e| failed(format!("Could not run library maintenance: {e}")))
+        .and_then(|out| {
+            if out.status.success() {
+                Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
+            } else {
+                Err(failed(String::from_utf8_lossy(&out.stderr).trim()))
+            }
+        });
+    if registered {
+        if let Err(error) = start_inner(false) {
+            return Err(failed(format!(
+                "Library maintenance finished; restarting the service failed: {}. {}",
+                error.message,
+                result.err().map_or(String::new(), |e| e.message)
+            )));
+        }
+    }
+    result
 }
 
 #[cfg(test)]

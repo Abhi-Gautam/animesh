@@ -545,7 +545,10 @@ pub fn insert_fetch(tx: &Transaction<'_>, record: &FetchRecord<'_>) -> Result<Fe
             record.error_code,
         ],
     )?;
-    FetchId::new(tx.last_insert_rowid()).map_err(|e| StoreError::Integrity(e.to_string()))
+    let id =
+        FetchId::new(tx.last_insert_rowid()).map_err(|e| StoreError::Integrity(e.to_string()))?;
+    super::maintenance::prune(tx, record.completed_at.get())?;
+    Ok(id)
 }
 
 /// Appends one observation occurrence.

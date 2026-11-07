@@ -45,6 +45,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "V0004__remove_discovery",
         sql: include_str!("../../migrations/V0004__remove_discovery.sql"),
     },
+    Migration {
+        version: 5,
+        name: "V0005__security",
+        sql: include_str!("../../migrations/V0005__security.sql"),
+    },
 ];
 
 /// The newest schema version this build can operate.
@@ -144,16 +149,29 @@ pub fn apply(conn: &mut Connection, now: i64) -> Result<usize, StoreError> {
         }
         // V0002 rebuilds CHECK-constrained tables. PRAGMA foreign_keys is a
         // no-op inside a transaction, so it has to flip outside.
-        let rebuilds = migration.version == 2;
+        let rebuilds = matches!(migration.version, 2 | 5);
         if rebuilds {
             conn.pragma_update(None, "foreign_keys", "OFF")?;
         }
-        let tx = conn.transaction()?;
-        apply_one(&tx, migration, now)?;
-        tx.commit()?;
+        let result = (|| {
+            let tx = conn.transaction()?;
+            apply_one(&tx, migration, now)?;
+            let broken: i64 =
+                tx.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| {
+                    r.get(0)
+                })?;
+            if broken != 0 {
+                return Err(StoreError::Integrity(
+                    "migration would break foreign keys".into(),
+                ));
+            }
+            tx.commit()?;
+            Ok::<_, StoreError>(())
+        })();
         if rebuilds {
             conn.pragma_update(None, "foreign_keys", "ON")?;
         }
+        result?;
         ran += 1;
     }
     Ok(ran)
@@ -191,8 +209,8 @@ mod tests {
     #[test]
     fn apply_creates_the_schema_and_records_it() {
         let mut conn = db();
-        assert_eq!(apply(&mut conn, 100).expect("apply"), 4);
-        assert_eq!(current_version(&conn).expect("version"), 4);
+        assert_eq!(apply(&mut conn, 100).expect("apply"), 5);
+        assert_eq!(current_version(&conn).expect("version"), 5);
 
         let count: i64 = conn
             .query_row(
@@ -215,9 +233,9 @@ mod tests {
     #[test]
     fn apply_is_idempotent() {
         let mut conn = db();
-        assert_eq!(apply(&mut conn, 100).expect("first"), 4);
+        assert_eq!(apply(&mut conn, 100).expect("first"), 5);
         assert_eq!(apply(&mut conn, 200).expect("second"), 0);
-        assert_eq!(current_version(&conn).expect("version"), 4);
+        assert_eq!(current_version(&conn).expect("version"), 5);
     }
 
     #[test]
@@ -225,7 +243,7 @@ mod tests {
         let mut conn = db();
         ensure_ledger(&conn).expect("ledger");
         for migration in &MIGRATIONS[..3] {
-            let rebuilds = migration.version == 2;
+            let rebuilds = matches!(migration.version, 2 | 5);
             if rebuilds {
                 conn.pragma_update(None, "foreign_keys", "OFF")
                     .expect("off");
@@ -280,7 +298,7 @@ mod tests {
                 ('library', '{\"kind\":\"library\"}', 'completed', 100, NULL);",
         ).expect("seed old catalog and user intent");
 
-        assert_eq!(apply(&mut conn, 200).expect("upgrade"), 1);
+        assert_eq!(apply(&mut conn, 200).expect("upgrade"), 2);
         let count = |sql| {
             conn.query_row(sql, [], |row| row.get::<_, i64>(0))
                 .expect("count")
@@ -333,7 +351,7 @@ mod tests {
             error,
             StoreError::SchemaTooNew {
                 found: 99,
-                supported: 4
+                supported: 5
             }
         ));
 

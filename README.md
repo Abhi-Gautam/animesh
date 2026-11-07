@@ -26,8 +26,7 @@ checksums, disk images or Debian packages, and tarballs with install instruction
 | Linux x86_64 | `amd64.deb` |
 | Linux ARM64 | `arm64.deb` |
 
-The current macOS downloads are **not notarized** and may need approval in
-Privacy & Security. Homebrew builds from source and is another install option.
+The existing v0.7.2 Mac downloads are not notarized. Prefer Homebrew's source build until a Developer ID signed and notarized release is available. Do not disable Gatekeeper for an unverified download.
 
 Animesh is an early release. Commands and protocols can change, so read release
 notes before updating and back up your library before experimenting. Known
@@ -83,9 +82,7 @@ SHA-256 checksums, and tarballs contain an `INSTALL.txt`. Linux tarballs include
 `install.sh` for a user installation. They require WebKitGTK 4.1 and Ubuntu
 24.04 or a compatible newer system.
 
-The macOS downloads are ad-hoc signed and are not notarized. macOS may require
-allowing the app in Privacy & Security after download. Homebrew avoids this
-download approval by building from source.
+Existing v0.7.2 Mac packages are ad-hoc signed and not notarized. Future public Mac packages require Developer ID signing and Apple notarization. Homebrew builds from source. Verify download checksums and GitHub artifact attestations when present; see [security guidance](SECURITY.md).
 
 `service start` registers the background process with launchd or systemd and
 keeps it running across restarts. On macOS it asks for notification permission
@@ -226,3 +223,13 @@ Anime schedules come from [AniList](https://anilist.co). TV schedules come from
 ## License
 
 MIT
+
+## Privacy, storage, and recovery
+
+`drop` stops tracking and preserves history. To permanently erase a title's local history and all app-managed backups, use `animesh privacy forget media:N --yes`. Existing assistant chats, external backups, filesystem snapshots, and OS-retained notifications are separate copies. OS notification removal resumes when the service starts.
+
+`animesh privacy notifications private` hides titles/episode details in banners; `titles` restores them. Configure lock-screen previews in the OS too. Copied desktop diagnostics omit titles and library identifiers.
+
+`animesh library storage` reports usage. Raw source evidence is limited to 32 MiB and 30 days; current source facts remain available. The database has a 256 MiB page budget. Disk-full errors stop writes rather than discarding follows.
+
+Verified backups are created daily when state is active and before schema upgrades. `animesh library backup` creates a manual snapshot. `animesh library restore --from manual --yes` restores it; `daily` and `pre-upgrade` are other slots. These commands briefly stop and restart the managed service and refuse to run while an unmanaged daemon owns the library. A healthy pre-restore snapshot and original recovery bytes are preserved. Backups are private, unencrypted local files: keep a separate encrypted backup for device loss.

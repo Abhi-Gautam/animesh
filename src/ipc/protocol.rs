@@ -15,7 +15,7 @@ pub use crate::application::commands::{Request, Response, MAX_QUERY_LEN};
 
 /// Bumped only for an incompatible change. A mismatch is reported, never
 /// negotiated: two versions guessing at each other is worse than a clear stop.
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// Largest frame either side will read or write.
 pub const MAX_FRAME_BYTES: usize = 1024 * 1024;
@@ -353,7 +353,7 @@ mod tests {
     }
 
     #[test]
-    fn protocol_version_is_frozen_at_two() {
-        assert_eq!(PROTOCOL_VERSION, 2);
+    fn protocol_version_is_frozen_at_three() {
+        assert_eq!(PROTOCOL_VERSION, 3);
     }
 }

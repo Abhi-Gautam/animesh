@@ -32,3 +32,8 @@ CLAUDE.md
 
 # Local Python build caches
 __pycache__/
+
+/desktop/vendor/glib/target/
+
+/tools/cloudflare/node_modules/
+/.wrangler/

@@ -2,10 +2,12 @@ name: Release
 
 on:
   push:
-    branches: ['codex/**']
     tags:
       - 'v*'
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -17,10 +19,17 @@ jobs:
   version:
     name: Tag matches the crate
     runs-on: ubuntu-24.04
+    if: startsWith(github.ref, 'refs/tags/v')
     outputs:
       version: ${{ steps.check.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Require a protected-branch commit
+        run: |
+          git fetch origin master
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/master
       - id: check
         run: |
           set -euo pipefail
@@ -39,9 +48,14 @@ jobs:
           PYTHON
           echo "version=${crate}" >> "$GITHUB_OUTPUT"
 
+  security:
+    uses: ./.github/workflows/security.yml
+    permissions:
+      contents: read
+
   build:
     name: ${{ matrix.target }}
-    needs: version
+    needs: [version, security]
     strategy:
       fail-fast: false
       matrix:
@@ -64,16 +78,18 @@ jobs:
       VERSION: ${{ needs.version.outputs.version }}
       NAME: animesh-${{ needs.version.outputs.version }}-${{ matrix.target }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           cache-on-failure: true
           workspaces: |
             . -> target
             desktop -> target
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           cache: npm
@@ -89,20 +105,13 @@ jobs:
       - name: Test
         run: cargo test --workspace --locked
 
-      - name: Prepare Developer ID signing
-        if: runner.os == 'macOS' && vars.MACOS_SIGNING_ENABLED == 'true'
-        run: python3 scripts/sign-release.py prepare
-        env:
-          ANIMESH_CODESIGN_IDENTITY: ${{ vars.APPLE_SIGNING_IDENTITY }}
-          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_NOTARY_KEY_P8: ${{ secrets.APPLE_NOTARY_KEY_P8 }}
-          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
-          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+      - name: Verify the publishable crate without publishing credentials
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: cargo package --locked
 
       - name: Build and verify the complete distribution
         env:
-          ANIMESH_CODESIGN_IDENTITY: ${{ runner.os == 'macOS' && vars.MACOS_SIGNING_ENABLED == 'true' && vars.APPLE_SIGNING_IDENTITY || '-' }}
+          ANIMESH_CODESIGN_IDENTITY: '-'
         run: |
           cargo xtask bundle --release
           if [ "$RUNNER_OS" = "macOS" ]; then
@@ -112,8 +121,74 @@ jobs:
           fi
           cargo test --manifest-path desktop/Cargo.toml --release --locked
 
+      - name: Stage unsigned distribution for an isolated packaging runner
+        run: |
+          mkdir -p target/unsigned
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            tar -C target/bundle -czf target/unsigned/bundle.tar.gz Animesh.app
+          else
+            tar -C target/bundle -czf target/unsigned/bundle.tar.gz animesh
+          fi
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: unsigned-${{ matrix.target }}
+          path: target/unsigned/bundle.tar.gz
+
+  package:
+    name: Package ${{ matrix.target }}
+    needs: [version, build]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The runner's own architecture is the target; nothing here
+          # cross-compiles, so each artifact is built on the machine it runs on.
+          - os: macos-14
+            target: aarch64-apple-darwin
+          # macos-13 was retired in December 2025; macos-15-intel is the Intel
+          # image, and GitHub retires x86_64 macOS entirely in August 2027.
+          # This matrix entry goes away then, not the whole job.
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+    runs-on: ${{ matrix.os }}
+    environment: release
+    env:
+      NAME: animesh-${{ needs.version.outputs.version }}-${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: unsigned-${{ matrix.target }}
+          path: target/unsigned
+      - name: Safely unpack the built distribution
+        run: python3 scripts/unpack-release.py "${{ matrix.target }}"
+      - name: Linux packaging and smoke dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y dpkg-dev libwebkit2gtk-4.1-0 libgtk-3-0t64 xdg-utils webkit2gtk-driver xvfb dbus-x11
+      - name: Prepare Developer ID signing
+        if: runner.os == 'macOS'
+        run: python3 scripts/sign-release.py prepare
+        env:
+          ANIMESH_CODESIGN_IDENTITY: ${{ vars.APPLE_SIGNING_IDENTITY }}
+          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_NOTARY_KEY_P8: ${{ secrets.APPLE_NOTARY_KEY_P8 }}
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+
+      - name: Sign the prebuilt Mac application
+        if: runner.os == 'macOS'
+        run: python3 scripts/sign-release.py sign
+        env:
+          ANIMESH_CODESIGN_IDENTITY: ${{ vars.APPLE_SIGNING_IDENTITY }}
       - name: Notarize and staple the app
-        if: runner.os == 'macOS' && vars.MACOS_SIGNING_ENABLED == 'true'
+        if: runner.os == 'macOS'
         run: python3 scripts/sign-release.py app
         env:
           APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
@@ -123,10 +198,10 @@ jobs:
         run: python3 scripts/package-release.py "$TARGET"
         env:
           TARGET: ${{ matrix.target }}
-          ANIMESH_NOTARIZED: ${{ runner.os == 'macOS' && vars.MACOS_SIGNING_ENABLED == 'true' && 'true' || 'false' }}
+          ANIMESH_NOTARIZED: ${{ runner.os == 'macOS' && 'true' || 'false' }}
 
       - name: Notarize and staple the disk image
-        if: runner.os == 'macOS' && vars.MACOS_SIGNING_ENABLED == 'true'
+        if: runner.os == 'macOS'
         run: python3 scripts/sign-release.py packages
         env:
           ANIMESH_CODESIGN_IDENTITY: ${{ vars.APPLE_SIGNING_IDENTITY }}
@@ -134,7 +209,7 @@ jobs:
           APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
 
       - name: Remove Apple signing credentials
-        if: always() && runner.os == 'macOS' && vars.MACOS_SIGNING_ENABLED == 'true'
+        if: always() && runner.os == 'macOS'
         run: python3 scripts/sign-release.py cleanup
 
       - name: Install and exercise the Linux desktop
@@ -154,12 +229,12 @@ jobs:
 
       - name: Desktop smoke screenshots
         if: always() && runner.os == 'Linux'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: desktop-smoke-${{ matrix.target }}
           path: target/desktop-smoke/
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ${{ env.NAME }}
           path: |
@@ -170,27 +245,40 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [version, build]
     runs-on: ubuntu-24.04
+    environment: release
     permissions:
       contents: read
+      id-token: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      # The unprivileged Linux builder already verified this exact source ref.
+      # Never execute dependency build scripts on the token-bearing runner.
+      - name: Obtain a short-lived crates.io publishing token
+        id: crates-auth
+        uses: rust-lang/crates-io-auth-action@3268eb413133e2960fa4ae0e963ca76380c54cd9 # v1
       - name: Publish
-        run: cargo publish --locked
+        run: cargo publish --locked --no-verify
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ steps.crates-auth.outputs.token }}
 
   release:
     name: GitHub Release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [version, build]
+    needs: [version, package]
     runs-on: ubuntu-24.04
+    environment: release
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: artifacts
+          pattern: animesh-*
 
       # The formula builds from the tagged source archive, so its checksum is
       # part of the release rather than something to recompute by hand later.
@@ -211,7 +299,12 @@ jobs:
           cp SOURCE_SHA256.txt release/
           ls -l release
 
-      - uses: softprops/action-gh-release@v2
+      - name: Attest release packages
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: release/*
+
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           tag_name: ${{ github.ref_name }}
           files: release/*

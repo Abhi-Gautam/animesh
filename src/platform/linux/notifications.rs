@@ -16,7 +16,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use zbus::zvariant::Value;
+use zbus::Variant;
 
 use crate::domain::notification::NativeRequest;
 use crate::domain::read_models::AuthorizationState;
@@ -60,7 +60,7 @@ trait Notifications {
         summary: &str,
         body: &str,
         actions: &[&str],
-        hints: HashMap<&str, Value<'_>>,
+        hints: HashMap<&str, Variant<'_>>,
         expire_timeout: i32,
     ) -> zbus::Result<u32>;
 
@@ -135,9 +135,9 @@ impl NotificationSurface for DesktopNotifier {
 
     fn add<'a>(&'a self, request: &'a NativeRequest) -> SurfaceFuture<'a, ()> {
         Box::pin(async move {
-            let mut hints: HashMap<&str, Value<'_>> = HashMap::new();
-            hints.insert("desktop-entry", Value::from(DESKTOP_ENTRY));
-            hints.insert("urgency", Value::from(URGENCY_NORMAL));
+            let mut hints: HashMap<&str, Variant<'_>> = HashMap::new();
+            hints.insert("desktop-entry", Variant::from(DESKTOP_ENTRY));
+            hints.insert("urgency", Variant::from(URGENCY_NORMAL));
 
             self.proxy
                 .notify(

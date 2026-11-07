@@ -5,8 +5,11 @@
 //! temporary root, so two tests can never race on the same database.
 
 use std::fs;
+use std::fs::{File, OpenOptions};
 use std::io;
+use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
 use thiserror::Error;
@@ -186,26 +189,117 @@ impl AppPaths {
     }
 }
 
+/// Rejects unsafe ancestors while permitting system-owned sticky temporary roots.
+pub fn check_parent(path: &Path) -> io::Result<()> {
+    for parent in path.ancestors().skip(1) {
+        if parent.as_os_str().is_empty() {
+            continue;
+        }
+        match fs::metadata(parent) {
+            Ok(meta) => {
+                let uid = rustix::process::getuid().as_raw();
+                let sticky_root = meta.uid() == 0 && meta.mode() & 0o1000 != 0;
+                if !meta.is_dir()
+                    || (meta.uid() != uid && meta.uid() != 0)
+                    || (meta.mode() & 0o022 != 0 && !sticky_root)
+                {
+                    return Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        "unsafe parent directory",
+                    ));
+                }
+            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+
+pub fn check_file(path: &Path) -> io::Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(meta)
+            if meta.is_file()
+                && meta.uid() == rustix::process::getuid().as_raw()
+                && meta.nlink() == 1 =>
+        {
+            Ok(())
+        }
+        Ok(_) => Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "expected an owned regular file without links",
+        )),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
+pub fn private_dir(path: &Path) -> io::Result<()> {
+    check_parent(path)?;
+    use std::os::unix::fs::DirBuilderExt;
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(PRIVATE_DIR_MODE)
+        .create(path)?;
+    let dir = OpenOptions::new()
+        .read(true)
+        .custom_flags((rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::DIRECTORY).bits() as i32)
+        .open(path)?;
+    if dir.metadata()?.uid() != rustix::process::getuid().as_raw() {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "directory belongs to another user",
+        ));
+    }
+    dir.set_permissions(fs::Permissions::from_mode(PRIVATE_DIR_MODE))
+}
+
 fn create_private_dir(path: &Path) -> Result<(), PathError> {
-    fs::create_dir_all(path).map_err(|source| PathError::CreateDir {
+    private_dir(path).map_err(|source| PathError::CreateDir {
         path: path.display().to_string(),
         source,
-    })?;
-    fs::set_permissions(path, fs::Permissions::from_mode(PRIVATE_DIR_MODE)).map_err(|source| {
-        PathError::SetPermissions {
-            path: path.display().to_string(),
-            source,
-        }
     })
 }
 
-/// Tightens an existing file to owner-only.
+/// Same-directory temporary creation and rename; never follows an existing link.
+pub fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "missing parent"))?;
+    private_dir(parent)?;
+    check_file(path)?;
+    let temporary = parent.join(format!(".animesh-{}.tmp", uuid::Uuid::new_v4()));
+    let result = (|| {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(PRIVATE_FILE_MODE)
+            .open(&temporary)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        fs::rename(&temporary, path)?;
+        File::open(parent)?.sync_all()
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
+}
+
+/// Tightens an existing owned regular file by descriptor, without following links.
 pub fn restrict_file(path: &Path) -> Result<(), PathError> {
-    fs::set_permissions(path, fs::Permissions::from_mode(PRIVATE_FILE_MODE)).map_err(|source| {
-        PathError::SetPermissions {
-            path: path.display().to_string(),
-            source,
-        }
+    let result = (|| {
+        check_parent(path)?;
+        check_file(path)?;
+        let file = OpenOptions::new()
+            .read(true)
+            .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
+            .open(path)?;
+        file.set_permissions(fs::Permissions::from_mode(PRIVATE_FILE_MODE))
+    })();
+    result.map_err(|source| PathError::SetPermissions {
+        path: path.display().to_string(),
+        source,
     })
 }
 

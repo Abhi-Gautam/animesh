@@ -165,9 +165,10 @@ fn install_into(home: &Path, force: bool) -> Result<String, AppError> {
     let mut written = Vec::new();
     for target in &targets {
         let dir = target.skill_dir();
-        std::fs::create_dir_all(&dir).map_err(|e| io("creating", &dir, e))?;
+        crate::paths::private_dir(&dir).map_err(|e| io("creating", &dir, e))?;
         let file = target.file();
-        std::fs::write(&file, SKILL_MD).map_err(|e| io("writing", &file, e))?;
+        crate::paths::atomic_write(&file, SKILL_MD.as_bytes())
+            .map_err(|e| io("writing", &file, e))?;
         written.push(file);
     }
 
@@ -190,12 +191,31 @@ fn uninstall_from(home: &Path) -> Result<String, AppError> {
         if !dir.exists() {
             continue;
         }
-        std::fs::remove_dir_all(&dir).map_err(|e| io("removing", &dir, e))?;
-        removed.push(dir);
+        crate::paths::check_parent(&dir).map_err(|e| io("checking", &dir, e))?;
+        if std::fs::symlink_metadata(&dir)
+            .map_err(|e| io("checking", &dir, e))?
+            .file_type()
+            .is_symlink()
+        {
+            return Err(AppError::invalid_argument(
+                "Refusing to remove a linked skill directory",
+            ));
+        }
+        let file = target.file();
+        crate::paths::check_file(&file).map_err(|e| io("checking", &file, e))?;
+        if matches!(inspect(&target)?, Installed::Current) {
+            std::fs::remove_file(&file).map_err(|e| io("removing", &file, e))?;
+            removed.push(file);
+            match std::fs::remove_dir(&dir) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::DirectoryNotEmpty => {}
+                Err(e) => return Err(io("removing", &dir, e)),
+            }
+        }
     }
 
     if removed.is_empty() {
-        return Ok(format!("The {SKILL_NAME} skill is not installed."));
+        return Ok(format!("The unchanged {SKILL_NAME} skill is not installed. Local edits and additions are preserved."));
     }
     let mut message = String::from("Removed:\n");
     for dir in &removed {
@@ -311,7 +331,7 @@ mod tests {
             .expect("status")
             .locations
             .iter()
-            .all(|location| matches!(location.state, Installed::Absent)));
+            .all(|location| !matches!(location.state, Installed::Current)));
     }
 
     #[test]
@@ -424,5 +444,27 @@ mod tests {
 
         uninstall_from(home.path()).expect("uninstall");
         assert!(neighbour.join("SKILL.md").exists());
+    }
+    #[test]
+    fn uninstall_preserves_local_edits_and_extra_files() {
+        let home = tempfile::tempdir().expect("tempdir");
+        install_into(home.path(), false).expect("install");
+        let directory = home.path().join(".agents/skills/animesh");
+        let file = directory.join("SKILL.md");
+        std::fs::write(&file, "My customization").expect("edit");
+        std::fs::write(directory.join("notes.txt"), "Keep this too").expect("notes");
+        uninstall_from(home.path()).expect("uninstall");
+        assert_eq!(
+            std::fs::read_to_string(&file).expect("read"),
+            "My customization"
+        );
+        assert_eq!(
+            std::fs::read_to_string(directory.join("notes.txt")).expect("read"),
+            "Keep this too"
+        );
+        std::fs::write(&file, SKILL_MD).expect("restore stock skill");
+        uninstall_from(home.path()).expect("uninstall stock");
+        assert!(!file.exists());
+        assert!(directory.join("notes.txt").exists());
     }
 }

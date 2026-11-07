@@ -80,7 +80,18 @@ pub async fn send_envelope(socket: &Path, request: Request) -> Result<ClientRepl
 
 async fn connect(socket: &Path) -> Result<UnixStream, AppError> {
     match UnixStream::connect(socket).await {
-        Ok(stream) => Ok(stream),
+        Ok(stream) => {
+            if stream.peer_cred().map(|peer| peer.uid()).map_err(|_| {
+                AppError::new(ErrorCode::Unavailable, "Cannot verify the daemon identity")
+            })? != rustix::process::getuid().as_raw()
+            {
+                return Err(AppError::new(
+                    ErrorCode::Unavailable,
+                    "The daemon socket belongs to another user",
+                ));
+            }
+            Ok(stream)
+        }
         // A missing or refusing socket means the app is not running, which is a
         // different problem from the app being broken, and has a different fix.
         Err(error)

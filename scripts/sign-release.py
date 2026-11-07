@@ -52,6 +52,16 @@ def prepare(directory):
     print("Developer ID signing credentials prepared in an ephemeral keychain")
 
 
+def sign_app(directory):
+    identity = os.environ.get("ANIMESH_CODESIGN_IDENTITY", "")
+    if not identity.startswith("Developer ID Application:"):
+        raise ValueError("Public distribution requires a Developer ID Application identity")
+    app = ROOT / "target/bundle/Animesh.app"
+    for target in [app / "Contents/Helpers/animesh", app / "Contents/Helpers/Animesh Desktop.app", app]:
+        run("codesign", "--force", "--sign", identity, "--timestamp", "--options=runtime", str(target))
+    run("codesign", "--verify", "--deep", "--strict", str(app))
+
+
 def notarize(path, directory):
     result = json.loads(run("xcrun", "notarytool", "submit", str(path), "--key", str(directory / "notary.p8"),
                             "--key-id", os.environ["APPLE_NOTARY_KEY_ID"], "--issuer", os.environ["APPLE_NOTARY_ISSUER_ID"],
@@ -106,11 +116,11 @@ def cleanup(directory):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=["prepare", "app", "packages", "cleanup"])
+    parser.add_argument("action", choices=["prepare", "sign", "app", "packages", "cleanup"])
     args = parser.parse_args()
     directory = Path(os.environ["RUNNER_TEMP"]) / "animesh-signing"
     try:
-        {"prepare": prepare, "app": notarize_app, "packages": notarize_packages, "cleanup": cleanup}[args.action](directory)
+        {"prepare": prepare, "sign": sign_app, "app": notarize_app, "packages": notarize_packages, "cleanup": cleanup}[args.action](directory)
     except Exception as error:
         # CalledProcessError includes arguments (and passwords). Report only the type.
         if isinstance(error, subprocess.CalledProcessError):
