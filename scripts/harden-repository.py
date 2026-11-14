@@ -30,7 +30,7 @@ def apply():
     if not any(p["name"]=="v*" and p["type"]=="tag" for p in policies):
         api(root+"/environments/release/deployment-branch-policies","POST",{"name":"v*","type":"tag"})
     api(root+"/branches/master/protection","PUT",{
-        "required_status_checks":{"strict":True,"contexts":["check (macos-14)","check (macos-15-intel)","check (ubuntu-24.04)","check (ubuntu-24.04-arm)","linux-daemon","bundle","layering","Security gates"]},
+        "required_status_checks":{"strict":True,"contexts":["check (macos-15)","check (macos-15-intel)","check (ubuntu-24.04)","check (ubuntu-24.04-arm)","linux-daemon","bundle","layering","Security gates"]},
         "enforce_admins":True,"required_pull_request_reviews":{"dismiss_stale_reviews":True,"require_code_owner_reviews":False,"required_approving_review_count":0},
         "restrictions":None,"required_conversation_resolution":True,"allow_force_pushes":False,"allow_deletions":False})
     existing={r["name"]:r["id"] for r in api(root+"/rulesets")}

@@ -26,7 +26,7 @@ checksums, disk images or Debian packages, and tarballs with install instruction
 | Linux x86_64 | `amd64.deb` |
 | Linux ARM64 | `arm64.deb` |
 
-The existing v0.7.2 Mac downloads are not notarized. Prefer Homebrew's source build until a Developer ID signed and notarized release is available. Do not disable Gatekeeper for an unverified download.
+Mac downloads are ad-hoc signed, not notarized, so macOS blocks the first open. Approve Animesh once in System Settings › Privacy & Security, or install with Homebrew, which builds from source. Never disable Gatekeeper.
 
 Animesh is an early release. Commands and protocols can change, so read release
 notes before updating and back up your library before experimenting. Known
@@ -56,7 +56,7 @@ On Ubuntu 24.04 or newer, download the `.deb` matching your architecture from
 the [latest release](https://github.com/Abhi-Gautam/animesh/releases/latest):
 
 ```bash
-sudo apt install ./animesh_0.7.2_amd64.deb  # x86_64; use arm64 on ARM
+sudo apt install ./animesh_0.7.3_amd64.deb  # x86_64; use arm64 on ARM
 ```
 
 Open **Animesh** from your applications menu. It starts the background service
@@ -82,7 +82,7 @@ SHA-256 checksums, and tarballs contain an `INSTALL.txt`. Linux tarballs include
 `install.sh` for a user installation. They require WebKitGTK 4.1 and Ubuntu
 24.04 or a compatible newer system.
 
-Existing v0.7.2 Mac packages are ad-hoc signed and not notarized. Future public Mac packages require Developer ID signing and Apple notarization. Homebrew builds from source. Verify download checksums and GitHub artifact attestations when present; see [security guidance](SECURITY.md).
+Mac packages are ad-hoc signed and not notarized; Homebrew builds from source. Verify download checksums and GitHub artifact attestations; see [security guidance](SECURITY.md).
 
 `service start` registers the background process with launchd or systemd and
 keeps it running across restarts. On macOS it asks for notification permission

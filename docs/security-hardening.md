@@ -15,7 +15,7 @@ must pass required checks, merge, and ship before installed users receive them.
 | S05: backoff | Provider retry delays are bounded to one day; migration heals unreasonable old persisted deadlines. |
 | S06: failed responses | Non-success HTTP responses cannot commit provider-shaped facts; narrowly defined not-found responses remain supported. Failed refreshes preserve current facts. |
 | S07: large libraries | CLI reads page through revision-bound cursors. Reply serialization is bounded and oversized legacy requests receive a structured error. Maximum-length titles are tested across 501 follows. |
-| S08: release identity | Public Mac packaging requires Developer ID signing, notarization, stapling, and Gatekeeper assessment for the app and disk image. Missing credentials fail closed. Local development signatures remain supported. Public packages receive GitHub provenance. |
+| S08: release identity | Mac packages ship ad-hoc signed; the packaging runner verifies the seal before packaging, and install text says the download is not notarized. Setting `APPLE_SIGNING_IDENTITY` switches to Developer ID signing, notarization, stapling, and Gatekeeper assessment, after which missing credentials fail closed. Public packages receive GitHub provenance, and crates.io publishes only after the GitHub release exists. |
 
 Additional changes disable provider redirects, enforce production HTTPS, check
 private path ownership and links, make sensitive writes atomic, bound writer and
@@ -52,10 +52,8 @@ GTK stack when available; do not broaden or silently renew the exceptions.
 
 ## Remaining release and account work
 
-- Configure the Apple Developer ID and notarization credentials in the protected
-  `release` environment as documented in [Mac signing](macos-signing.md). A real
-  Apple acceptance and installed signed release have not been exercised without
-  those credentials. Old v0.7.2 Mac downloads remain ad-hoc signed.
+- Mac downloads remain ad-hoc signed. Developer ID signing is optional; see
+  [Mac signing](macos-signing.md). A real Apple acceptance has not been exercised.
 - Configure the crate's trusted publisher for this repository, `release.yml`, and
   environment `release`. The old Actions registry secret has been deleted; revoke
   the original token in the crates.io account as well.

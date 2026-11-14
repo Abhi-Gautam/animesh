@@ -1,4 +1,4 @@
-"""Check missing credentials and Apple notarization rejection gates."""
+"""Check Mac packaging trust, missing credentials, and Apple notarization rejection gates."""
 import importlib.util
 import json
 import io
@@ -23,16 +23,36 @@ unpack = load("unpack-release")
 
 
 class SigningChecks(unittest.TestCase):
-    def test_public_mac_packaging_fails_before_native_commands_without_notarization(self):
-        with tempfile.TemporaryDirectory() as temp, patch.object(package, "ROOT", Path(temp)), patch.dict(os.environ, {"ANIMESH_NOTARIZED": "false"}), patch.object(package.subprocess, "run") as run:
-            (Path(temp) / "Cargo.toml").write_text('[package]\nversion = "0.7.2"\n')
-            with self.assertRaisesRegex(ValueError, "require Developer ID"):
-                package.package("aarch64-apple-darwin")
-            run.assert_not_called()
+    def package_mac(self, notarized):
+        """Package a stub bundle with native tools mocked; return the tool calls and INSTALL.txt."""
+        with tempfile.TemporaryDirectory() as temp, patch.object(package, "ROOT", Path(temp)), patch.dict(os.environ, {"ANIMESH_NOTARIZED": str(notarized).lower()}), patch.object(package.subprocess, "run") as run:
+            root = Path(temp)
+            (root / "Cargo.toml").write_text('[package]\nversion = "0.0.0"\n')
+            (root / "LICENSE").write_text("license")
+            (root / "README.md").write_text("readme")
+            (root / "target/bundle/Animesh.app/Contents").mkdir(parents=True)
+            run.side_effect = lambda args, check: Path(args[-1]).write_bytes(b"dmg") if args[0] == "hdiutil" else None
+            package.package("aarch64-apple-darwin")
+            with tarfile.open(root / "target/packages/animesh-0.0.0-aarch64-apple-darwin.tar.gz") as tar:
+                install = tar.extractfile("animesh-0.0.0-aarch64-apple-darwin/INSTALL.txt").read().decode()
+            return [call.args[0][:2] for call in run.call_args_list], install
 
-    def test_unsigned_instructions_never_recommend_gatekeeper_bypass(self):
-        self.assertNotIn("Privacy &", package.MAC_INSTALL)
-        self.assertIn("Never disable Gatekeeper", package.MAC_INSTALL)
+    def test_ad_hoc_mac_package_verifies_its_seal_and_says_it_is_not_notarized(self):
+        calls, install = self.package_mac(notarized=False)
+        self.assertEqual(calls[0], ["codesign", "--verify"])
+        self.assertNotIn(["xcrun", "stapler"], calls)
+        self.assertIn("ad-hoc signed, not notarized", install)
+        self.assertNotIn("notarized by Apple", install)
+
+    def test_notarized_mac_package_validates_its_staple_and_says_so(self):
+        calls, install = self.package_mac(notarized=True)
+        self.assertEqual(calls[0], ["xcrun", "stapler"])
+        self.assertIn("notarized by Apple", install)
+        self.assertNotIn("ad-hoc", install)
+
+    def test_mac_instructions_never_recommend_disabling_gatekeeper(self):
+        for trust in package.MAC_TRUST.values():
+            self.assertIn("Never disable Gatekeeper", trust)
 
     def test_signing_runner_only_signs_prebuilt_nested_binaries(self):
         with patch.dict(os.environ, {"ANIMESH_CODESIGN_IDENTITY": "Developer ID Application: Test (TEAM)"}), patch.object(sign, "run") as run:

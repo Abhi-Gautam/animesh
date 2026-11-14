@@ -1,9 +1,13 @@
 # Mac release signing
 
-The current v0.7.2 downloads are ad-hoc signed and not notarized. This workflow
-prepares future Developer ID releases; enabling it requires an Apple Developer
-Program membership, a Developer ID Application certificate with its private
-key, and a team App Store Connect API key permitted to use notarization.
+Mac downloads ship ad-hoc signed and not notarized. The packaging runner
+verifies the ad-hoc seal before packaging, and the install text tells users to
+approve the app once in Privacy & Security or install with Homebrew.
+
+Developer ID releases are optional and prepared below. Enabling them requires an
+Apple Developer Program membership, a Developer ID Application certificate with
+its private key, and a team App Store Connect API key permitted to use
+notarization.
 
 In the protected `release` environment in Actions settings, add these **secrets**:
 
@@ -14,7 +18,9 @@ In the protected `release` environment in Actions settings, add these **secrets*
 - `APPLE_NOTARY_ISSUER_ID`: its issuer ID.
 
 Add the **variable** `APPLE_SIGNING_IDENTITY`, using the exact
-`Developer ID Application: … (…)` certificate identity. Public release jobs always require signing; there is no signing-disable switch.
+`Developer ID Application: … (…)` certificate identity. That variable is the
+switch: once it is set, every secret above is required and a missing or rejected
+credential fails the release instead of falling back to ad-hoc signing.
 Do not put credentials in Git, issue comments, or chat. Certificate purchase,
 account enrollment, and acceptance of Apple agreements are maintainer steps.
 
