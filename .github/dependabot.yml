@@ -1,17 +1,40 @@
 version: 2
+# Compatible updates arrive as one PR per ecosystem; majors stay separate so
+# each breaking change is reviewed on its own. Security updates are not grouped.
 updates:
   - package-ecosystem: cargo
     directory: /
     schedule: { interval: weekly }
+    groups:
+      compatible:
+        update-types: [minor, patch]
   - package-ecosystem: cargo
     directory: /desktop
     schedule: { interval: weekly }
+    groups:
+      compatible:
+        update-types: [minor, patch]
+    # Tauri's Linux backend is the GTK3 stack, which is fixed at glib 0.18 and
+    # served by the patched copy in vendor/glib. Newer glib crates are a
+    # different GTK generation, not an upgrade this tree can take piecemeal.
+    ignore:
+      - dependency-name: "glib*"
+        update-types: [version-update:semver-major, version-update:semver-minor]
   - package-ecosystem: npm
     directory: /desktop/ui
     schedule: { interval: weekly }
+    groups:
+      compatible:
+        update-types: [minor, patch]
   - package-ecosystem: npm
     directory: /tools/cloudflare
     schedule: { interval: weekly }
+    groups:
+      compatible:
+        update-types: [minor, patch]
   - package-ecosystem: github-actions
     directory: /
     schedule: { interval: weekly }
+    groups:
+      compatible:
+        update-types: [minor, patch]

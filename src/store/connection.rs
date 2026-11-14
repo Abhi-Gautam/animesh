@@ -147,7 +147,8 @@ pub fn configure(conn: &Connection, writable: bool) -> Result<(), StoreError> {
         expect_int(conn, "fullfsync", 1)?;
     }
 
-    conn.busy_handler(None)?;
+    // Setting busy_timeout installs SQLite's timeout handler in place of any
+    // other busy handler, so this pragma alone defines contention behavior.
     conn.pragma_update(None, "busy_timeout", BUSY_TIMEOUT_MS)?;
     expect_int(conn, "busy_timeout", i64::from(BUSY_TIMEOUT_MS))?;
 
