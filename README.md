@@ -56,7 +56,7 @@ On Ubuntu 24.04 or newer, download the `.deb` matching your architecture from
 the [latest release](https://github.com/Abhi-Gautam/animesh/releases/latest):
 
 ```bash
-sudo apt install ./animesh_0.7.2_amd64.deb  # x86_64; use arm64 on ARM
+sudo apt install ./animesh_0.7.3_amd64.deb  # x86_64; use arm64 on ARM
 ```
 
 Open **Animesh** from your applications menu. It starts the background service

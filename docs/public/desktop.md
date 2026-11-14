@@ -39,6 +39,6 @@ The release includes Apple Silicon and Intel Mac disk images, plus x86_64 and AR
 
 Mac downloads are ad-hoc signed, not notarized. The installation guide explains the one-time approval macOS requires; Homebrew is another option.
 
-The current downloads are 0.7.2. The desktop app offers optional Animesh skill installation on first use and later from Health. The same skill helps compatible local AI assistants check releases, manage follows, and suggest shows based on the library. The download page includes a copyable assistant setup prompt.
+The current downloads are 0.7.3. The desktop app offers optional Animesh skill installation on first use and later from Health. The same skill helps compatible local AI assistants check releases, manage follows, and suggest shows based on the library. The download page includes a copyable assistant setup prompt.
 
-[Get Animesh](https://animesh.syntropicsystems.dev/) · [Release notes](https://github.com/Abhi-Gautam/animesh/releases/tag/v0.7.2) · [Source](https://github.com/Abhi-Gautam/animesh)
+[Get Animesh](https://animesh.syntropicsystems.dev/) · [Release notes](https://github.com/Abhi-Gautam/animesh/releases/tag/v0.7.3) · [Source](https://github.com/Abhi-Gautam/animesh)
