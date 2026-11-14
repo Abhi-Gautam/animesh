@@ -19,9 +19,18 @@ To use the CLI and start the background service at login:
   ln -sf /Applications/Animesh.app/Contents/Helpers/animesh ~/.local/bin/animesh
   /Applications/Animesh.app/Contents/Helpers/animesh service start
 
-This download must be Developer ID signed and notarized. Verify its identity
-before opening it. Never disable Gatekeeper or move the CLI out of the bundle.
 """
+# Which promise the download can make depends on how the release was signed.
+MAC_TRUST = {
+    True: """This download is Developer ID signed and notarized by Apple.
+Never disable Gatekeeper or move the CLI out of the bundle.
+""",
+    False: """This download is ad-hoc signed, not notarized. macOS blocks it on first
+open: approve it once in System Settings > Privacy & Security, or install
+with Homebrew, which builds from source. Never disable Gatekeeper or move
+the CLI out of the bundle.
+""",
+}
 LINUX_INSTALL = """Built for Ubuntu 24.04 or newer. The desktop needs WebKitGTK 4.1.
 The .deb release is the easiest install and resolves runtime dependencies:
   sudo apt install ./animesh_*.deb
@@ -44,10 +53,12 @@ def package(target: str) -> None:
     name = f"animesh-{version}-{target}"
     is_mac = target.endswith("apple-darwin")
     notarized = is_mac and os.environ.get("ANIMESH_NOTARIZED") == "true"
-    if is_mac and not notarized:
-        raise ValueError("Public Mac packages require Developer ID signing and notarization")
+    app = ROOT / "target/bundle/Animesh.app"
     if notarized:
-        subprocess.run(["xcrun", "stapler", "validate", str(ROOT / "target/bundle/Animesh.app")], check=True)
+        subprocess.run(["xcrun", "stapler", "validate", str(app)], check=True)
+    elif is_mac:
+        # The builder signed ad-hoc; prove the transferred bundle still seals.
+        subprocess.run(["codesign", "--verify", "--deep", "--strict", str(app)], check=True)
     artifacts = []
     with tempfile.TemporaryDirectory(prefix="package-", dir=output) as temporary:
         work = Path(temporary)
@@ -55,12 +66,10 @@ def package(target: str) -> None:
         stage.mkdir()
         for file in ["LICENSE", "README.md"]:
             shutil.copy2(ROOT / file, stage / file)
-        instructions = MAC_INSTALL if is_mac else LINUX_INSTALL
-        if notarized:
-            instructions = instructions.replace("This download is ad-hoc signed, not notarized. macOS may block it after\ndownload. Prefer Homebrew for a source build, or use macOS's Privacy &\nSecurity settings to allow this app. Never move the CLI out of the bundle.", "This download is Developer ID signed and notarized by Apple.\nNever move the CLI out of the bundle.")
+        instructions = MAC_INSTALL + MAC_TRUST[notarized] if is_mac else LINUX_INSTALL
         (stage / "INSTALL.txt").write_text(instructions)
         if is_mac:
-            shutil.copytree(ROOT / "target/bundle/Animesh.app", stage / "Animesh.app", symlinks=True)
+            shutil.copytree(app, stage / "Animesh.app", symlinks=True)
             dmg_stage = work / "dmg"
             dmg_stage.mkdir()
             shutil.copytree(stage / "Animesh.app", dmg_stage / "Animesh.app", symlinks=True)
