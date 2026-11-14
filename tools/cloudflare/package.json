@@ -2,6 +2,6 @@
   "name": "animesh-hosting-tools",
   "private": true,
   "devDependencies": {
-    "wrangler": "4.158.0"
+    "wrangler": "4.160.0"
   }
 }
